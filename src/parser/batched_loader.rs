@@ -5,6 +5,7 @@
 
 use bitcoin::{Block, Network, consensus::deserialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -44,6 +45,19 @@ impl From<bitcoin::consensus::encode::Error> for LoaderError {
         LoaderError::ParseError(format!("Block deserialization failed: {}", err))
     }
 }
+
+impl fmt::Display for LoaderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LoaderError::IndexError(e) => write!(f, "Block index error: {:?}", e),
+            LoaderError::Io(e) => write!(f, "I/O error: {}", e),
+            LoaderError::ParseError(s) => write!(f, "Parse error: {}", s),
+            LoaderError::InvalidFile(s) => write!(f, "Invalid file: {}", s),
+        }
+    }
+}
+
+impl std::error::Error for LoaderError {}
 
 /// Batched block loader for backlog processing
 ///

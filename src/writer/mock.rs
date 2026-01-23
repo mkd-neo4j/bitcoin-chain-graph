@@ -228,7 +228,8 @@ impl GraphWriter for MockWriter {
     async fn create_checkpoint(&self) -> Result<()> {
         let mut storage = self.storage.lock().unwrap();
 
-        // Create initial checkpoint
+        // Create initial checkpoint at height 0 (no blocks processed yet)
+        // This matches the Neo4jWriter behavior for consistency
         let checkpoint = CheckpointData {
             last_processed_height: 0,
             last_processed_hash: String::from("0000000000000000000000000000000000000000000000000000000000000000"),
@@ -258,6 +259,17 @@ impl GraphWriter for MockWriter {
 
         if let Some(ref mut checkpoint) = storage.checkpoint {
             checkpoint.status = String::from("completed");
+        }
+
+        Ok(())
+    }
+
+    async fn set_checkpoint_status(&self, status: &str) -> Result<()> {
+        let mut storage = self.storage.lock().unwrap();
+
+        if let Some(ref mut checkpoint) = storage.checkpoint {
+            checkpoint.status = status.to_string();
+            checkpoint.timestamp = chrono::Utc::now().timestamp();
         }
 
         Ok(())

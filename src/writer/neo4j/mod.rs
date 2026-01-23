@@ -292,4 +292,14 @@ impl GraphWriter for Neo4jWriter {
 
         Ok(())
     }
+
+    async fn set_checkpoint_status(&self, status: &str) -> Result<()> {
+        self.graph
+            .run(query("MATCH (c:IngestionCheckpoint) SET c.status = $status, c.timestamp = datetime()")
+                .param("status", status))
+            .await
+            .map_err(|e| WriterError::CheckpointError(format!("set_checkpoint_status failed: {}", e)))?;
+
+        Ok(())
+    }
 }

@@ -162,6 +162,47 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
         self.utxo_cache.len()
     }
 
+    /// Get current checkpoint
+    ///
+    /// Returns the current checkpoint state for status reporting.
+    ///
+    /// # Returns
+    /// Some(CheckpointData) if checkpoint exists, None otherwise
+    ///
+    /// # Errors
+    /// Returns error if checkpoint query fails
+    pub async fn get_checkpoint(&self) -> Result<Option<CheckpointData>> {
+        self.writer.get_checkpoint().await
+    }
+
+    /// Set checkpoint status
+    ///
+    /// Updates the checkpoint status field. Useful for error recovery
+    /// and manual status management.
+    ///
+    /// # Arguments
+    /// * `status` - New status: "in_progress", "completed", "paused", "error"
+    ///
+    /// # Errors
+    /// Returns error if status update fails
+    pub async fn set_checkpoint_status(&self, status: &str) -> Result<()> {
+        self.writer.set_checkpoint_status(status).await
+    }
+
+    /// Update checkpoint with new data
+    ///
+    /// Updates the checkpoint with progress information. Useful for testing
+    /// and manual checkpoint management.
+    ///
+    /// # Arguments
+    /// * `checkpoint` - Updated checkpoint data with latest progress
+    ///
+    /// # Errors
+    /// Returns error if checkpoint update fails
+    pub async fn update_checkpoint(&self, checkpoint: &CheckpointData) -> Result<()> {
+        self.writer.update_checkpoint(checkpoint).await
+    }
+
     /// Ingest a single block through all 6 phases (M7 version with UTXO cache)
     ///
     /// Processes one block completely before moving to the next. This ensures

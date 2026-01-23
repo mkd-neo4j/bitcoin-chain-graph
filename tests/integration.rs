@@ -7,3 +7,6 @@ mod batch_ingestion;
 
 #[path = "integration/full_pipeline.rs"]
 mod full_pipeline;
+
+#[path = "integration/checkpoint_resume.rs"]
+mod checkpoint_resume;

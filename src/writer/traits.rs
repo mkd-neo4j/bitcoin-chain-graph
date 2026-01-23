@@ -237,4 +237,16 @@ pub trait GraphWriter: Send + Sync {
     /// # Errors
     /// Returns error if status update fails.
     async fn mark_checkpoint_complete(&self) -> Result<()>;
+
+    /// Set checkpoint status
+    ///
+    /// Updates the checkpoint status field. Useful for error recovery and
+    /// manual status management.
+    ///
+    /// # Arguments
+    /// * `status` - New status: "in_progress", "completed", "paused", "error"
+    ///
+    /// # Errors
+    /// Returns error if status update fails.
+    async fn set_checkpoint_status(&self, status: &str) -> Result<()>;
 }
