@@ -26,7 +26,7 @@ This document will be updated as milestones are completed:
 - [x] M1: Project Setup & Parser Foundation ✅ **Completed 2025-01-23**
 - [x] M2: Address Derivation ✅ **Completed 2025-01-23**
 - [x] M3: Domain Models ✅ **Completed 2025-01-23**
-- [ ] M4: GraphWriter Trait
+- [x] M4: GraphWriter Trait ✅ **Completed 2025-01-23**
 - [ ] M5: Ingestion Orchestrator
 - [ ] M6: Neo4j Writer Implementation
 - [ ] M7: UTXO Cache
@@ -521,11 +521,12 @@ This document will be updated as milestones are completed:
 
 ## Development Notes
 
-### Current Milestone: M4 - GraphWriter Trait
+### Current Milestone: M5 - Ingestion Orchestrator
 
 ### Blockers: None
 
 ### Recent Updates:
+- 2025-01-23: **M4 completed** - GraphWriter trait with MockWriter implementation, 14 integration tests passing, no Neo4j dependencies yet
 - 2025-01-23: **M3 completed** - Domain models (BlockData, TransactionData, OutputData, InputData, CheckpointData) with conversion functions from bitcoin crate types, 5 comprehensive tests passing
 - 2025-01-23: **M2 completed** - Address derivation for all script types (P2PKH, P2SH, P2WPKH, P2WSH, P2TR, P2PK, NULL_DATA), all tests passing including Genesis block
 - 2025-01-23: **M1 completed** - BlockFileReader parser with streaming API, all tests passing (<10ms for 100 blocks)
