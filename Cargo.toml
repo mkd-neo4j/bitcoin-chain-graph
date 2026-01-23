@@ -1,0 +1,13 @@
+[package]
+name = "bitcoin-chain-graph"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitcoin = "0.31"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "1"
+
+[dev-dependencies]
+hex = "0.4"

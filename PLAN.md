@@ -19,6 +19,27 @@ This is an incremental, test-driven development plan that builds the Bitcoin blo
 
 ---
 
+## Progress Tracking
+
+This document will be updated as milestones are completed:
+
+- [x] M1: Project Setup & Parser Foundation ✅ **Completed 2025-01-23**
+- [ ] M2: Address Derivation
+- [ ] M3: Domain Models
+- [ ] M4: GraphWriter Trait
+- [ ] M5: Ingestion Orchestrator
+- [ ] M6: Neo4j Writer Implementation
+- [ ] M7: UTXO Cache
+- [ ] M8: Checkpoint Management
+- [ ] M9: CLI Application
+- [ ] M10: Special Cases Handling
+- [ ] M11: Validation & Error Handling
+- [ ] M12: Performance Optimization
+- [ ] M13: Full Integration Test
+- [ ] M14: Documentation & Polish
+
+---
+
 ## Milestone 1: Project Setup & Parser Foundation
 **Goal**: Parse Genesis block from test data
 **Duration**: 1-2 hours
@@ -475,27 +496,6 @@ This is an incremental, test-driven development plan that builds the Bitcoin blo
 
 ---
 
-## Progress Tracking
-
-This document will be updated as milestones are completed:
-
-- [ ] M1: Project Setup & Parser Foundation
-- [ ] M2: Address Derivation
-- [ ] M3: Domain Models
-- [ ] M4: GraphWriter Trait
-- [ ] M5: Ingestion Orchestrator
-- [ ] M6: Neo4j Writer Implementation
-- [ ] M7: UTXO Cache
-- [ ] M8: Checkpoint Management
-- [ ] M9: CLI Application
-- [ ] M10: Special Cases Handling
-- [ ] M11: Validation & Error Handling
-- [ ] M12: Performance Optimization
-- [ ] M13: Full Integration Test
-- [ ] M14: Documentation & Polish
-
----
-
 ## Quick Reference: Documentation Map
 
 | Phase | Primary Docs | Supporting Docs |
@@ -521,11 +521,12 @@ This document will be updated as milestones are completed:
 
 ## Development Notes
 
-### Current Milestone: Not started
+### Current Milestone: M2 - Address Derivation
 
 ### Blockers: None
 
 ### Recent Updates:
+- 2025-01-23: **M1 completed** - BlockFileReader parser with streaming API, all tests passing (<10ms for 100 blocks)
 - 2025-01-23: Plan created with 14 incremental milestones
 
 ---
