@@ -3,6 +3,14 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use thiserror::Error;
 
+/// Magic bytes for different Bitcoin networks
+const MAGIC_MAINNET: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
+const MAGIC_TESTNET: [u8; 4] = [0x0B, 0x11, 0x09, 0x07];
+const MAGIC_REGTEST: [u8; 4] = [0xFA, 0xBF, 0xB5, 0xDA];
+
+/// Default buffer size for block file reading (8MB)
+const DEFAULT_BUFFER_SIZE: usize = 8 * 1024 * 1024;
+
 /// Errors that can occur during block file parsing
 #[derive(Error, Debug)]
 pub enum ParseError {
@@ -11,6 +19,9 @@ pub enum ParseError {
 
     #[error("Invalid magic bytes: expected {expected:X}, got {got:X}")]
     InvalidMagic { expected: u32, got: u32 },
+
+    #[error("Unsupported network type")]
+    UnsupportedNetwork,
 
     #[error("Bitcoin deserialization error: {0}")]
     Deserialize(#[from] bitcoin::consensus::encode::Error),
@@ -37,12 +48,12 @@ pub enum ParseError {
 pub struct BlockFileReader {
     reader: BufReader<File>,
     file_path: String,
-    magic_bytes: [u8; 4],
+    magic_bytes: &'static [u8; 4],
     blocks_read: usize,
 }
 
 impl BlockFileReader {
-    /// Create a new block file reader
+    /// Create a new block file reader with default buffer size
     ///
     /// # Arguments
     /// * `path` - Path to the `.blk` file
@@ -51,19 +62,40 @@ impl BlockFileReader {
     /// # Returns
     /// A new reader or an error if the file cannot be opened
     pub fn new(path: &str, network: Network) -> Result<Self, ParseError> {
+        Self::with_buffer_size(path, network, DEFAULT_BUFFER_SIZE)
+    }
+
+    /// Create a new block file reader with custom buffer size
+    ///
+    /// # Arguments
+    /// * `path` - Path to the `.blk` file
+    /// * `network` - Bitcoin network (determines magic bytes to expect)
+    /// * `buffer_size` - Size of the read buffer in bytes
+    ///
+    /// # Returns
+    /// A new reader or an error if the file cannot be opened
+    ///
+    /// # Example
+    /// ```no_run
+    /// use bitcoin_chain_graph::parser::BlockFileReader;
+    /// use bitcoin::Network;
+    ///
+    /// // Use larger 16MB buffer for faster reading
+    /// let mut reader = BlockFileReader::with_buffer_size(
+    ///     "blk00000.dat",
+    ///     Network::Bitcoin,
+    ///     16 * 1024 * 1024
+    /// ).unwrap();
+    /// ```
+    pub fn with_buffer_size(path: &str, network: Network, buffer_size: usize) -> Result<Self, ParseError> {
         let file = File::open(path)?;
-        let reader = BufReader::with_capacity(8 * 1024 * 1024, file); // 8MB buffer
+        let reader = BufReader::with_capacity(buffer_size, file);
 
         let magic_bytes = match network {
-            Network::Bitcoin => [0xF9, 0xBE, 0xB4, 0xD9],
-            Network::Testnet => [0x0B, 0x11, 0x09, 0x07],
-            Network::Regtest => [0xFA, 0xBF, 0xB5, 0xDA],
-            _ => {
-                return Err(ParseError::InvalidMagic {
-                    expected: 0,
-                    got: 0,
-                })
-            }
+            Network::Bitcoin => &MAGIC_MAINNET,
+            Network::Testnet => &MAGIC_TESTNET,
+            Network::Regtest => &MAGIC_REGTEST,
+            _ => return Err(ParseError::UnsupportedNetwork),
         };
 
         Ok(Self {
@@ -94,8 +126,8 @@ impl BlockFileReader {
         }
 
         // Verify magic bytes
-        if magic != self.magic_bytes {
-            let expected = u32::from_le_bytes(self.magic_bytes);
+        if magic != *self.magic_bytes {
+            let expected = u32::from_le_bytes(*self.magic_bytes);
             let got = u32::from_le_bytes(magic);
             return Err(ParseError::InvalidMagic { expected, got });
         }
