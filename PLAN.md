@@ -28,7 +28,7 @@ This document will be updated as milestones are completed:
 - [x] M3: Domain Models ✅ **Completed 2025-01-23**
 - [x] M4: GraphWriter Trait ✅ **Completed 2025-01-23**
 - [x] M5: Ingestion Orchestrator ✅ **Completed 2025-01-23**
-- [ ] M6: Neo4j Writer Implementation
+- [x] M6: Neo4j Writer Implementation ✅ **Completed 2025-01-23**
 - [ ] M7: UTXO Cache
 - [ ] M8: Checkpoint Management
 - [ ] M9: CLI Application
@@ -232,36 +232,129 @@ This document will be updated as milestones are completed:
 
 ---
 
-## Milestone 7: UTXO Cache (Domain Layer)
-**Goal**: Efficient UTXO lookups
-**Duration**: 2-3 hours
-**Deliverable**: LRU cache for outputs
+## Milestone 7: UTXO Cache + Rust-Based Calculations (Performance Optimization)
+**Goal**: Move calculations from Neo4j to Rust for 10-100x speedup
+**Duration**: 4-6 hours
+**Deliverable**: UTXO cache + Rust-based Phase 5 & 6
+
+### Context
+**Current bottleneck**: Phase 5 (calculate amounts) and Phase 6 (simplified layer) perform expensive Neo4j graph traversals:
+- Phase 5: 1 query per block (sum input/output amounts via traversal)
+- Phase 6: 2 queries per block (3-4 hop traversals for PERFORMS/BENEFITS_TO)
+- **Total**: 3 expensive queries × 850,000 blocks = 2.55M graph traversals
+
+**Optimization**: Calculate in Rust using UTXO cache + fallback to Neo4j for cache misses
 
 ### Tasks
+
+#### Part 1: UTXO Cache Implementation
 1. **Implement `UtxoCache`**
    - Location: `src/domain/utxo/cache.rs`
    - Use `lru = "0.12"` crate
-   - Cache-first lookups
-   - Fallback to `GraphWriter::lookup_output()`
-   - Track hit rate metrics
+   - Cache OutputData by output_id (txid:index)
+   - Configurable size (default: 100,000 entries)
+   - LRU eviction for memory management
 
-2. **Integration with orchestrator**
-   - Add UTXO cache to `IngestionOrchestrator`
-   - Use in Phase 4 (input SPENDS lookups)
+2. **Cache operations**
+   - `insert(output_id, OutputData)` - Add to cache
+   - `get(output_id) -> Option<OutputData>` - Cache lookup
+   - `remove(output_id)` - Mark as spent (remove from cache)
+   - Track metrics: hits, misses, hit_rate
 
-3. **Write performance tests**
-   - Test: Cache hit for recent outputs
-   - Test: Cache miss queries database
-   - Benchmark: Ingestion speed with cache
+#### Part 2: Phase 5 - Rust-Based Amount Calculation
+3. **Extend TransactionData model**
+   - Location: `src/domain/models.rs`
+   - Add fields: `total_input: u64`, `total_output: u64`, `fee: u64`
+   - Calculate during ingestion, not in Neo4j
+
+4. **Implement calculate_amounts() in Rust**
+   - Location: `src/domain/ingestion.rs` (Phase 5)
+   - For each transaction:
+     - `total_output = sum(transaction.outputs.amount)` (easy - current block)
+     - `total_input = sum(previous_outputs.amount)` (requires UTXO cache):
+       - For each input: lookup previous output in cache
+       - **Cache hit**: Use cached amount (fast)
+       - **Cache miss**: Call `writer.lookup_output()` from Neo4j (fallback)
+     - `fee = total_input - total_output` (0 for coinbase)
+   - Set fields on TransactionData
+   - Write to Neo4j with amounts already calculated
+
+5. **Update Neo4j queries**
+   - Remove `CALCULATE_AMOUNTS_QUERY` (no longer needed)
+   - Add `total_input`, `total_output`, `fee` fields to `CREATE_TRANSACTIONS_QUERY`
+
+#### Part 3: Phase 6 - Rust-Based Simplified Layer
+6. **Create new data structures**
+   - Location: `src/domain/models.rs`
+   - `PerformsData { from_address: String, to_txid: String, input_count: u32, amount_spent: u64 }`
+   - `BenefitsToData { from_txid: String, to_address: String, output_count: u32, amount_received: u64 }`
+
+7. **Implement build_simplified_layer() in Rust**
+   - Location: `src/domain/ingestion.rs` (Phase 6)
+   - For each transaction:
+     - **PERFORMS relationships**: For each input:
+       - Lookup previous output in UTXO cache (or Neo4j fallback)
+       - Extract address from previous output
+       - Aggregate: `(address → transaction, count, sum_amounts)`
+     - **BENEFITS_TO relationships**: For each output:
+       - Extract address from current output (already in memory)
+       - Aggregate: `(transaction → address, count, sum_amounts)`
+   - Build `Vec<PerformsData>` and `Vec<BenefitsToData>`
+   - Batch write to Neo4j
+
+8. **Add GraphWriter methods**
+   - Location: `src/writer/trait.rs`
+   - `write_performs(&[PerformsData])` - Bulk create PERFORMS relationships
+   - `write_benefits_to(&[BenefitsToData])` - Bulk create BENEFITS_TO relationships
+
+9. **Update Neo4j queries**
+   - Remove `CREATE_PERFORMS_QUERY` and `CREATE_BENEFITS_TO_QUERY` (graph traversal versions)
+   - Add new bulk queries:
+     - `CREATE_PERFORMS_BULK_QUERY` - Takes PerformsData array
+     - `CREATE_BENEFITS_TO_BULK_QUERY` - Takes BenefitsToData array
+
+#### Part 4: Integration & Testing
+10. **Update IngestionOrchestrator**
+    - Add UTXO cache field
+    - Phase 3 (write outputs): Insert outputs into cache
+    - Phase 4 (write inputs): Use cache for lookups, track cache hits/misses
+    - Phase 5: Calculate amounts in Rust (no Neo4j query)
+    - Phase 6: Build simplified layer in Rust (no Neo4j traversal queries)
+
+11. **Handle edge cases**
+    - **Dormant accounts** (output created 2012, spent 2026):
+      - UTXO cache miss → fallback to `lookup_output()` → works correctly
+    - **Coinbase transactions**: `total_input = 0`, `fee = 0`
+    - **Cache eviction**: LRU automatically evicts old UTXOs (acceptable)
+
+12. **Performance tests**
+    - Test: Cache hit rate >99% for sequential blocks
+    - Test: Cache miss correctly queries Neo4j
+    - Benchmark: Ingestion speed improvement (expect 10-100x)
+    - Test: Multi-file ingestion with 1000+ blocks
 
 ### Acceptance Criteria
-- ✅ >99% cache hit rate on early blocks
-- ✅ Graceful fallback to database
-- ✅ Configurable cache size
+- ✅ UTXO cache with >99% hit rate on sequential blocks
+- ✅ Graceful Neo4j fallback for cache misses (dormant UTXOs)
+- ✅ Phase 5 calculates amounts in Rust (no Neo4j traversal)
+- ✅ Phase 6 builds simplified layer in Rust (no Neo4j traversal)
+- ✅ TransactionData includes total_input, total_output, fee fields
+- ✅ Configurable cache size via config file
+- ✅ 10-100x ingestion speedup measured in tests
+- ✅ All existing tests still pass
+
+### Performance Impact
+**Before**: 3 expensive Neo4j queries per block
+**After**:
+- Phase 3: Insert into cache (in-memory, instant)
+- Phase 4-6: Cache lookups (in-memory, instant) with rare Neo4j fallback for old UTXOs
+- **Expected speedup**: 10-100x for ingestion (2.55M queries → ~10k cache miss queries)
 
 ### References
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md:168-190) - UTXO cache abstraction
 - [rust/MEMORY_STRATEGY.md](docs/rust/MEMORY_STRATEGY.md) - Cache sizing
+- [INGESTION_ARCHITECTURE.md](docs/INGESTION_ARCHITECTURE.md) - Phase 5 & 6 details
+- Current session: Performance bottleneck analysis and optimization strategy
 
 ---
 
@@ -521,11 +614,12 @@ This document will be updated as milestones are completed:
 
 ## Development Notes
 
-### Current Milestone: M6 - Neo4j Writer Implementation
+### Current Milestone: M7 - UTXO Cache
 
 ### Blockers: None
 
 ### Recent Updates:
+- 2025-01-23: **M6 completed** - Neo4jWriter with full GraphWriter trait implementation (11 methods), schema initialization (constraints + indexes), checkpoint functionality (create/update/get/complete), 3 live integration tests (genesis, 10-block load, checkpoint resume), all Cypher queries centralized in queries.rs and parameterized, connection pooling with configurable pool size
 - 2025-01-23: **M5 completed** - IngestionOrchestrator with 6-phase ingestion process (Block→Transaction→Output→Input→Amounts→Simplified), 9 comprehensive integration tests including 100-block performance test, all tests complete in <1s with MockWriter
 - 2025-01-23: **M4 completed** - GraphWriter trait with MockWriter implementation, 14 integration tests passing, no Neo4j dependencies yet
 - 2025-01-23: **M3 completed** - Domain models (BlockData, TransactionData, OutputData, InputData, CheckpointData) with conversion functions from bitcoin crate types, 5 comprehensive tests passing

@@ -106,6 +106,7 @@
 //! Currently at Milestone 3 (M3) - Domain models complete. See [PLAN.md](https://github.com/yourusername/bitcoin-chain-graph/blob/main/PLAN.md)
 //! for development roadmap and progress tracking.
 
+pub mod config;
 pub mod parser;
 pub mod domain;
 pub mod writer;

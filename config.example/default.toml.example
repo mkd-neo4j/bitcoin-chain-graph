@@ -1,0 +1,46 @@
+# Default Configuration Profile
+# Balanced configuration suitable for standard servers (4-8 cores, 8-16GB RAM)
+
+[bitcoin]
+# Path to Bitcoin blocks directory containing .blk files
+# Update this to match your Bitcoin Core installation
+blocks_dir = "/data/bitcoin/blocks"
+
+# Starting block height for ingestion (0 = genesis block)
+start_height = 0
+
+# Optional ending block height (commented = sync to chain tip)
+# end_height = 100000
+
+[neo4j]
+# Neo4j connection settings
+uri = "bolt://localhost:7687"
+user = "neo4j"
+password = "CHANGE_ME"
+database = "neo4j"
+
+# Balanced connection pool settings
+max_connections = 10
+min_connections = 2
+connection_timeout_secs = 30
+fetch_size = 500
+max_retries = 3
+
+[ingestion]
+# Ingestion process settings
+batch_size = 50
+max_batch_memory_mb = 512
+
+# Enable validation for data integrity
+enable_validation = true
+validate_every_n_blocks = 1000
+
+[performance]
+# Performance tuning settings
+utxo_cache_size = 100000
+
+# Moderate parallelism for balanced throughput
+parallel_batches = 4
+
+# Progress reporting interval
+progress_report_interval = 100

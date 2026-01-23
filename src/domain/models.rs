@@ -122,8 +122,8 @@ pub struct InputData {
 /// Tracks progress to enable resume-on-failure.
 #[derive(Clone, Debug)]
 pub struct CheckpointData {
-    /// Last successfully ingested block height
-    pub last_processed_height: u32,
+    /// Last successfully ingested block height (-1 for initial state)
+    pub last_processed_height: i32,
     /// Hash of last processed block (for verification)
     pub last_processed_hash: String,
     /// Name of .blk file being processed (e.g., "blk00000.dat")

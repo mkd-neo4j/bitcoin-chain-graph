@@ -1,0 +1,196 @@
+//! Conversions from domain models to Neo4j BoltType format
+//!
+//! These functions convert our domain models into the format expected by neo4rs
+//! for bulk operations with UNWIND.
+
+use crate::domain::{BlockData, TransactionData, OutputData, InputData};
+use crate::writer::WriterError;
+use neo4rs::{BoltType, BoltMap};
+
+#[cfg(test)]
+use neo4rs::BoltString;
+
+/// Convert BlockData to BoltMap for Neo4j
+pub fn block_to_bolt_map(block: &BlockData) -> BoltMap {
+    let mut map = BoltMap::new();
+    map.put("height".into(), (block.height as i64).into());
+    map.put("hash".into(), block.hash.as_str().into());
+    map.put("previousHash".into(), block.previous_hash.as_str().into());
+    map.put("merkleRoot".into(), block.merkle_root.as_str().into());
+    map.put("timestamp".into(), block.timestamp.into());
+    map.put("bits".into(), block.bits.as_str().into());
+    map.put("difficulty".into(), block.difficulty.into());
+    map.put("nonce".into(), (block.nonce as i64).into());
+    map.put("version".into(), (block.version as i64).into());
+    map.put("txCount".into(), (block.tx_count as i64).into());
+    map.put("size".into(), (block.size as i64).into());
+    map.put("weight".into(), (block.weight as i64).into());
+    map
+}
+
+/// Convert slice of BlockData to Vec<BoltType>
+pub fn blocks_to_bolt_list(blocks: &[BlockData]) -> Result<Vec<BoltType>, WriterError> {
+    Ok(blocks.iter()
+        .map(|b| BoltType::Map(block_to_bolt_map(b)))
+        .collect())
+}
+
+/// Convert TransactionData to BoltMap for Neo4j
+pub fn transaction_to_bolt_map(tx: &TransactionData) -> BoltMap {
+    let mut map = BoltMap::new();
+    map.put("txid".into(), tx.txid.as_str().into());
+    map.put("blockHeight".into(), (tx.block_height as i64).into());
+    map.put("blockHash".into(), tx.block_hash.as_str().into());
+    map.put("timestamp".into(), tx.timestamp.into());
+    map.put("version".into(), (tx.version as i64).into());
+    map.put("locktime".into(), (tx.locktime as i64).into());
+    map.put("size".into(), (tx.size as i64).into());
+    map.put("vsize".into(), (tx.vsize as i64).into());
+    map.put("weight".into(), (tx.weight as i64).into());
+    map.put("isCoinbase".into(), tx.is_coinbase.into());
+    map
+}
+
+/// Convert slice of TransactionData to Vec<BoltType>
+pub fn transactions_to_bolt_list(transactions: &[TransactionData]) -> Result<Vec<BoltType>, WriterError> {
+    Ok(transactions.iter()
+        .map(|tx| BoltType::Map(transaction_to_bolt_map(tx)))
+        .collect())
+}
+
+/// Convert OutputData to BoltMap for Neo4j
+pub fn output_to_bolt_map(output: &OutputData) -> BoltMap {
+    let mut map = BoltMap::new();
+    map.put("outputId".into(), output.output_id.as_str().into());
+    map.put("outputIndex".into(), (output.output_index as i64).into());
+    map.put("txid".into(), output.txid.as_str().into());
+    map.put("amount".into(), (output.amount as i64).into());
+    map.put("scriptPubKey".into(), output.script_pubkey.as_str().into());
+    map.put("scriptType".into(), output.script_type.as_str().into());
+
+    // Include address if present (for LOCKED_TO relationships)
+    if let Some(ref address) = output.address {
+        map.put("address".into(), address.as_str().into());
+    }
+
+    map
+}
+
+/// Convert slice of OutputData to Vec<BoltType>
+pub fn outputs_to_bolt_list(outputs: &[OutputData]) -> Result<Vec<BoltType>, WriterError> {
+    Ok(outputs.iter()
+        .map(|o| BoltType::Map(output_to_bolt_map(o)))
+        .collect())
+}
+
+/// Filter outputs that have addresses (for LOCKED_TO relationships)
+pub fn filter_outputs_with_address(outputs: &[OutputData]) -> Vec<&OutputData> {
+    outputs.iter().filter(|o| o.address.is_some()).collect()
+}
+
+/// Convert InputData to BoltMap for Neo4j
+pub fn input_to_bolt_map(input: &InputData, block_height: u32) -> BoltMap {
+    let mut map = BoltMap::new();
+    map.put("inputId".into(), input.input_id.as_str().into());
+    map.put("inputIndex".into(), (input.input_index as i64).into());
+    map.put("txid".into(), input.txid.as_str().into());
+    map.put("previousTxid".into(), input.previous_txid.as_str().into());
+    map.put("previousOutputIndex".into(), (input.previous_output_index as i64).into());
+    map.put("scriptSig".into(), input.script_sig.as_str().into());
+    map.put("sequence".into(), (input.sequence as i64).into());
+
+    // Convert witness Vec<String> to Vec<BoltType> for list
+    let witness_list: Vec<BoltType> = input.witness.iter()
+        .map(|w| BoltType::String(w.as_str().into()))
+        .collect();
+    map.put("witness".into(), BoltType::List(witness_list.into()));
+
+    map.put("blockHeight".into(), (block_height as i64).into());
+    map
+}
+
+/// Convert slice of InputData to Vec<BoltType> with block height
+pub fn inputs_to_bolt_list(inputs: &[InputData], block_height: u32) -> Result<Vec<BoltType>, WriterError> {
+    Ok(inputs.iter()
+        .map(|input| BoltType::Map(input_to_bolt_map(input, block_height)))
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_block_conversion() {
+        let block = BlockData {
+            height: 0,
+            hash: "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string(),
+            previous_hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            merkle_root: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b".to_string(),
+            timestamp: 1231006505,
+            bits: "1d00ffff".to_string(),
+            difficulty: 1.0,
+            nonce: 2083236893,
+            version: 1,
+            tx_count: 1,
+            size: 285,
+            weight: 1140,
+        };
+
+        let map = block_to_bolt_map(&block);
+
+        // Verify key properties were converted
+        assert!(map.value.contains_key(&BoltString::from("height")));
+        assert!(map.value.contains_key(&BoltString::from("hash")));
+        assert!(map.value.contains_key(&BoltString::from("timestamp")));
+    }
+
+    #[test]
+    fn test_transaction_conversion() {
+        let tx = TransactionData {
+            txid: "abc123".to_string(),
+            block_height: 100,
+            block_hash: "block_hash".to_string(),
+            timestamp: 1234567890,
+            version: 1,
+            locktime: 0,
+            size: 250,
+            vsize: 125,
+            weight: 500,
+            is_coinbase: false,
+        };
+
+        let map = transaction_to_bolt_map(&tx);
+
+        assert!(map.value.contains_key(&BoltString::from("txid")));
+        assert!(map.value.contains_key(&BoltString::from("isCoinbase")));
+    }
+
+    #[test]
+    fn test_output_with_address_filtering() {
+        let outputs = vec![
+            OutputData {
+                output_id: "tx1:0".to_string(),
+                output_index: 0,
+                txid: "tx1".to_string(),
+                amount: 5000000000,
+                script_pubkey: "76a914...".to_string(),
+                script_type: "P2PKH".to_string(),
+                address: Some("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa".to_string()),
+            },
+            OutputData {
+                output_id: "tx1:1".to_string(),
+                output_index: 1,
+                txid: "tx1".to_string(),
+                amount: 0,
+                script_pubkey: "6a...".to_string(),
+                script_type: "NULL_DATA".to_string(),
+                address: None,
+            },
+        ];
+
+        let with_address = filter_outputs_with_address(&outputs);
+        assert_eq!(with_address.len(), 1);
+        assert!(with_address[0].address.is_some());
+    }
+}

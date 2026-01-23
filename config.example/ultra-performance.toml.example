@@ -1,0 +1,46 @@
+# Ultra Performance Configuration Profile
+# Optimized for maximum-throughput servers (40+ cores, 128GB+ RAM)
+# Suitable for bulk historical ingestion on dedicated hardware
+
+[bitcoin]
+# Path to Bitcoin blocks directory containing .blk files
+blocks_dir = "/data/bitcoin/blocks"
+
+# Starting block height for ingestion (0 = genesis block)
+start_height = 0
+
+# Optional ending block height (commented = sync to chain tip)
+# end_height = 870000
+
+[neo4j]
+# Neo4j connection settings
+uri = "bolt://localhost:7687"
+user = "neo4j"
+password = "CHANGE_ME"
+database = "neo4j"
+
+# Aggressive connection pool for maximum parallelism
+max_connections = 100
+min_connections = 16
+connection_timeout_secs = 30
+fetch_size = 5000
+max_retries = 3
+
+[ingestion]
+# Massive batches for extreme throughput
+batch_size = 500
+max_batch_memory_mb = 4096
+
+# Validation enabled with very infrequent checks
+enable_validation = true
+validate_every_n_blocks = 10000
+
+[performance]
+# Massive cache for high hit rate
+utxo_cache_size = 10000000
+
+# Maximum parallelism for dedicated hardware
+parallel_batches = 32
+
+# Infrequent progress reports for maximum speed
+progress_report_interval = 1000

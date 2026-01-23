@@ -17,7 +17,7 @@
 //! See [INGESTION_ARCHITECTURE.md](../../docs/INGESTION_ARCHITECTURE.md) for detailed design.
 
 use bitcoin::{Block, Network};
-use crate::domain::{BlockData, TransactionData, OutputData, InputData};
+use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData};
 use crate::writer::{GraphWriter, Result};
 use std::sync::Arc;
 
@@ -63,15 +63,57 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
         }
     }
 
-    /// Initialize database schema
+    /// Initialize database schema and checkpoint
     ///
-    /// Creates all required constraints and indexes. Should be called once
+    /// Creates all required constraints and indexes, and initializes the
+    /// ingestion checkpoint if it doesn't already exist. Should be called once
     /// before starting ingestion.
     ///
     /// # Errors
     /// Returns error if schema initialization fails.
     pub async fn init_schema(&self) -> Result<()> {
-        self.writer.init_schema().await
+        self.writer.init_schema().await?;
+
+        // Create checkpoint if it doesn't exist
+        if self.writer.get_checkpoint().await?.is_none() {
+            self.writer.create_checkpoint().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Get the last processed block height from checkpoint
+    ///
+    /// Returns the height to resume from. If no checkpoint exists or checkpoint
+    /// is at -1 (initial state), returns 0 to start from genesis.
+    ///
+    /// # Returns
+    /// The block height to start/resume ingestion from
+    ///
+    /// # Errors
+    /// Returns error if checkpoint query fails
+    pub async fn get_resume_height(&self) -> Result<u32> {
+        match self.writer.get_checkpoint().await? {
+            Some(checkpoint) => {
+                if checkpoint.last_processed_height < 0 {
+                    Ok(0) // Start from genesis (checkpoint at -1)
+                } else {
+                    Ok((checkpoint.last_processed_height + 1) as u32) // Resume from next block
+                }
+            }
+            None => Ok(0), // No checkpoint, start from genesis
+        }
+    }
+
+    /// Mark ingestion as complete
+    ///
+    /// Updates the checkpoint status to "completed" when all blocks have been
+    /// successfully ingested.
+    ///
+    /// # Errors
+    /// Returns error if checkpoint update fails
+    pub async fn mark_complete(&self) -> Result<()> {
+        self.writer.mark_checkpoint_complete().await
     }
 
     /// Ingest a single block through all 6 phases
@@ -79,9 +121,14 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
     /// Processes one block completely before moving to the next. This ensures
     /// all dependencies are satisfied (outputs exist before inputs reference them).
     ///
+    /// After successful ingestion, updates the checkpoint with the current block's
+    /// information for resume capability.
+    ///
     /// # Arguments
     /// * `block` - Bitcoin block from parser
     /// * `height` - Block height (0 = genesis)
+    /// * `file_name` - Name of the .blk file being processed (e.g., "blk00000.dat")
+    /// * `file_offset` - Optional byte offset within the file for precise resume
     ///
     /// # Returns
     /// Ok(()) if all 6 phases complete successfully
@@ -89,7 +136,13 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
     /// # Errors
     /// Returns error if any phase fails. The transaction should be rolled back
     /// to maintain consistency.
-    pub async fn ingest_block(&self, block: &Block, height: u32) -> Result<()> {
+    pub async fn ingest_block(
+        &self,
+        block: &Block,
+        height: u32,
+        file_name: &str,
+        file_offset: Option<u64>,
+    ) -> Result<()> {
         // Phase 1: Create Block node
         self.ingest_block_node(block, height).await?;
 
@@ -107,6 +160,18 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
 
         // Phase 6: Create simplified layer relationships
         self.write_simplified_layer(block).await?;
+
+        // Update checkpoint after successful ingestion
+        let checkpoint = CheckpointData {
+            last_processed_height: height as i32,
+            last_processed_hash: block.block_hash().to_string(),
+            last_processed_file: file_name.to_string(),
+            last_processed_file_offset: file_offset,
+            timestamp: chrono::Utc::now().timestamp(),
+            status: "in_progress".to_string(),
+        };
+
+        self.writer.update_checkpoint(&checkpoint).await?;
 
         Ok(())
     }

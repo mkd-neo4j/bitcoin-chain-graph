@@ -203,20 +203,6 @@ mod tests {
         assert!(diff2 > 1.0, "Higher difficulty should be > 1.0");
     }
 
-    #[test]
-    fn test_block_conversion_genesis() {
-        // Genesis block raw data (first 285 bytes of blk00000.dat after magic+size)
-        let genesis_hex = include_str!("../../test_data/genesis_block.hex");
-        let genesis_bytes = hex::decode(genesis_hex.trim()).unwrap();
-        let genesis: Block = deserialize(&genesis_bytes).unwrap();
-
-        let block_data = BlockData::from_block(&genesis, 0);
-
-        assert_eq!(block_data.height, 0);
-        assert_eq!(block_data.hash, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
-        assert_eq!(block_data.version, 1);
-        assert_eq!(block_data.timestamp, 1231006505);
-        assert_eq!(block_data.tx_count, 1);
-        assert!((block_data.difficulty - 1.0).abs() < 0.01);
-    }
+    // Note: Genesis block conversion is already tested in tests/ingestion.rs
+    // using real .blk files, so no need for a redundant hex-based test here
 }

@@ -7,6 +7,7 @@
 //! # Architecture
 //! - `traits::GraphWriter` - Database abstraction trait
 //! - `mock::MockWriter` - In-memory implementation for testing
+//! - `neo4j::Neo4jWriter` - Production Neo4j implementation
 //! - `error::WriterError` - Error types for writer operations
 //!
 //! # Example
@@ -23,7 +24,9 @@
 mod error;
 mod traits;
 pub mod mock;
+pub mod neo4j;
 
 pub use error::{WriterError, Result};
 pub use traits::GraphWriter;
 pub use mock::MockWriter;
+pub use neo4j::Neo4jWriter;

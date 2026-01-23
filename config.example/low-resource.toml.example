@@ -1,0 +1,46 @@
+# Low Resource Configuration Profile
+# Optimized for minimal systems (1-2 cores, 2GB RAM)
+# Suitable for laptops, small VPS, or testing environments
+
+[bitcoin]
+# Path to Bitcoin blocks directory containing .blk files
+blocks_dir = "./test_data/blocks"
+
+# Starting block height for ingestion (0 = genesis block)
+start_height = 0
+
+# Optional ending block height (commented = sync to chain tip)
+# end_height = 1000
+
+[neo4j]
+# Neo4j connection settings
+uri = "bolt://localhost:7687"
+user = "neo4j"
+password = "CHANGE_ME"
+database = "neo4j"
+
+# Minimal connection pool for low-resource systems
+max_connections = 2
+min_connections = 1
+connection_timeout_secs = 30
+fetch_size = 100
+max_retries = 3
+
+[ingestion]
+# Small batches to conserve memory
+batch_size = 10
+max_batch_memory_mb = 128
+
+# Disable validation to save resources
+enable_validation = false
+validate_every_n_blocks = 10000
+
+[performance]
+# Minimal cache and parallelism
+utxo_cache_size = 10000
+
+# Sequential processing (no parallelism)
+parallel_batches = 1
+
+# Frequent progress reports for slower ingestion
+progress_report_interval = 50

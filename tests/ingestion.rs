@@ -35,7 +35,7 @@ async fn test_ingest_genesis_block_all_phases() {
     let genesis = reader.next_block().unwrap().expect("Genesis block should exist");
 
     // Ingest genesis block
-    orchestrator.ingest_block(&genesis, 0).await.unwrap();
+    orchestrator.ingest_block(&genesis, 0, "blk00000.dat", None).await.unwrap();
 
     // Verify Phase 1: Block node
     let blocks = writer.get_blocks().await;
@@ -93,7 +93,7 @@ async fn test_ingest_first_10_blocks() {
 
     for height in 0..10 {
         let block = reader.next_block().unwrap().expect("Block should exist");
-        orchestrator.ingest_block(&block, height).await.unwrap();
+        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
     }
 
     // Verify all blocks were written
@@ -139,7 +139,7 @@ async fn test_block_ordering() {
     // Ingest blocks 0, 1, 2
     for height in 0..3 {
         let block = reader.next_block().unwrap().expect("Block should exist");
-        orchestrator.ingest_block(&block, height).await.unwrap();
+        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
     }
 
     let blocks = writer.get_blocks().await;
@@ -169,7 +169,7 @@ async fn test_all_phases_complete_successfully() {
     let genesis = reader.next_block().unwrap().expect("Genesis block should exist");
 
     // This should complete all 6 phases without error
-    let result = orchestrator.ingest_block(&genesis, 0).await;
+    let result = orchestrator.ingest_block(&genesis, 0, "blk00000.dat", None).await;
     assert!(result.is_ok(), "All 6 phases should complete successfully");
 
     // Verify data was written by each phase
@@ -195,7 +195,7 @@ async fn test_ingest_100_blocks_performance() {
 
     for height in 0..100 {
         let block = reader.next_block().unwrap().expect("Block should exist");
-        orchestrator.ingest_block(&block, height).await.unwrap();
+        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
     }
 
     let duration = start.elapsed();
@@ -224,7 +224,7 @@ async fn test_phase3_address_derivation() {
     // Ingest first 5 blocks
     for height in 0..5 {
         let block = reader.next_block().unwrap().expect("Block should exist");
-        orchestrator.ingest_block(&block, height).await.unwrap();
+        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
     }
 
     let outputs = writer.get_outputs().await;
@@ -260,7 +260,7 @@ async fn test_phase4_coinbase_inputs() {
     // Ingest first 10 blocks (all coinbase)
     for height in 0..10 {
         let block = reader.next_block().unwrap().expect("Block should exist");
-        orchestrator.ingest_block(&block, height).await.unwrap();
+        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
     }
 
     let inputs = writer.get_inputs().await;
@@ -296,11 +296,11 @@ async fn test_concurrent_orchestrators() {
 
     // Ingest different blocks concurrently
     let handle1 = tokio::spawn(async move {
-        orchestrator1.ingest_block(&genesis, 0).await
+        orchestrator1.ingest_block(&genesis, 0, "blk00000.dat", None).await
     });
 
     let handle2 = tokio::spawn(async move {
-        orchestrator2.ingest_block(&block1, 1).await
+        orchestrator2.ingest_block(&block1, 1, "blk00000.dat", None).await
     });
 
     // Both should succeed
