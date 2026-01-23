@@ -2,6 +2,15 @@
 name = "bitcoin-chain-graph"
 version = "0.1.0"
 edition = "2021"
+authors = ["Michael Down <michael@downuk.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/mkd-neo4j/bitcoin-chain-graph"
+homepage = "https://github.com/mkd-neo4j/bitcoin-chain-graph"
+documentation = "https://github.com/mkd-neo4j/bitcoin-chain-graph"
+description = "High-performance Bitcoin blockchain ingestion into Neo4j for forensic analysis"
+readme = "README.md"
+keywords = ["bitcoin", "blockchain", "neo4j", "graph", "forensics"]
+categories = ["database", "cryptography::cryptocurrencies"]
 
 [dependencies]
 bitcoin = "0.31"
