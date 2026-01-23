@@ -50,8 +50,8 @@ impl TransactionData {
     /// TransactionData with all properties extracted
     ///
     /// # Note
-    /// totalInput, totalOutput, and fee are calculated in later ingestion phases
-    /// (Phase 5) after SPENDS relationships are established.
+    /// total_input, total_output, and fee are initialized as None and will be
+    /// calculated in Phase 5 using the UTXO cache (Rust-based calculation).
     pub fn from_transaction(
         tx: &Transaction,
         block_height: u32,
@@ -69,6 +69,9 @@ impl TransactionData {
             vsize: tx.vsize(),
             weight: tx.weight().to_wu() as usize,
             is_coinbase: tx.is_coinbase(),
+            total_input: None,
+            total_output: None,
+            fee: None,
         }
     }
 }
@@ -188,7 +191,6 @@ fn difficulty_from_bits(bits: u32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoin::consensus::deserialize;
 
     #[test]
     fn test_difficulty_calculation() {

@@ -45,7 +45,8 @@ pub struct BlockData {
 /// Transaction data extracted from blockchain
 ///
 /// Maps directly to Transaction node properties in Neo4j.
-/// Note: totalInput, totalOutput, and fee are calculated in later ingestion phases.
+/// Amount fields (total_input, total_output, fee) are calculated in Rust during
+/// Phase 5 using the UTXO cache, avoiding expensive Neo4j graph traversals.
 #[derive(Clone, Debug)]
 pub struct TransactionData {
     /// Transaction hash (unique identifier)
@@ -68,6 +69,12 @@ pub struct TransactionData {
     pub weight: usize,
     /// True if this is a coinbase (mining reward) transaction
     pub is_coinbase: bool,
+    /// Total input amount in satoshis (calculated in Phase 5)
+    pub total_input: Option<u64>,
+    /// Total output amount in satoshis (calculated in Phase 5)
+    pub total_output: Option<u64>,
+    /// Transaction fee in satoshis (calculated in Phase 5)
+    pub fee: Option<u64>,
 }
 
 /// Output data extracted from transaction
@@ -134,4 +141,42 @@ pub struct CheckpointData {
     pub timestamp: i64,
     /// Current status: "in_progress", "completed", "paused", "error"
     pub status: String,
+}
+
+/// PERFORMS relationship data (Address → Transaction)
+///
+/// Represents aggregated information about addresses performing transactions
+/// (sending funds via inputs). Calculated in Rust during Phase 6 using UTXO cache,
+/// avoiding expensive Neo4j graph traversals.
+///
+/// Maps to PERFORMS relationships with properties in Neo4j.
+#[derive(Clone, Debug)]
+pub struct PerformsData {
+    /// Address performing the transaction (sending funds)
+    pub from_address: String,
+    /// Transaction ID being performed
+    pub to_txid: String,
+    /// Number of inputs from this address in this transaction
+    pub input_count: u32,
+    /// Total amount spent by this address in this transaction (satoshis)
+    pub amount_spent: u64,
+}
+
+/// BENEFITS_TO relationship data (Transaction → Address)
+///
+/// Represents aggregated information about addresses receiving transaction outputs
+/// (receiving funds via outputs). Calculated in Rust during Phase 6 using UTXO cache,
+/// avoiding expensive Neo4j graph traversals.
+///
+/// Maps to BENEFITS_TO relationships with properties in Neo4j.
+#[derive(Clone, Debug)]
+pub struct BenefitsToData {
+    /// Transaction ID providing the benefit
+    pub from_txid: String,
+    /// Address receiving the benefit
+    pub to_address: String,
+    /// Number of outputs to this address in this transaction
+    pub output_count: u32,
+    /// Total amount received by this address in this transaction (satoshis)
+    pub amount_received: u64,
 }

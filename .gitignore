@@ -1,5 +1,5 @@
 # Test Data
-test_data/*.dat
+test_data/*
 
 # Rust
 /target

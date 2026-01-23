@@ -80,10 +80,6 @@ async fn create_indexes(graph: &Graph) -> Result<()> {
         "CREATE INDEX output_script_type IF NOT EXISTS
          FOR (o:Output) ON (o.scriptType)",
 
-        // Input indexes (for looking up previous outputs)
-        "CREATE INDEX input_previous_tx IF NOT EXISTS
-         FOR (i:Input) ON (i.previousTxid)",
-
         // Block indexes
         "CREATE INDEX block_timestamp IF NOT EXISTS
          FOR (b:Block) ON (b.timestamp)",

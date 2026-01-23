@@ -10,7 +10,7 @@
 
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
-use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData};
+use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData};
 use super::traits::GraphWriter;
 use super::error::{Result, WriterError};
 
@@ -21,6 +21,8 @@ struct MockStorage {
     transactions: Vec<TransactionData>,
     outputs: Vec<OutputData>,
     inputs: Vec<InputData>,
+    performs: Vec<PerformsData>,
+    benefits_to: Vec<BenefitsToData>,
     checkpoint: Option<CheckpointData>,
     schema_initialized: bool,
 }
@@ -89,6 +91,18 @@ impl MockWriter {
         storage.inputs.clone()
     }
 
+    /// Get all stored PERFORMS relationships
+    pub async fn get_performs(&self) -> Vec<PerformsData> {
+        let storage = self.storage.lock().unwrap();
+        storage.performs.clone()
+    }
+
+    /// Get all stored BENEFITS_TO relationships
+    pub async fn get_benefits_to(&self) -> Vec<BenefitsToData> {
+        let storage = self.storage.lock().unwrap();
+        storage.benefits_to.clone()
+    }
+
     /// Get stored checkpoint
     pub async fn get_stored_checkpoint(&self) -> Option<CheckpointData> {
         let storage = self.storage.lock().unwrap();
@@ -108,6 +122,8 @@ impl MockWriter {
         storage.transactions.clear();
         storage.outputs.clear();
         storage.inputs.clear();
+        storage.performs.clear();
+        storage.benefits_to.clear();
         storage.checkpoint = None;
         storage.schema_initialized = false;
     }
@@ -168,15 +184,15 @@ impl GraphWriter for MockWriter {
         Ok(())
     }
 
-    async fn calculate_amounts(&self, _transactions: &[TransactionData]) -> Result<()> {
-        // No-op for mock writer - amounts would be calculated in real implementation
-        // This phase queries SPENDS relationships to sum inputs/outputs
+    async fn write_performs(&self, performs: &[PerformsData]) -> Result<()> {
+        let mut storage = self.storage.lock().unwrap();
+        storage.performs.extend_from_slice(performs);
         Ok(())
     }
 
-    async fn write_simplified_layer(&self, _transactions: &[TransactionData]) -> Result<()> {
-        // No-op for mock writer - simplified relationships would be created in real implementation
-        // This phase creates PERFORMS and BENEFITS_TO relationships
+    async fn write_benefits_to(&self, benefits_to: &[BenefitsToData]) -> Result<()> {
+        let mut storage = self.storage.lock().unwrap();
+        storage.benefits_to.extend_from_slice(benefits_to);
         Ok(())
     }
 

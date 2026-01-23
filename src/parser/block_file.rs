@@ -1,6 +1,6 @@
 use bitcoin::{Block, consensus::deserialize, Network};
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use thiserror::Error;
 
 /// Magic bytes for different Bitcoin networks
@@ -163,6 +163,73 @@ impl BlockFileReader {
     /// Get file path
     pub fn file_path(&self) -> &str {
         &self.file_path
+    }
+
+    /// Read block at specific file offset (for random access)
+    ///
+    /// This method seeks to a specific byte offset in the file and reads
+    /// the block at that position. Used by OrderedBlockIterator to read
+    /// blocks in blockchain height order rather than file order.
+    ///
+    /// # Arguments
+    /// * `offset` - Byte offset in file where block data starts
+    ///   (should point to magic bytes, not block header)
+    ///
+    /// # Returns
+    /// - `Ok(Some(Block))` - Successfully read and deserialized the block
+    /// - `Ok(None)` - Invalid offset or end of file
+    /// - `Err(ParseError)` - Parse error
+    ///
+    /// # Example
+    /// ```no_run
+    /// use bitcoin_chain_graph::parser::BlockFileReader;
+    /// use bitcoin::Network;
+    ///
+    /// let mut reader = BlockFileReader::new("test_data/blk00000.dat", Network::Bitcoin).unwrap();
+    /// // Read genesis block at offset 8 (after file header)
+    /// if let Some(block) = reader.read_block_at(8).unwrap() {
+    ///     println!("Block hash: {}", block.block_hash());
+    /// }
+    /// ```
+    pub fn read_block_at(&mut self, offset: u64) -> Result<Option<Block>, ParseError> {
+        // Seek to specified offset
+        self.reader.seek(SeekFrom::Start(offset))?;
+
+        // Read magic bytes (4 bytes)
+        let mut magic = [0u8; 4];
+        match self.reader.read_exact(&mut magic) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(None); // End of file or invalid offset
+            }
+            Err(e) => return Err(ParseError::Io(e)),
+        }
+
+        // Verify magic bytes
+        if magic != *self.magic_bytes {
+            let expected = u32::from_le_bytes(*self.magic_bytes);
+            let got = u32::from_le_bytes(magic);
+            return Err(ParseError::InvalidMagic { expected, got });
+        }
+
+        // Read block size (4 bytes, little-endian)
+        let mut size_bytes = [0u8; 4];
+        self.reader.read_exact(&mut size_bytes)?;
+        let block_size = u32::from_le_bytes(size_bytes) as usize;
+
+        // Validate block size (sanity check)
+        if block_size == 0 || block_size > 4_000_000 {
+            return Err(ParseError::InvalidBlockSize(block_size));
+        }
+
+        // Read block data
+        let mut block_data = vec![0u8; block_size];
+        self.reader.read_exact(&mut block_data)?;
+
+        // Deserialize block using bitcoin crate
+        let block: Block = deserialize(&block_data)?;
+
+        Ok(Some(block))
     }
 }
 

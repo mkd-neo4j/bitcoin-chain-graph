@@ -2,8 +2,11 @@
 //!
 //! These functions convert our domain models into the format expected by neo4rs
 //! for bulk operations with UNWIND.
+//!
+//! M7 updates: Added conversions for PerformsData and BenefitsToData, and updated
+//! transaction_to_bolt_map to include amount fields calculated in Rust.
 
-use crate::domain::{BlockData, TransactionData, OutputData, InputData};
+use crate::domain::{BlockData, TransactionData, OutputData, InputData, PerformsData, BenefitsToData};
 use crate::writer::WriterError;
 use neo4rs::{BoltType, BoltMap};
 
@@ -35,7 +38,7 @@ pub fn blocks_to_bolt_list(blocks: &[BlockData]) -> Result<Vec<BoltType>, Writer
         .collect())
 }
 
-/// Convert TransactionData to BoltMap for Neo4j
+/// Convert TransactionData to BoltMap for Neo4j (M7 - with amounts)
 pub fn transaction_to_bolt_map(tx: &TransactionData) -> BoltMap {
     let mut map = BoltMap::new();
     map.put("txid".into(), tx.txid.as_str().into());
@@ -48,6 +51,27 @@ pub fn transaction_to_bolt_map(tx: &TransactionData) -> BoltMap {
     map.put("vsize".into(), (tx.vsize as i64).into());
     map.put("weight".into(), (tx.weight as i64).into());
     map.put("isCoinbase".into(), tx.is_coinbase.into());
+
+    // M7: Add amount fields (calculated in Rust using UTXO cache)
+    // These fields may be None if not yet calculated (shouldn't happen in normal flow)
+    if let Some(total_input) = tx.total_input {
+        map.put("totalInput".into(), (total_input as i64).into());
+    } else {
+        map.put("totalInput".into(), 0i64.into());
+    }
+
+    if let Some(total_output) = tx.total_output {
+        map.put("totalOutput".into(), (total_output as i64).into());
+    } else {
+        map.put("totalOutput".into(), 0i64.into());
+    }
+
+    if let Some(fee) = tx.fee {
+        map.put("fee".into(), (fee as i64).into());
+    } else {
+        map.put("fee".into(), 0i64.into());
+    }
+
     map
 }
 
@@ -116,6 +140,44 @@ pub fn inputs_to_bolt_list(inputs: &[InputData], block_height: u32) -> Result<Ve
         .collect())
 }
 
+// =============================================================================
+// M7: PERFORMS AND BENEFITS_TO CONVERSIONS
+// =============================================================================
+
+/// Convert PerformsData to BoltMap for Neo4j (M7)
+pub fn performs_to_bolt_map(p: &PerformsData) -> BoltMap {
+    let mut map = BoltMap::new();
+    map.put("fromAddress".into(), p.from_address.as_str().into());
+    map.put("toTxid".into(), p.to_txid.as_str().into());
+    map.put("inputCount".into(), (p.input_count as i64).into());
+    map.put("amountSpent".into(), (p.amount_spent as i64).into());
+    map
+}
+
+/// Convert slice of PerformsData to Vec<BoltType>
+pub fn performs_to_bolt_list(performs: &[PerformsData]) -> Result<Vec<BoltType>, WriterError> {
+    Ok(performs.iter()
+        .map(|p| BoltType::Map(performs_to_bolt_map(p)))
+        .collect())
+}
+
+/// Convert BenefitsToData to BoltMap for Neo4j (M7)
+pub fn benefits_to_to_bolt_map(b: &BenefitsToData) -> BoltMap {
+    let mut map = BoltMap::new();
+    map.put("fromTxid".into(), b.from_txid.as_str().into());
+    map.put("toAddress".into(), b.to_address.as_str().into());
+    map.put("outputCount".into(), (b.output_count as i64).into());
+    map.put("amountReceived".into(), (b.amount_received as i64).into());
+    map
+}
+
+/// Convert slice of BenefitsToData to Vec<BoltType>
+pub fn benefits_to_to_bolt_list(benefits_to: &[BenefitsToData]) -> Result<Vec<BoltType>, WriterError> {
+    Ok(benefits_to.iter()
+        .map(|b| BoltType::Map(benefits_to_to_bolt_map(b)))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,12 +220,18 @@ mod tests {
             vsize: 125,
             weight: 500,
             is_coinbase: false,
+            total_input: Some(1000000),
+            total_output: Some(999000),
+            fee: Some(1000),
         };
 
         let map = transaction_to_bolt_map(&tx);
 
         assert!(map.value.contains_key(&BoltString::from("txid")));
         assert!(map.value.contains_key(&BoltString::from("isCoinbase")));
+        assert!(map.value.contains_key(&BoltString::from("totalInput")));
+        assert!(map.value.contains_key(&BoltString::from("totalOutput")));
+        assert!(map.value.contains_key(&BoltString::from("fee")));
     }
 
     #[test]

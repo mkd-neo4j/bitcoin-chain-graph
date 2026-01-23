@@ -75,6 +75,9 @@ fn test_transaction_data(block_height: u32, index: u32) -> TransactionData {
         vsize: 250,
         weight: 1000,
         is_coinbase: index == 0,
+        total_input: Some(50000),
+        total_output: Some(49000),
+        fee: Some(1000),
     }
 }
 

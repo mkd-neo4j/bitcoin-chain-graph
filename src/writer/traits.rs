@@ -10,7 +10,7 @@
 //! [INGESTION_ARCHITECTURE.md](../../docs/INGESTION_ARCHITECTURE.md)
 
 use async_trait::async_trait;
-use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData};
+use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData};
 use super::error::Result;
 
 /// Graph database writer interface
@@ -72,10 +72,11 @@ pub trait GraphWriter: Send + Sync {
     /// Creates Transaction nodes with properties and INCLUDED_IN relationships
     /// to containing blocks. This is Phase 2 of ingestion.
     ///
-    /// Note: totalInput, totalOutput, and fee are calculated later in Phase 5.
+    /// In Milestone 7+, TransactionData includes pre-calculated total_input,
+    /// total_output, and fee fields (calculated in Rust using UTXO cache).
     ///
     /// # Arguments
-    /// * `transactions` - Slice of TransactionData to persist
+    /// * `transactions` - Slice of TransactionData to persist (with amounts)
     ///
     /// # Errors
     /// Returns error if transaction writing fails.
@@ -120,45 +121,40 @@ pub trait GraphWriter: Send + Sync {
     /// Returns error if input writing fails or if referenced outputs don't exist.
     async fn write_inputs(&self, inputs: &[InputData]) -> Result<()>;
 
-    // Phase 5: Calculate Amounts
-
-    /// Update transaction amounts (totalInput, totalOutput, fee)
-    ///
-    /// Calculates and updates transaction amount properties by traversing
-    /// SPENDS relationships. This is Phase 5 of ingestion.
-    ///
-    /// For each transaction:
-    /// - totalInput = sum of all spent outputs
-    /// - totalOutput = sum of all created outputs
-    /// - fee = totalInput - totalOutput (0 for coinbase)
-    ///
-    /// # Arguments
-    /// * `transactions` - Slice of transactions to calculate amounts for
-    ///
-    /// # Errors
-    /// Returns error if amount calculation fails.
-    async fn calculate_amounts(&self, transactions: &[TransactionData]) -> Result<()>;
+    // Phase 5: (REMOVED in M7) Amounts now calculated in Rust using UTXO cache
+    // Amounts are passed to write_transactions() directly
 
     // Phase 6: Simplified Layer
 
-    /// Create simplified PERFORMS and BENEFITS_TO relationships
+    /// Write PERFORMS relationships in bulk (Address → Transaction)
     ///
-    /// Creates direct relationships from customers to addresses for easier
-    /// querying. This is Phase 6 of ingestion.
+    /// Creates PERFORMS relationships with pre-aggregated properties.
+    /// Called during Phase 6 of ingestion.
     ///
-    /// For each transaction:
-    /// - PERFORMS: Customer → Transaction (via account ownership and inputs)
-    /// - BENEFITS_TO: Transaction → Address (via outputs)
-    ///
-    /// This provides a "simplified view" of money flow without traversing
-    /// through Outputs and Inputs.
+    /// Each relationship represents an address performing a transaction
+    /// (sending funds via inputs), with aggregated input count and amount.
     ///
     /// # Arguments
-    /// * `transactions` - Slice of transactions to create relationships for
+    /// * `performs` - Slice of PerformsData with pre-calculated aggregations
     ///
     /// # Errors
     /// Returns error if relationship creation fails.
-    async fn write_simplified_layer(&self, transactions: &[TransactionData]) -> Result<()>;
+    async fn write_performs(&self, performs: &[PerformsData]) -> Result<()>;
+
+    /// Write BENEFITS_TO relationships in bulk (Transaction → Address)
+    ///
+    /// Creates BENEFITS_TO relationships with pre-aggregated properties.
+    /// Called during Phase 6 of ingestion.
+    ///
+    /// Each relationship represents a transaction benefiting an address
+    /// (receiving funds via outputs), with aggregated output count and amount.
+    ///
+    /// # Arguments
+    /// * `benefits_to` - Slice of BenefitsToData with pre-calculated aggregations
+    ///
+    /// # Errors
+    /// Returns error if relationship creation fails.
+    async fn write_benefits_to(&self, benefits_to: &[BenefitsToData]) -> Result<()>;
 
     // UTXO Operations
 

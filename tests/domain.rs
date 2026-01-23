@@ -1,6 +1,14 @@
 //! Domain module tests
 //!
-//! Tests for domain models and conversions
+//! Tests for src/domain/* modules
 
-#[path = "domain/model_conversions.rs"]
-mod model_conversions;
+#[path = "domain/models.rs"]
+mod models;
+
+#[path = "domain/ingestion.rs"]
+mod ingestion;
+
+#[path = "domain/utxo"]
+mod utxo {
+    mod cache;
+}

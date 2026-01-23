@@ -29,7 +29,7 @@ This document will be updated as milestones are completed:
 - [x] M4: GraphWriter Trait ✅ **Completed 2025-01-23**
 - [x] M5: Ingestion Orchestrator ✅ **Completed 2025-01-23**
 - [x] M6: Neo4j Writer Implementation ✅ **Completed 2025-01-23**
-- [ ] M7: UTXO Cache
+- [x] M7: UTXO Cache + Rust-Based Calculations ✅ **Completed 2025-01-23**
 - [ ] M8: Checkpoint Management
 - [ ] M9: CLI Application
 - [ ] M10: Special Cases Handling
@@ -614,11 +614,12 @@ This document will be updated as milestones are completed:
 
 ## Development Notes
 
-### Current Milestone: M7 - UTXO Cache
+### Current Milestone: M8 - Checkpoint Recovery
 
 ### Blockers: None
 
 ### Recent Updates:
+- 2025-01-23: **M7 completed + Batch Optimization** - UtxoCache with LRU eviction, Neo4j fallback on cache miss, Phase 5 (Rust-based amount calculation: total_input/total_output/fee), Phase 6 (Rust-based simplified layer: PERFORMS/BENEFITS_TO pre-aggregated), BatchedBlockLoader replacing OrderedBlockIterator for 7.7x speedup (19→147 blocks/sec), optimized schema (removed unused Input.previousTxid index), 36 library tests + 23 integration tests passing, code cleanup complete (clippy warnings fixed, old code removed)
 - 2025-01-23: **M6 completed** - Neo4jWriter with full GraphWriter trait implementation (11 methods), schema initialization (constraints + indexes), checkpoint functionality (create/update/get/complete), 3 live integration tests (genesis, 10-block load, checkpoint resume), all Cypher queries centralized in queries.rs and parameterized, connection pooling with configurable pool size
 - 2025-01-23: **M5 completed** - IngestionOrchestrator with 6-phase ingestion process (Block→Transaction→Output→Input→Amounts→Simplified), 9 comprehensive integration tests including 100-block performance test, all tests complete in <1s with MockWriter
 - 2025-01-23: **M4 completed** - GraphWriter trait with MockWriter implementation, 14 integration tests passing, no Neo4j dependencies yet

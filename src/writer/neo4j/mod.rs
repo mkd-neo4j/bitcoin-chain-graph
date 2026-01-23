@@ -8,7 +8,7 @@ use neo4rs::{Graph, ConfigBuilder, query};
 use std::sync::Arc;
 
 use crate::config::Neo4jConfig;
-use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData};
+use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData};
 use crate::writer::{GraphWriter, WriterError, Result};
 
 mod queries;
@@ -143,38 +143,30 @@ impl GraphWriter for Neo4jWriter {
         Ok(())
     }
 
-    async fn calculate_amounts(&self, transactions: &[TransactionData]) -> Result<()> {
-        let txids: Vec<String> = transactions.iter()
-            .map(|tx| tx.txid.clone())
-            .collect();
+    async fn write_performs(&self, performs: &[PerformsData]) -> Result<()> {
+        use crate::writer::neo4j::conversions;
+
+        let performs_list = conversions::performs_to_bolt_list(performs)?;
 
         self.graph
-            .run(query(queries::CALCULATE_AMOUNTS_QUERY)
-                .param("txids", txids.as_slice()))
+            .run(query(queries::CREATE_PERFORMS_BULK_QUERY)
+                .param("performs", performs_list))
             .await
-            .map_err(|e| WriterError::QueryFailed(format!("calculate_amounts failed: {}", e)))?;
+            .map_err(|e| WriterError::QueryFailed(format!("write_performs failed: {}", e)))?;
 
         Ok(())
     }
 
-    async fn write_simplified_layer(&self, transactions: &[TransactionData]) -> Result<()> {
-        let txids: Vec<String> = transactions.iter()
-            .map(|tx| tx.txid.clone())
-            .collect();
+    async fn write_benefits_to(&self, benefits_to: &[BenefitsToData]) -> Result<()> {
+        use crate::writer::neo4j::conversions;
 
-        // Create PERFORMS relationships
-        self.graph
-            .run(query(queries::CREATE_PERFORMS_QUERY)
-                .param("txids", txids.as_slice()))
-            .await
-            .map_err(|e| WriterError::QueryFailed(format!("CREATE_PERFORMS failed: {}", e)))?;
+        let benefits_list = conversions::benefits_to_to_bolt_list(benefits_to)?;
 
-        // Create BENEFITS_TO relationships
         self.graph
-            .run(query(queries::CREATE_BENEFITS_TO_QUERY)
-                .param("txids", txids.as_slice()))
+            .run(query(queries::CREATE_BENEFITS_TO_BULK_QUERY)
+                .param("benefitsTo", benefits_list))
             .await
-            .map_err(|e| WriterError::QueryFailed(format!("CREATE_BENEFITS_TO failed: {}", e)))?;
+            .map_err(|e| WriterError::QueryFailed(format!("write_benefits_to failed: {}", e)))?;
 
         Ok(())
     }
@@ -224,10 +216,20 @@ impl GraphWriter for Neo4jWriter {
     }
 
     async fn create_checkpoint(&self) -> Result<()> {
+        // Step 1: Delete any existing checkpoints
         self.graph
-            .run(query(queries::CREATE_CHECKPOINT_QUERY))
+            .run(query("MATCH (c:IngestionCheckpoint) DELETE c"))
             .await
-            .map_err(|e| WriterError::CheckpointError(format!("create_checkpoint failed: {}", e)))?;
+            .map_err(|e| WriterError::CheckpointError(format!("delete failed: {}", e)))?;
+
+        // Step 2: Create new checkpoint at height -1 (initial state, "not yet started")
+        // NOTE: neo4rs driver has a bug where it reads -1 as 255 (i64 to i32 conversion issue)
+        // We handle this on READ by detecting 255 and converting back to -1
+        // Using -1 correctly represents "no blocks processed yet" vs 0 which means "block 0 processed"
+        self.graph
+            .run(query("CREATE (c:IngestionCheckpoint { lastProcessedHeight: -1, lastProcessedHash: '0000000000000000000000000000000000000000000000000000000000000000', lastProcessedFile: 'blk00000.dat', lastProcessedFileOffset: 0, timestamp: datetime(), status: 'in_progress' })"))
+            .await
+            .map_err(|e| WriterError::CheckpointError(format!("create failed: {}", e)))?;
 
         Ok(())
     }
@@ -256,8 +258,18 @@ impl GraphWriter for Neo4jWriter {
             .map_err(|e| WriterError::CheckpointError(format!("Failed to fetch checkpoint: {}", e)))? {
 
             Ok(Some(CheckpointData {
-                last_processed_height: row.get("lastProcessedHeight")
-                    .map_err(|e| WriterError::DatabaseError(format!("Missing lastProcessedHeight: {}", e)))?,
+                last_processed_height: {
+                    let val: i64 = row.get("lastProcessedHeight")
+                        .map_err(|e| WriterError::DatabaseError(format!("Missing lastProcessedHeight: {}", e)))?;
+
+                    // WORKAROUND: neo4rs driver bug converts -1 to 255 when reading
+                    // Detect 255 and convert back to -1 to represent "not yet started" state
+                    if val == 255 {
+                        -1
+                    } else {
+                        val as i32
+                    }
+                },
                 last_processed_hash: row.get("lastProcessedHash")
                     .map_err(|e| WriterError::DatabaseError(format!("Missing lastProcessedHash: {}", e)))?,
                 last_processed_file: row.get("lastProcessedFile")
