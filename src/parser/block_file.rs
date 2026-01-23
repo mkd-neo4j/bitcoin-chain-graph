@@ -134,95 +134,25 @@ impl BlockFileReader {
     }
 }
 
+// Comprehensive tests moved to tests/parser_tests.rs
+// Only minimal inline tests here for doc examples
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_genesis_block() {
+    fn test_can_open_file() {
+        // Minimal smoke test - detailed tests in tests/parser_tests.rs
         let mut reader = BlockFileReader::new("test_data/blk00000.dat", Network::Bitcoin)
             .expect("Failed to open test data file");
 
         let genesis = reader
             .next_block()
             .expect("Failed to read genesis block")
-            .expect("Expected genesis block, got None");
+            .expect("Expected genesis block");
 
-        // Verify genesis block properties
-        assert_eq!(genesis.header.version.to_consensus(), 1);
-        assert_eq!(genesis.header.time, 1231006505);
         assert_eq!(genesis.txdata.len(), 1);
         assert!(genesis.txdata[0].is_coinbase());
-        assert_eq!(genesis.txdata[0].output[0].value.to_sat(), 50_0000_0000); // 50 BTC
-
-        // Verify genesis block hash
-        let genesis_hash = genesis.block_hash().to_string();
-        assert_eq!(
-            genesis_hash,
-            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
-        );
-
-        assert_eq!(reader.blocks_read(), 1);
-    }
-
-    #[test]
-    fn test_stream_100_blocks() {
-        let mut reader = BlockFileReader::new("test_data/blk00000.dat", Network::Bitcoin)
-            .expect("Failed to open test data file");
-
-        let mut count = 0;
-
-        while let Some(block) = reader.next_block().expect("Failed to read block") {
-            // Verify basic block properties
-            assert!(!block.txdata.is_empty(), "Block should have transactions");
-            assert!(
-                block.header.version.to_consensus() >= 1,
-                "Version should be >= 1"
-            );
-
-            count += 1;
-            if count >= 100 {
-                break;
-            }
-        }
-
-        assert_eq!(count, 100, "Should have read 100 blocks");
-        assert_eq!(reader.blocks_read(), 100);
-    }
-
-    #[test]
-    fn test_handle_eof_gracefully() {
-        let mut reader = BlockFileReader::new("test_data/blk00000.dat", Network::Bitcoin)
-            .expect("Failed to open test data file");
-
-        // Read all blocks
-        let mut total_blocks = 0;
-        while let Some(_block) = reader.next_block().expect("Failed to read block") {
-            total_blocks += 1;
-        }
-
-        // Should have read many blocks from blk00000.dat (Genesis + more)
-        assert!(
-            total_blocks > 100,
-            "Expected more than 100 blocks in test file, got {}",
-            total_blocks
-        );
-
-        // Next read should return None (EOF), not error
-        let result = reader.next_block();
-        assert!(result.is_ok(), "EOF should not be an error");
-        assert!(
-            result.unwrap().is_none(),
-            "Should return None at EOF, not Some"
-        );
-    }
-
-    #[test]
-    fn test_file_not_found() {
-        let result = BlockFileReader::new("nonexistent.dat", Network::Bitcoin);
-        assert!(
-            result.is_err(),
-            "Should error when file doesn't exist"
-        );
     }
 }

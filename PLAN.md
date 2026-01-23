@@ -24,7 +24,7 @@ This is an incremental, test-driven development plan that builds the Bitcoin blo
 This document will be updated as milestones are completed:
 
 - [x] M1: Project Setup & Parser Foundation ✅ **Completed 2025-01-23**
-- [ ] M2: Address Derivation
+- [x] M2: Address Derivation ✅ **Completed 2025-01-23**
 - [ ] M3: Domain Models
 - [ ] M4: GraphWriter Trait
 - [ ] M5: Ingestion Orchestrator
@@ -521,11 +521,12 @@ This document will be updated as milestones are completed:
 
 ## Development Notes
 
-### Current Milestone: M2 - Address Derivation
+### Current Milestone: M3 - Domain Models
 
 ### Blockers: None
 
 ### Recent Updates:
+- 2025-01-23: **M2 completed** - Address derivation for all script types (P2PKH, P2SH, P2WPKH, P2WSH, P2TR, P2PK, NULL_DATA), all tests passing including Genesis block
 - 2025-01-23: **M1 completed** - BlockFileReader parser with streaming API, all tests passing (<10ms for 100 blocks)
 - 2025-01-23: Plan created with 14 incremental milestones
 
