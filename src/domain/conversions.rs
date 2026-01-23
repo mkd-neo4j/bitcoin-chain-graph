@@ -145,7 +145,7 @@ impl InputData {
         let witness: Vec<String> = input
             .witness
             .iter()
-            .map(|item| hex::encode(item))
+            .map(hex::encode)
             .collect();
 
         InputData {
@@ -170,11 +170,11 @@ fn difficulty_from_bits(bits: u32) -> f64 {
     const MAX_BITS: u32 = 0x1d00ffff;
 
     // Extract exponent and mantissa from compact format
-    let max_exp = (MAX_BITS >> 24) as u32;
-    let max_mant = (MAX_BITS & 0xffffff) as u32;
+    let max_exp = MAX_BITS >> 24;
+    let max_mant = MAX_BITS & 0xffffff;
 
-    let curr_exp = (bits >> 24) as u32;
-    let curr_mant = (bits & 0xffffff) as u32;
+    let curr_exp = bits >> 24;
+    let curr_mant = bits & 0xffffff;
 
     // difficulty = (max_mant * 2^(8*(max_exp-3))) / (curr_mant * 2^(8*(curr_exp-3)))
     // Simplified: difficulty = max_mant / curr_mant * 2^(8*(max_exp - curr_exp))

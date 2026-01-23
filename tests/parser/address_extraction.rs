@@ -4,7 +4,6 @@
 
 use bitcoin::{Network, ScriptBuf};
 use bitcoin_chain_graph::parser::{extract_address, ScriptType};
-use hex;
 
 #[test]
 fn test_genesis_block_p2pk_address() {
