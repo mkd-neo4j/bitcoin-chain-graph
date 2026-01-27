@@ -36,7 +36,7 @@ LIMIT 100
 **Expected:** 0 results
 
 **If violations found:**
-- Check Phase 5 calculation logic (see [CYPHER_EXAMPLES.md](CYPHER_EXAMPLES.md))
+- Check Phase 3 amount calculation (amounts are calculated in Rust via UTXO cache — see [CYPHER_EXAMPLES.md](CYPHER_EXAMPLES.md))
 - Verify input SPENDS relationships point to correct previous outputs
 - Verify output amounts are correctly extracted from raw data
 
@@ -47,7 +47,7 @@ LIMIT 100
 ```cypher
 // Find coinbase transactions with non-zero inputs or fees
 MATCH (t:Transaction {isCoinbase: true})
-WHERE t.totalInput <> 0.0 OR t.fee <> 0.0
+WHERE t.totalInput <> 0 OR t.fee <> 0
 RETURN t.txid, t.blockHeight, t.totalInput, t.fee
 LIMIT 100
 ```
@@ -63,7 +63,7 @@ LIMIT 100
 ```cypher
 // Find orphaned inputs (not linked to transaction)
 MATCH (i:Input)
-WHERE NOT (i)-[:HAS_INPUT]->(:Transaction)
+WHERE NOT (:Transaction)-[:HAS_INPUT]->(i)
 RETURN i.inputId
 LIMIT 100
 ```
@@ -90,7 +90,7 @@ LIMIT 100
 
 ```cypher
 // Find non-coinbase inputs missing SPENDS relationship
-MATCH (i:Input)-[:HAS_INPUT]->(t:Transaction {isCoinbase: false})
+MATCH (t:Transaction {isCoinbase: false})-[:HAS_INPUT]->(i:Input)
 WHERE NOT (i)-[:SPENDS]->(:Output)
 RETURN i.inputId, t.txid
 LIMIT 100
@@ -109,7 +109,7 @@ LIMIT 100
 
 ```cypher
 // Find coinbase inputs with SPENDS relationship (invalid)
-MATCH (i:Input)-[:HAS_INPUT]->(t:Transaction {isCoinbase: true})
+MATCH (t:Transaction {isCoinbase: true})-[:HAS_INPUT]->(i:Input)
 WHERE (i)-[:SPENDS]->(:Output)
 RETURN i.inputId, t.txid
 LIMIT 100
@@ -189,7 +189,7 @@ LIMIT 100
 ```cypher
 // Verify spentInTxid property matches actual spending transaction
 MATCH (i:Input)-[:SPENDS]->(o:Output)
-MATCH (i)-[:HAS_INPUT]->(t:Transaction)
+MATCH (t:Transaction)-[:HAS_INPUT]->(i)
 WHERE o.spentInTxid <> t.txid
 RETURN o.outputId, o.spentInTxid AS recorded, t.txid AS actual
 LIMIT 100
@@ -320,7 +320,7 @@ LIMIT 100
 ```cypher
 // Verify PERFORMS relationships point to correct addresses
 MATCH (addr:Address)-[:PERFORMS]->(t:Transaction {isCoinbase: false})
-WHERE NOT (t)<-[:HAS_INPUT]-(:Input)-[:SPENDS]->(:Output)-[:LOCKED_TO]->(addr)
+WHERE NOT (t)-[:HAS_INPUT]->(:Input)-[:SPENDS]->(:Output)-[:LOCKED_TO]->(addr)
 RETURN addr.address, t.txid
 LIMIT 100
 ```
@@ -345,9 +345,73 @@ LIMIT 100
 
 ---
 
+### Rule: PERFORMS Relationships Have Required Properties
+
+```cypher
+// Find PERFORMS relationships missing inputCount or amountSpent
+MATCH (addr:Address)-[r:PERFORMS]->(t:Transaction)
+WHERE r.inputCount IS NULL OR r.amountSpent IS NULL
+RETURN addr.address, t.txid, r.inputCount, r.amountSpent
+LIMIT 100
+```
+
+**Expected:** 0 results
+
+---
+
+### Rule: BENEFITS_TO Relationships Have Required Properties
+
+```cypher
+// Find BENEFITS_TO relationships missing outputCount or amountReceived
+MATCH (t:Transaction)-[r:BENEFITS_TO]->(addr:Address)
+WHERE r.outputCount IS NULL OR r.amountReceived IS NULL
+RETURN t.txid, addr.address, r.outputCount, r.amountReceived
+LIMIT 100
+```
+
+**Expected:** 0 results
+
+---
+
+### Rule: PERFORMS amountSpent Matches Sum of Input Amounts
+
+```cypher
+// Verify PERFORMS amountSpent matches the actual sum of input amounts from the detailed layer
+MATCH (addr:Address)-[r:PERFORMS]->(t:Transaction)
+MATCH (t)-[:HAS_INPUT]->(i:Input)-[:SPENDS]->(o:Output)-[:LOCKED_TO]->(addr)
+WITH addr, t, r, sum(o.amount) AS actualAmount, count(i) AS actualCount
+WHERE r.amountSpent <> actualAmount OR r.inputCount <> actualCount
+RETURN addr.address, t.txid, r.amountSpent AS recorded, actualAmount AS actual
+LIMIT 100
+```
+
+**Expected:** 0 results
+
+**Note:** This query can be slow on large graphs. Run on a sample subset for performance.
+
+---
+
+### Rule: BENEFITS_TO amountReceived Matches Sum of Output Amounts
+
+```cypher
+// Verify BENEFITS_TO amountReceived matches the actual sum of output amounts
+MATCH (t:Transaction)-[r:BENEFITS_TO]->(addr:Address)
+MATCH (t)-[:HAS_OUTPUT]->(o:Output)-[:LOCKED_TO]->(addr)
+WITH t, addr, r, sum(o.amount) AS actualAmount, count(o) AS actualCount
+WHERE r.amountReceived <> actualAmount OR r.outputCount <> actualCount
+RETURN t.txid, addr.address, r.amountReceived AS recorded, actualAmount AS actual
+LIMIT 100
+```
+
+**Expected:** 0 results
+
+**Note:** This query can be slow on large graphs. Run on a sample subset for performance.
+
+---
+
 ## 8. Data Completeness Checks
 
-### Rule: All Transactions Have Complete Amount Data (After Phase 5)
+### Rule: All Transactions Have Complete Amount Data (After Phase 3)
 
 ```cypher
 // Find transactions missing calculated amounts
@@ -359,7 +423,7 @@ RETURN t.txid, t.blockHeight, t.isCoinbase
 LIMIT 100
 ```
 
-**Expected:** 0 results (after Phase 5 is complete)
+**Expected:** 0 results (after Phase 3 is complete — amounts are calculated in Rust during transaction ingestion)
 
 ---
 
@@ -386,13 +450,14 @@ LIMIT 100
 // Find inputs with missing required properties
 MATCH (i:Input)
 WHERE i.inputId IS NULL
-   OR i.previousTxid IS NULL
-   OR i.previousOutputIndex IS NULL
+   OR i.inputIndex IS NULL
 RETURN i
 LIMIT 100
 ```
 
 **Expected:** 0 results
+
+**Note:** `previousTxid` and `previousOutputIndex` are NOT stored as Input node properties. They are used during ingestion to create the SPENDS relationship, then discarded. See [DATA_MODEL.md](DATA_MODEL.md) for details.
 
 ---
 
@@ -431,10 +496,10 @@ RETURN o.outputId, o.isSpent, o.spentInTxid
 ```cypher
 // Count unspent outputs (current UTXO set)
 MATCH (o:Output {isSpent: false})
-RETURN count(o) AS utxoCount, sum(o.amount) AS totalBTC
+RETURN count(o) AS utxoCount, sum(o.amount) AS totalSatoshis
 ```
 
-**Expected:** Should match known UTXO set size for the block height ingested.
+**Expected:** Should match known UTXO set size for the block height ingested. Note: amounts are in satoshis (1 BTC = 100,000,000 satoshis).
 
 ---
 
@@ -445,7 +510,7 @@ RETURN count(o) AS utxoCount, sum(o.amount) AS totalBTC
 ```cypher
 // Find potential fee calculation errors or anomalies
 MATCH (t:Transaction {isCoinbase: false})
-WHERE t.fee > 1.0  // Fees over 1 BTC are suspicious
+WHERE t.fee > 100000000  // Fees over 1 BTC (100,000,000 satoshis) are suspicious
 RETURN t.txid, t.blockHeight, t.fee, t.totalInput, t.totalOutput
 ORDER BY t.fee DESC
 LIMIT 100
@@ -493,12 +558,14 @@ SHOW CONSTRAINTS
 SHOW INDEXES
 ```
 
-**Expected:** Should list all indexes defined in [CYPHER_EXAMPLES.md](CYPHER_EXAMPLES.md):
-- Indexes on Transaction (timestamp, blockHeight, isCoinbase)
-- Indexes on Output (isSpent, amount, scriptType)
-- Index on Input (previousTxid)
-- Index on Address (type)
-- Index on Block (timestamp)
+**Expected:** Should list all 7 indexes defined in [CYPHER_EXAMPLES.md](CYPHER_EXAMPLES.md):
+- `transaction_timestamp` — Transaction (timestamp)
+- `transaction_block` — Transaction (blockHeight)
+- `transaction_coinbase` — Transaction (isCoinbase)
+- `output_spent` — Output (isSpent)
+- `output_amount` — Output (amount)
+- `output_script_type` — Output (scriptType)
+- `block_timestamp` — Block (timestamp)
 
 ---
 
@@ -537,10 +604,10 @@ CALL {
   RETURN count(a) AS addressCount
 }
 
-// UTXO count
+// UTXO count (amounts in satoshis)
 CALL {
   MATCH (o:Output {isSpent: false})
-  RETURN count(o) AS utxoCount, sum(o.amount) AS totalBTC
+  RETURN count(o) AS utxoCount, sum(o.amount) AS totalSatoshis
 }
 
 // Failed balance checks
@@ -553,7 +620,7 @@ CALL {
 // Orphaned inputs
 CALL {
   MATCH (i:Input)
-  WHERE NOT (i)-[:HAS_INPUT]->(:Transaction)
+  WHERE NOT (:Transaction)-[:HAS_INPUT]->(i)
   RETURN count(i) AS orphanedInputs
 }
 
@@ -566,7 +633,7 @@ CALL {
 
 // Missing SPENDS
 CALL {
-  MATCH (i:Input)-[:HAS_INPUT]->(t:Transaction {isCoinbase: false})
+  MATCH (t:Transaction {isCoinbase: false})-[:HAS_INPUT]->(i:Input)
   WHERE NOT (i)-[:SPENDS]->(:Output)
   RETURN count(i) AS missingSpends
 }
@@ -578,7 +645,7 @@ RETURN
   inputCount,
   addressCount,
   utxoCount,
-  totalBTC,
+  totalSatoshis,
   balanceErrors,
   orphanedInputs,
   orphanedOutputs,
@@ -593,7 +660,7 @@ outputCount: 1200000
 inputCount: 680000
 addressCount: 450000
 utxoCount: 520000
-totalBTC: 19500000.00
+totalSatoshis: 1950000000000000
 balanceErrors: 0
 orphanedInputs: 0
 orphanedOutputs: 0
@@ -621,7 +688,7 @@ RETURN
 **Expected:**
 - `blockHash`: `000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f`
 - `genesisTxid`: `4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b`
-- `genesisAmount`: `50.0`
+- `genesisAmount`: `5000000000` (50 BTC in satoshis)
 - `genesisAddress`: `1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa`
 
 ---
@@ -632,7 +699,7 @@ Pick a well-known transaction (e.g., first Bitcoin pizza transaction) and verify
 
 ```cypher
 MATCH (t:Transaction {txid: $knownTxid})
-MATCH (t)<-[:HAS_INPUT]-(i:Input)-[:SPENDS]->(prevOut:Output)
+MATCH (t)-[:HAS_INPUT]->(i:Input)-[:SPENDS]->(prevOut:Output)
 MATCH (t)-[:HAS_OUTPUT]->(o:Output)
 RETURN t, collect(DISTINCT i) AS inputs, collect(DISTINCT o) AS outputs
 ```
@@ -668,12 +735,12 @@ Run these queries after ingestion:
 ## Troubleshooting Validation Failures
 
 ### If balance validation fails:
-1. Check Phase 5 logic for calculating `totalInput`, `totalOutput`, `fee`
+1. Check Phase 3 logic — amounts (`totalInput`, `totalOutput`, `fee`) are calculated in Rust using the UTXO cache during transaction ingestion
 2. Verify SPENDS relationships point to correct previous outputs
-3. Ensure input amounts are looked up correctly from previous outputs
+3. Ensure input amounts are looked up correctly from previous outputs via the UTXO cache (with Neo4j fallback)
 
 ### If relationship integrity fails:
-1. Verify ingestion phases ran in correct order (1→2→3→4→5→6)
+1. Verify ingestion phases ran in correct order (1→2→3→4→6→7)
 2. Check for race conditions if processing in parallel
 3. Ensure Neo4j transaction boundaries are correct
 
@@ -683,9 +750,9 @@ Run these queries after ingestion:
 3. Ensure blocks were processed in sequential height order
 
 ### If simplified layer fails:
-1. Re-run Phase 6 to regenerate PERFORMS and BENEFITS_TO relationships
-2. Verify all inputs have SPENDS relationships before deriving PERFORMS
-3. Verify all outputs have LOCKED_TO relationships before deriving BENEFITS_TO
+1. PERFORMS and BENEFITS_TO relationships are created with pre-aggregated data from Rust (Phase 6) — not derived from graph traversals
+2. Verify the Rust aggregation logic in `ingestion.rs` correctly groups inputs/outputs by address
+3. Verify all outputs have LOCKED_TO relationships (needed for correct address aggregation)
 
 ---
 

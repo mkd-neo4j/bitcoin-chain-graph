@@ -2,6 +2,8 @@
 
 Complete Cypher query patterns for ingesting Bitcoin blockchain data into Neo4j and querying the resulting graph.
 
+All amounts are stored as **integers in satoshis** (1 BTC = 100,000,000 satoshis).
+
 ---
 
 ## Table of Contents
@@ -9,24 +11,27 @@ Complete Cypher query patterns for ingesting Bitcoin blockchain data into Neo4j 
 1. [Schema Setup (Constraints & Indexes)](#schema-setup)
 2. [Checkpoint Management](#checkpoint-management)
 3. [Phase 1: Block Ingestion](#phase-1-block-ingestion)
-4. [Phase 2: Transaction Ingestion](#phase-2-transaction-ingestion)
-5. [Phase 3: Output Ingestion](#phase-3-output-ingestion)
+4. [Phase 2: Output Ingestion](#phase-2-output-ingestion)
+5. [Phase 3: Transaction Ingestion (with Amounts)](#phase-3-transaction-ingestion-with-amounts)
 6. [Phase 4: Input Ingestion](#phase-4-input-ingestion)
-7. [Phase 5: Calculate Transaction Amounts](#phase-5-calculate-transaction-amounts)
-8. [Phase 6: Derive Simplified Layer](#phase-6-derive-simplified-layer)
-9. [Query Examples - Simplified Layer](#query-examples-simplified-layer)
-10. [Query Examples - Detailed UTXO Layer](#query-examples-detailed-utxo-layer)
-11. [Analysis Queries](#analysis-queries)
+7. [Phase 5: (Removed)](#phase-5-removed)
+8. [Phase 6: Simplified Layer (Bulk)](#phase-6-simplified-layer-bulk)
+9. [UTXO Lookup Queries](#utxo-lookup-queries)
+10. [Query Examples - Simplified Layer](#query-examples-simplified-layer)
+11. [Query Examples - Detailed UTXO Layer](#query-examples-detailed-utxo-layer)
+12. [Analysis Queries](#analysis-queries)
 
 ---
 
-## Schema Setup (Constraints & Indexes)
+## Schema Setup
 
-**Run these BEFORE ingesting any data:**
+**Run these BEFORE ingesting any data.**
+
+The application creates these automatically via `init_schema()` in `src/writer/neo4j/schema.rs`.
 
 ```cypher
 // ============================================
-// CONSTRAINTS (enforce uniqueness)
+// CONSTRAINTS (enforce uniqueness) — 6 total
 // ============================================
 
 // Block constraints
@@ -53,7 +58,7 @@ CREATE CONSTRAINT address_unique IF NOT EXISTS
 FOR (a:Address) REQUIRE a.address IS UNIQUE;
 
 // ============================================
-// INDEXES (improve query performance)
+// INDEXES (improve query performance) — 7 total
 // ============================================
 
 // Transaction indexes
@@ -76,14 +81,6 @@ FOR (o:Output) ON (o.amount);
 CREATE INDEX output_script_type IF NOT EXISTS
 FOR (o:Output) ON (o.scriptType);
 
-// Input indexes (for looking up previous outputs)
-CREATE INDEX input_previous_tx IF NOT EXISTS
-FOR (i:Input) ON (i.previousTxid);
-
-// Address indexes
-CREATE INDEX address_type IF NOT EXISTS
-FOR (a:Address) ON (a.type);
-
 // Block indexes
 CREATE INDEX block_timestamp IF NOT EXISTS
 FOR (b:Block) ON (b.timestamp);
@@ -95,57 +92,60 @@ FOR (b:Block) ON (b.timestamp);
 
 Queries for managing ingestion checkpoints to enable resume-on-failure.
 
+These match the constants in `src/writer/neo4j/queries.rs`.
+
 ### Create Initial Checkpoint
 
 ```cypher
 // Create checkpoint before starting ingestion
+// Uses sentinel -999 (not -1) to avoid neo4rs driver bug that misreads -1 as 255
 CREATE (c:IngestionCheckpoint {
-  lastProcessedHeight: -1,
-  lastProcessedHash: null,
-  lastProcessedFile: null,
-  lastProcessedFileOffset: null,
+  lastProcessedHeight: -999,
+  lastProcessedHash: '0000000000000000000000000000000000000000000000000000000000000000',
+  lastProcessedFile: 'blk00000.dat',
+  lastProcessedFileOffset: 0,
   timestamp: datetime(),
-  status: "in_progress"
+  status: 'in_progress'
 })
-RETURN c
 ```
 
 ### Update Checkpoint After Successful Block
 
 ```cypher
 // Update checkpoint after successfully ingesting a block
-MATCH (c:IngestionCheckpoint)
-SET c.lastProcessedHeight = $blockHeight,
-    c.lastProcessedHash = $blockHash,
-    c.lastProcessedFile = $blkFileName,
-    c.lastProcessedFileOffset = $fileOffset,
+// Uses MERGE to guarantee the checkpoint node exists
+MERGE (c:IngestionCheckpoint)
+SET c.lastProcessedHeight = $height,
+    c.lastProcessedHash = $hash,
+    c.lastProcessedFile = $file,
+    c.lastProcessedFileOffset = $offset,
     c.timestamp = datetime(),
-    c.status = "in_progress"
-RETURN c
+    c.status = $status
 ```
 
 **Parameters:**
-- `$blockHeight` - Block height just processed (e.g., 0 for genesis)
-- `$blockHash` - Block hash (e.g., "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f")
-- `$blkFileName` - Name of .blk file (e.g., "blk00000.dat")
-- `$fileOffset` - Byte offset in file after this block (optional, can be null)
+- `$height` - Block height just processed (e.g., 0 for genesis)
+- `$hash` - Block hash (e.g., "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f")
+- `$file` - Name of .blk file or source identifier (e.g., "blk00000.dat", "rpc")
+- `$offset` - Byte offset in file after this block
+- `$status` - Checkpoint status (e.g., "in_progress")
 
 ### Query Checkpoint for Resume
 
 ```cypher
 // Get checkpoint state to resume ingestion
 MATCH (c:IngestionCheckpoint)
-RETURN c.lastProcessedHeight AS lastHeight,
-       c.lastProcessedHash AS lastHash,
-       c.lastProcessedFile AS lastFile,
-       c.lastProcessedFileOffset AS fileOffset,
-       c.status AS status,
-       c.timestamp AS lastUpdate
+RETURN c.lastProcessedHeight AS lastProcessedHeight,
+       c.lastProcessedHash AS lastProcessedHash,
+       c.lastProcessedFile AS lastProcessedFile,
+       c.lastProcessedFileOffset AS lastProcessedFileOffset,
+       c.timestamp AS timestamp,
+       c.status AS status
 ```
 
 **Resume logic:**
-- If `lastHeight = -1`: Start from genesis block (block 0)
-- If `lastHeight >= 0`: Resume from block `lastHeight + 1`
+- If `lastProcessedHeight = -999`: Start from genesis block (block 0)
+- If `lastProcessedHeight >= 0`: Resume from block `lastProcessedHeight + 1`
 
 ### Verify Last Processed Block (Optional)
 
@@ -171,42 +171,31 @@ RETURN c.lastProcessedHeight AS verifiedHeight,
        "MISMATCH" AS status
 ```
 
+### Set Checkpoint Status
+
+```cypher
+// Set checkpoint status (used for complete, paused, error states)
+MATCH (c:IngestionCheckpoint)
+SET c.status = $status,
+    c.timestamp = datetime()
+```
+
+**Status values:** `"in_progress"`, `"completed"`, `"paused"`, `"error"`
+
 ### Mark Ingestion Complete
 
 ```cypher
 // Mark ingestion as completed
 MATCH (c:IngestionCheckpoint)
-SET c.status = "completed",
+SET c.status = 'completed',
     c.timestamp = datetime()
-RETURN c
-```
-
-### Pause Ingestion
-
-```cypher
-// Pause ingestion (user-initiated)
-MATCH (c:IngestionCheckpoint)
-SET c.status = "paused",
-    c.timestamp = datetime()
-RETURN c
-```
-
-### Mark Ingestion Error
-
-```cypher
-// Mark ingestion as errored (for debugging/recovery)
-MATCH (c:IngestionCheckpoint)
-SET c.status = "error",
-    c.timestamp = datetime()
-RETURN c
 ```
 
 ### Reset Checkpoint (Start Fresh)
 
 ```cypher
 // Delete existing checkpoint to start fresh ingestion
-MATCH (c:IngestionCheckpoint)
-DELETE c
+MATCH (c:IngestionCheckpoint) DELETE c
 ```
 
 Then create a new checkpoint with initial values.
@@ -230,310 +219,279 @@ RETURN c.lastProcessedHeight AS lastProcessed,
 
 ## Phase 1: Block Ingestion
 
-### Create Block Node
+### Actual Query (from queries.rs: `CREATE_BLOCKS_QUERY`)
+
+The application uses UNWIND for batch operations and MERGE for idempotency:
 
 ```cypher
-CREATE (b:Block {
-  height: $height,
-  hash: $hash,
-  previousHash: $previousHash,
-  merkleRoot: $merkleRoot,
-  timestamp: datetime($timestamp),  // ISO 8601 string or epoch seconds
-  txCount: $txCount,
-  size: $size,
-  weight: $weight,
-  bits: $bits,
-  difficulty: $difficulty,
-  nonce: $nonce,
-  version: $version,
-  chainwork: $chainwork
-})
-RETURN b
+UNWIND $blocks AS block
+MERGE (b:Block {hash: block.hash})
+SET b.height = block.height,
+    b.previousHash = block.previousHash,
+    b.merkleRoot = block.merkleRoot,
+    b.timestamp = datetime({epochSeconds: block.timestamp}),
+    b.bits = block.bits,
+    b.difficulty = block.difficulty,
+    b.nonce = block.nonce,
+    b.version = block.version,
+    b.txCount = block.txCount,
+    b.size = block.size,
+    b.weight = block.weight
+WITH b, block
+WHERE block.height > 0
+OPTIONAL MATCH (prev:Block {height: block.height - 1})
+FOREACH (ignoreMe IN CASE WHEN prev IS NOT NULL THEN [1] ELSE [] END |
+    MERGE (prev)-[:NEXT_BLOCK]->(b)
+)
 ```
 
-### Link to Previous Block (NEXT_BLOCK)
+**Parameters:**
+- `$blocks` - List of block objects with all properties
 
-```cypher
-// Find previous block and link to new block
-MATCH (prevBlock:Block {height: $height - 1})
-MATCH (newBlock:Block {height: $height})
-CREATE (prevBlock)-[:NEXT_BLOCK]->(newBlock)
-RETURN prevBlock, newBlock
+**Notes:**
+- Uses `MERGE` on `hash` (unique identifier) for idempotent reprocessing
+- `NEXT_BLOCK` relationship is created via `FOREACH` conditional pattern
+- Genesis block (height 0) skips NEXT_BLOCK creation via `WHERE block.height > 0`
+- Timestamp is stored as `datetime` converted from Unix epoch seconds
+
+### Genesis Block Properties
+
 ```
-
-### Genesis Block (Special Case)
-
-```cypher
-// Genesis block has no previous block
-CREATE (genesis:Block {
-  height: 0,
-  hash: "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
-  previousHash: "0000000000000000000000000000000000000000000000000000000000000000",
-  timestamp: datetime('2009-01-03T18:15:05Z'),
-  txCount: 1,
-  size: 285,
-  weight: 1140,
-  bits: "1d00ffff",
-  difficulty: 1.0,
-  nonce: 2083236893,
-  version: 1,
-  chainwork: "0000000000000000000000000000000000000000000000000000000100010001"
-})
-RETURN genesis
-```
-
----
-
-## Phase 2: Transaction Ingestion
-
-### Create Transaction Node
-
-```cypher
-CREATE (t:Transaction {
-  txid: $txid,
-  blockHeight: $blockHeight,
-  blockHash: $blockHash,
-  timestamp: datetime($timestamp),
-  version: $version,
-  locktime: $locktime,
-  size: $size,
-  vsize: $vsize,
-  weight: $weight,
-  isCoinbase: $isCoinbase,
-  // Note: totalInput, totalOutput, fee calculated in Phase 5
-  totalInput: null,
-  totalOutput: null,
-  fee: null
-})
-RETURN t
-```
-
-### Create INCLUDED_IN Relationship
-
-```cypher
-// Link transaction to its containing block
-MATCH (t:Transaction {txid: $txid})
-MATCH (b:Block {height: $blockHeight})
-CREATE (t)-[:INCLUDED_IN]->(b)
-RETURN t, b
-```
-
-### Combined: Create Transaction + Link to Block
-
-```cypher
-MATCH (b:Block {height: $blockHeight})
-CREATE (t:Transaction {
-  txid: $txid,
-  blockHeight: $blockHeight,
-  blockHash: $blockHash,
-  timestamp: b.timestamp,  // Inherit from block
-  version: $version,
-  locktime: $locktime,
-  size: $size,
-  vsize: $vsize,
-  weight: $weight,
-  isCoinbase: $isCoinbase,
-  totalInput: null,
-  totalOutput: null,
-  fee: null
-})
-CREATE (t)-[:INCLUDED_IN]->(b)
-RETURN t
+height: 0
+hash: "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+previousHash: "0000000000000000000000000000000000000000000000000000000000000000"
+merkleRoot: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+timestamp: 1231006505 (2009-01-03T18:15:05Z)
+txCount: 1
+size: 285
+weight: 1140
+bits: "1d00ffff"
+difficulty: 1.0
+nonce: 2083236893
+version: 1
 ```
 
 ---
 
-## Phase 3: Output Ingestion
+## Phase 2: Output Ingestion
 
-### Create Output Node + Address + Relationships
+Outputs are ingested BEFORE transactions to support same-block UTXO references (Bitcoin allows spending outputs from earlier transactions in the same block).
 
-```cypher
-// Create output
-MATCH (t:Transaction {txid: $txid})
-CREATE (o:Output {
-  outputId: $txid + ':' + toString($outputIndex),
-  outputIndex: $outputIndex,
-  amount: $amount,
-  scriptPubKey: $scriptPubKey,
-  scriptType: $scriptType,
-  isSpent: false,
-  spentInTxid: null,
-  spentAtHeight: null
-})
-
-// Link output to transaction
-CREATE (t)-[:HAS_OUTPUT]->(o)
-
-// If address was successfully derived, create/link address
-WITH o, t
-WHERE $address IS NOT NULL
-MERGE (a:Address {address: $address})
-ON CREATE SET a.type = $addressType
-CREATE (o)-[:LOCKED_TO]->(a)
-
-RETURN o, t
-```
-
-### Handle OP_RETURN (NULL_DATA) - No Address
+### Actual Query: Create Outputs (from queries.rs: `CREATE_OUTPUTS_QUERY`)
 
 ```cypher
-// OP_RETURN output has no address
-MATCH (t:Transaction {txid: $txid})
-CREATE (o:Output {
-  outputId: $txid + ':' + toString($outputIndex),
-  outputIndex: $outputIndex,
-  amount: $amount,  // Usually 0
-  scriptPubKey: $scriptPubKey,
-  scriptType: 'NULL_DATA',
-  isSpent: false,
-  spentInTxid: null,
-  spentAtHeight: null
-})
-CREATE (t)-[:HAS_OUTPUT]->(o)
-// DO NOT create LOCKED_TO relationship
-RETURN o
+UNWIND $outputs AS out
+MERGE (o:Output {outputId: out.outputId})
+ON CREATE SET
+    o.outputIndex = out.outputIndex,
+    o.amount = out.amount,
+    o.scriptPubKey = out.scriptPubKey,
+    o.scriptType = out.scriptType,
+    o.isSpent = false,
+    o.spentInTxid = null,
+    o.spentAtHeight = null
+ON MATCH SET
+    o.outputIndex = out.outputIndex,
+    o.amount = out.amount,
+    o.scriptPubKey = out.scriptPubKey,
+    o.scriptType = out.scriptType
+WITH o, out
+MATCH (t:Transaction {txid: out.txid})
+MERGE (t)-[:HAS_OUTPUT]->(o)
 ```
+
+**Parameters:**
+- `$outputs` - List of output objects with `outputId`, `outputIndex`, `txid`, `amount` (satoshis), `scriptPubKey`, `scriptType`
+
+**Notes:**
+- Uses `ON CREATE` / `ON MATCH` to preserve `isSpent` state on reprocessing
+- `amount` is in satoshis (INTEGER, not FLOAT)
+- `scriptType` values: `P2PKH`, `P2SH`, `P2WPKH`, `P2WSH`, `P2TR`, `P2PK`, `NULL_DATA`, `UNKNOWN`
+
+### Actual Query: Create LOCKED_TO Relationships (from queries.rs: `CREATE_LOCKED_TO_QUERY`)
+
+Run separately for outputs that have derivable addresses:
+
+```cypher
+UNWIND $outputs AS out
+MATCH (o:Output {outputId: out.outputId})
+MERGE (a:Address {address: out.address})
+MERGE (o)-[:LOCKED_TO]->(a)
+```
+
+**Parameters:**
+- `$outputs` - Filtered list of outputs that have an `address` field (excludes NULL_DATA and UNKNOWN)
+
+**Notes:**
+- Address nodes have only the `address` property (no `type` property is stored)
+- NULL_DATA (OP_RETURN) outputs are excluded — they have no LOCKED_TO relationship
+
+---
+
+## Phase 3: Transaction Ingestion (with Amounts)
+
+Transactions are created WITH pre-calculated amounts. The `totalInput`, `totalOutput`, and `fee` fields are calculated in Rust using the UTXO cache during ingestion, avoiding expensive Neo4j graph traversals.
+
+### Actual Query (from queries.rs: `CREATE_TRANSACTIONS_QUERY`)
+
+```cypher
+UNWIND $transactions AS tx
+MERGE (t:Transaction {txid: tx.txid})
+SET t.blockHeight = tx.blockHeight,
+    t.blockHash = tx.blockHash,
+    t.timestamp = datetime({epochSeconds: tx.timestamp}),
+    t.version = tx.version,
+    t.locktime = tx.locktime,
+    t.size = tx.size,
+    t.vsize = tx.vsize,
+    t.weight = tx.weight,
+    t.isCoinbase = tx.isCoinbase,
+    t.totalInput = tx.totalInput,
+    t.totalOutput = tx.totalOutput,
+    t.fee = tx.fee
+WITH t, tx
+MATCH (b:Block {height: tx.blockHeight})
+MERGE (t)-[:INCLUDED_IN]->(b)
+```
+
+**Parameters:**
+- `$transactions` - List of transaction objects with ALL properties including amounts
+
+**Amount Calculation (done in Rust, not Cypher):**
+- `totalOutput` = sum of all output amounts (satoshis)
+- `totalInput` = sum of all input amounts from UTXO cache lookups (satoshis), with Neo4j fallback on cache miss
+- `fee` = `totalInput - totalOutput` (using `saturating_sub` to avoid underflow)
+- Coinbase transactions: `totalInput = 0`, `fee = 0`
 
 ---
 
 ## Phase 4: Input Ingestion
 
-### Create Input Node + SPENDS Relationship (Non-Coinbase)
+### Actual Query (from queries.rs: `CREATE_INPUTS_QUERY`)
 
 ```cypher
-// Create input
-MATCH (t:Transaction {txid: $txid})
-CREATE (i:Input {
-  inputId: $txid + ':' + toString($inputIndex),
-  inputIndex: $inputIndex,
-  previousTxid: $previousTxid,
-  previousOutputIndex: $previousOutputIndex,
-  scriptSig: $scriptSig,
-  sequence: $sequence,
-  witness: $witnessArray  // Array of hex strings (SegWit)
-})
-
-// Link input to transaction
-CREATE (i)-[:HAS_INPUT]->(t)
-
-// Find and link to previous output being spent
-WITH i, t
-MATCH (prevOut:Output {outputId: $previousTxid + ':' + toString($previousOutputIndex)})
-CREATE (i)-[:SPENDS]->(prevOut)
-
-// Update previous output spent status
-SET prevOut.isSpent = true,
-    prevOut.spentInTxid = $txid,
-    prevOut.spentAtHeight = $blockHeight
-
-RETURN i, t, prevOut
+UNWIND $inputs AS inp
+MERGE (i:Input {inputId: inp.inputId})
+SET i.inputIndex = inp.inputIndex,
+    i.scriptSig = inp.scriptSig,
+    i.sequence = inp.sequence,
+    i.witness = inp.witness
+WITH i, inp
+MATCH (t:Transaction {txid: inp.txid})
+MERGE (t)-[:HAS_INPUT]->(i)
+WITH i, inp
+WHERE inp.previousOutputIndex <> 4294967295
+MATCH (o:Output {outputId: inp.previousTxid + ':' + toString(inp.previousOutputIndex)})
+MERGE (i)-[:SPENDS]->(o)
+SET o.isSpent = true,
+    o.spentInTxid = inp.txid,
+    o.spentAtHeight = inp.blockHeight
 ```
 
-### Create Coinbase Input (Special Case)
+**Parameters:**
+- `$inputs` - List of input objects with `inputId`, `inputIndex`, `txid`, `previousTxid`, `previousOutputIndex`, `scriptSig`, `sequence`, `witness` (array), `blockHeight`
 
-```cypher
-// Coinbase input - no previous output
-MATCH (t:Transaction {txid: $txid, isCoinbase: true})
-CREATE (i:Input {
-  inputId: $txid + ':0',
-  inputIndex: 0,
-  previousTxid: "0000000000000000000000000000000000000000000000000000000000000000",
-  previousOutputIndex: 4294967295,
-  scriptSig: $coinbaseScriptSig,
-  sequence: $sequence,
-  witness: []  // No witness for coinbase
-})
-CREATE (i)-[:HAS_INPUT]->(t)
-// DO NOT create SPENDS relationship
-RETURN i, t
-```
+**Notes:**
+- `HAS_INPUT` direction is `(Transaction)-[:HAS_INPUT]->(Input)` (Transaction owns Input)
+- `previousTxid` and `previousOutputIndex` are used for the SPENDS lookup but NOT stored as Input node properties
+- Coinbase inputs (where `previousOutputIndex = 4294967295`) skip SPENDS creation
+- Spent outputs are updated with `isSpent = true`, `spentInTxid`, and `spentAtHeight`
 
 ---
 
-## Phase 5: Calculate Transaction Amounts
+## Phase 5: (Removed)
 
-### Calculate Non-Coinbase Transaction Amounts
+Phase 5 (Calculate Transaction Amounts) has been removed. Transaction amounts (`totalInput`, `totalOutput`, `fee`) are now calculated in Rust during Phase 3 using an in-memory UTXO cache, avoiding expensive Neo4j graph traversals. This provides a 10-100x performance improvement over the previous approach of running 3 Cypher queries per block.
 
-```cypher
-// Calculate totalInput by summing spent output amounts
-MATCH (t:Transaction {txid: $txid, isCoinbase: false})
-MATCH (t)<-[:HAS_INPUT]-(i:Input)-[:SPENDS]->(prevOut:Output)
-WITH t, sum(prevOut.amount) AS totalIn
-
-// Calculate totalOutput by summing transaction output amounts
-MATCH (t)-[:HAS_OUTPUT]->(o:Output)
-WITH t, totalIn, sum(o.amount) AS totalOut
-
-// Set amounts and calculate fee
-SET t.totalInput = totalIn,
-    t.totalOutput = totalOut,
-    t.fee = totalIn - totalOut
-
-RETURN t
-```
-
-### Calculate Coinbase Transaction Amounts
-
-```cypher
-// Coinbase has no inputs, only outputs
-MATCH (t:Transaction {txid: $txid, isCoinbase: true})
-MATCH (t)-[:HAS_OUTPUT]->(o:Output)
-WITH t, sum(o.amount) AS totalOut
-
-SET t.totalInput = 0.0,
-    t.totalOutput = totalOut,
-    t.fee = 0.0
-
-RETURN t
-```
+See [INGESTION_ARCHITECTURE.md](../architecture/INGESTION_ARCHITECTURE.md) for details on the UTXO cache-based amount calculation.
 
 ---
 
-## Phase 6: Derive Simplified Layer
+## Phase 6: Simplified Layer (Bulk)
 
-### Create PERFORMS Relationships (Address → Transaction)
+The simplified layer creates PERFORMS and BENEFITS_TO relationships using pre-aggregated data calculated in Rust, not Neo4j graph traversals.
+
+### Actual Query: PERFORMS (from queries.rs: `CREATE_PERFORMS_BULK_QUERY`)
 
 ```cypher
-// Find all addresses whose outputs were spent by this transaction
-MATCH (t:Transaction {txid: $txid, isCoinbase: false})
-MATCH (t)<-[:HAS_INPUT]-(i:Input)-[:SPENDS]->(prevOut:Output)-[:LOCKED_TO]->(addr:Address)
-WITH t, addr
-// Use MERGE to avoid duplicate relationships if multiple inputs from same address
-MERGE (addr)-[:PERFORMS]->(t)
-RETURN t, collect(DISTINCT addr) AS senders
+UNWIND $performs AS p
+MERGE (addr:Address {address: p.fromAddress})
+WITH addr, p
+MATCH (t:Transaction {txid: p.toTxid})
+MERGE (addr)-[r:PERFORMS]->(t)
+SET r.inputCount = p.inputCount,
+    r.amountSpent = p.amountSpent
 ```
 
-### Create BENEFITS_TO Relationships (Transaction → Address)
+**Parameters:**
+- `$performs` - List of `{fromAddress, toTxid, inputCount, amountSpent}` pre-aggregated in Rust
+
+### Actual Query: BENEFITS_TO (from queries.rs: `CREATE_BENEFITS_TO_BULK_QUERY`)
 
 ```cypher
-// Find all addresses that received outputs from this transaction
-MATCH (t:Transaction {txid: $txid})
-MATCH (t)-[:HAS_OUTPUT]->(o:Output)-[:LOCKED_TO]->(addr:Address)
-WITH t, addr
-// Use MERGE to avoid duplicate relationships if multiple outputs to same address
-MERGE (t)-[:BENEFITS_TO]->(addr)
-RETURN t, collect(DISTINCT addr) AS recipients
+UNWIND $benefitsTo AS b
+MATCH (t:Transaction {txid: b.fromTxid})
+WITH t, b
+MERGE (addr:Address {address: b.toAddress})
+MERGE (t)-[r:BENEFITS_TO]->(addr)
+SET r.outputCount = b.outputCount,
+    r.amountReceived = b.amountReceived
 ```
 
-### Batch Process Simplified Layer for Multiple Transactions
+**Parameters:**
+- `$benefitsTo` - List of `{fromTxid, toAddress, outputCount, amountReceived}` pre-aggregated in Rust
+
+**Notes:**
+- PERFORMS relationships have properties: `inputCount` (INTEGER), `amountSpent` (INTEGER, satoshis)
+- BENEFITS_TO relationships have properties: `outputCount` (INTEGER), `amountReceived` (INTEGER, satoshis)
+- Data is aggregated per (address, transaction) pair in Rust to avoid duplicates
+- In batch mode, writes are partitioned into 4 address-hash-based buckets to avoid Neo4j deadlocks
+
+---
+
+## UTXO Lookup Queries
+
+Used by the UTXO cache when a cache miss occurs during amount calculation.
+
+### Single Output Lookup (from queries.rs: `LOOKUP_OUTPUT_QUERY`)
 
 ```cypher
-// Process all non-coinbase transactions in a block
-MATCH (b:Block {height: $blockHeight})<-[:INCLUDED_IN]-(t:Transaction)
-WHERE t.isCoinbase = false
+MATCH (o:Output {outputId: $outputId})
+OPTIONAL MATCH (o)-[:LOCKED_TO]->(a:Address)
+RETURN o.outputId AS outputId,
+       o.outputIndex AS outputIndex,
+       o.amount AS amount,
+       o.scriptPubKey AS scriptPubKey,
+       o.scriptType AS scriptType,
+       a.address AS address
+```
 
-// PERFORMS relationships
-OPTIONAL MATCH (t)<-[:HAS_INPUT]-(i:Input)-[:SPENDS]->(prevOut:Output)-[:LOCKED_TO]->(senderAddr:Address)
-WITH t, collect(DISTINCT senderAddr) AS senders
-FOREACH (addr IN senders | MERGE (addr)-[:PERFORMS]->(t))
+### Batch Output Lookup (from queries.rs: `LOOKUP_OUTPUTS_BATCH_QUERY`)
 
-// BENEFITS_TO relationships
-WITH t
-MATCH (t)-[:HAS_OUTPUT]->(o:Output)-[:LOCKED_TO]->(recipientAddr:Address)
-WITH t, collect(DISTINCT recipientAddr) AS recipients
-FOREACH (addr IN recipients | MERGE (t)-[:BENEFITS_TO]->(addr))
+```cypher
+UNWIND $outputIds AS oid
+MATCH (o:Output {outputId: oid})
+OPTIONAL MATCH (o)-[:LOCKED_TO]->(a:Address)
+RETURN o.outputId AS outputId,
+       o.outputIndex AS outputIndex,
+       o.amount AS amount,
+       o.scriptPubKey AS scriptPubKey,
+       o.scriptType AS scriptType,
+       a.address AS address
+```
 
-RETURN count(t) AS processedCount
+**Notes:**
+- Batch lookup reduces N round-trips to 1 UNWIND query
+- Outputs not found are silently skipped (MATCH filters them out)
+- Used by `get_many_with_fallback()` in the UTXO cache
+
+### Mark Output as Spent (from queries.rs: `MARK_OUTPUT_SPENT_QUERY`)
+
+```cypher
+MATCH (o:Output {outputId: $outputId})
+SET o.isSpent = true,
+    o.spentInTxid = $spentInTxid,
+    o.spentAtHeight = $spentAtHeight
 ```
 
 ---
@@ -594,7 +552,7 @@ MATCH (addr:Address {address: $address})-[:PERFORMS]->(t:Transaction)-[:BENEFITS
 WHERE recipient <> addr  // Exclude change outputs back to self
 RETURN DISTINCT recipient.address AS sentTo,
        count(t) AS transactionCount,
-       sum(t.totalOutput) AS totalAmount
+       sum(t.totalOutput) AS totalAmount  // satoshis
 ORDER BY transactionCount DESC
 LIMIT 50
 ```
@@ -608,7 +566,7 @@ LIMIT 50
 ```cypher
 MATCH (addr:Address {address: $address})<-[:LOCKED_TO]-(o:Output)
 WHERE o.isSpent = false
-RETURN o.outputId, o.amount, o.scriptType
+RETURN o.outputId, o.amount, o.scriptType  // amount in satoshis
 ORDER BY o.amount DESC
 ```
 
@@ -616,7 +574,7 @@ ORDER BY o.amount DESC
 
 ```cypher
 MATCH (addr:Address {address: $address})<-[:LOCKED_TO]-(o:Output {isSpent: false})
-RETURN addr.address, sum(o.amount) AS balance
+RETURN addr.address, sum(o.amount) AS balanceSatoshis
 ```
 
 ### Trace UTXO Spend Chain
@@ -634,7 +592,8 @@ RETURN path
 MATCH (t:Transaction {txid: $txid})
 
 // Get inputs and the outputs they spent
-OPTIONAL MATCH (t)<-[:HAS_INPUT]-(i:Input)-[:SPENDS]->(prevOut:Output)-[:LOCKED_TO]->(inputAddr:Address)
+// Note: HAS_INPUT direction is (Transaction)-[:HAS_INPUT]->(Input)
+OPTIONAL MATCH (t)-[:HAS_INPUT]->(i:Input)-[:SPENDS]->(prevOut:Output)-[:LOCKED_TO]->(inputAddr:Address)
 
 // Get outputs and their destination addresses
 OPTIONAL MATCH (t)-[:HAS_OUTPUT]->(o:Output)-[:LOCKED_TO]->(outputAddr:Address)
@@ -656,7 +615,7 @@ RETURN t,
 ```cypher
 // Common pattern: Change goes back to sender
 MATCH (t:Transaction)
-MATCH (t)<-[:HAS_INPUT]-(i:Input)-[:SPENDS]->(prevOut:Output)-[:LOCKED_TO]->(addr:Address)
+MATCH (t)-[:HAS_INPUT]->(i:Input)-[:SPENDS]->(prevOut:Output)-[:LOCKED_TO]->(addr:Address)
 MATCH (t)-[:HAS_OUTPUT]->(changeOut:Output)-[:LOCKED_TO]->(addr)
 RETURN t, addr, changeOut
 LIMIT 100
@@ -673,8 +632,8 @@ MATCH (b:Block {height: $height})
 OPTIONAL MATCH (b)<-[:INCLUDED_IN]-(t:Transaction)
 RETURN b,
        count(t) AS transactionCount,
-       sum(t.totalOutput) AS totalBlockValue,
-       sum(t.fee) AS totalFees
+       sum(t.totalOutput) AS totalBlockValueSatoshis,
+       sum(t.fee) AS totalFeesSatoshis
 ```
 
 ### Find Largest Transactions in Date Range
@@ -684,7 +643,7 @@ MATCH (t:Transaction)
 WHERE t.timestamp >= datetime($startDate)
   AND t.timestamp <= datetime($endDate)
   AND t.isCoinbase = false
-RETURN t.txid, t.totalOutput, t.timestamp
+RETURN t.txid, t.totalOutput, t.timestamp  // totalOutput in satoshis
 ORDER BY t.totalOutput DESC
 LIMIT 100
 ```
@@ -714,10 +673,10 @@ LIMIT 100
 
 ```cypher
 MATCH (addr:Address)<-[:LOCKED_TO]-(o:Output {isSpent: false})
-WITH addr, sum(o.amount) AS balance
-WHERE balance > 10.0  // More than 10 BTC
-RETURN addr.address, balance
-ORDER BY balance DESC
+WITH addr, sum(o.amount) AS balanceSatoshis
+WHERE balanceSatoshis > 1000000000  // More than 10 BTC (in satoshis)
+RETURN addr.address, balanceSatoshis
+ORDER BY balanceSatoshis DESC
 ```
 
 ### Analyze Transaction Fees Over Time
@@ -726,8 +685,8 @@ ORDER BY balance DESC
 MATCH (t:Transaction {isCoinbase: false})
 WHERE t.timestamp >= datetime($startDate)
   AND t.timestamp <= datetime($endDate)
-WITH date(t.timestamp) AS day, avg(t.fee) AS avgFee, count(t) AS txCount
-RETURN day, avgFee, txCount
+WITH date(t.timestamp) AS day, avg(t.fee) AS avgFeeSatoshis, count(t) AS txCount
+RETURN day, avgFeeSatoshis, txCount
 ORDER BY day
 ```
 
@@ -736,7 +695,7 @@ ORDER BY day
 ```cypher
 // Transactions with many inputs AND many outputs
 MATCH (t:Transaction)
-MATCH (t)<-[:HAS_INPUT]-(i:Input)
+MATCH (t)-[:HAS_INPUT]->(i:Input)
 MATCH (t)-[:HAS_OUTPUT]->(o:Output)
 WITH t, count(DISTINCT i) AS inputCount, count(DISTINCT o) AS outputCount
 WHERE inputCount >= 10 AND outputCount >= 10
@@ -765,7 +724,7 @@ LIMIT 100
 PROFILE
 MATCH (addr:Address {address: $address})
 MATCH (addr)<-[:LOCKED_TO]-(o:Output {isSpent: false})
-RETURN sum(o.amount) AS balance
+RETURN sum(o.amount) AS balanceSatoshis
 ```
 
 ### Use Parameters (Not String Concatenation)
@@ -808,33 +767,23 @@ RETURN t
 
 ### Full workflow for ingesting one block:
 
-```cypher
-// === Phase 1: Create Block ===
-CREATE (b:Block {
-  height: $blockHeight,
-  hash: $blockHash,
-  previousHash: $previousHash,
-  merkleRoot: $merkleRoot,
-  timestamp: datetime($timestamp),
-  txCount: $txCount,
-  size: $size,
-  weight: $weight,
-  bits: $bits,
-  difficulty: $difficulty,
-  nonce: $nonce,
-  version: $version
-});
+The application uses UNWIND-based batch queries for all phases. The conceptual per-block workflow is:
 
-// Link to previous block
-MATCH (prevBlock:Block {height: $blockHeight - 1})
-MATCH (newBlock:Block {height: $blockHeight})
-CREATE (prevBlock)-[:NEXT_BLOCK]->(newBlock);
-
-// === Phase 2-6: For each transaction in block ===
-// (Repeat for each transaction)
-
-// See individual phase examples above for transaction, output, input ingestion
 ```
+Phase 1: MERGE Block node + NEXT_BLOCK relationship
+Phase 2: MERGE Output nodes + HAS_OUTPUT + LOCKED_TO relationships
+         (concurrent: populate UTXO cache with outputs)
+Phase 3: MERGE Transaction nodes with pre-calculated amounts + INCLUDED_IN
+Phase 4: MERGE Input nodes + HAS_INPUT + SPENDS relationships
+         (also marks spent outputs)
+Phase 5: (removed — amounts calculated in Rust during Phase 3)
+Phase 6: MERGE PERFORMS + BENEFITS_TO relationships (pre-aggregated data)
+Phase 7: Evict spent outputs from UTXO cache
+```
+
+All phases use `MERGE` (not `CREATE`) for idempotent reprocessing.
+
+See [INGESTION_ARCHITECTURE.md](../architecture/INGESTION_ARCHITECTURE.md) for detailed phase descriptions.
 
 ---
 

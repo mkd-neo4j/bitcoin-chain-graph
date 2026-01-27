@@ -28,10 +28,12 @@ Raw block headers map directly to Block node properties:
 Raw transaction data from blocks:
 - `txid`, `version`, `locktime`, `size`, `vsize`, `weight` → Direct mapping from transaction
 - `blockHeight`, `blockHash`, `timestamp` → Inherited from containing block
-- `totalInput` → **Calculated**: Sum of all input amounts (requires looking up previous outputs)
-- `totalOutput` → **Calculated**: Sum of all output amounts
-- `fee` → **Calculated**: `totalInput - totalOutput` (zero for coinbase transactions)
+- `totalInput` → **Calculated in Rust**: Sum of all input amounts in satoshis (looked up via UTXO cache with Neo4j fallback)
+- `totalOutput` → **Calculated in Rust**: Sum of all output amounts in satoshis
+- `fee` → **Calculated in Rust**: `totalInput - totalOutput` (zero for coinbase transactions)
 - `isCoinbase` → **Derived**: True if transaction has exactly one input with no previous output reference
+
+All amounts are stored as integers in **satoshis** (1 BTC = 100,000,000 satoshis).
 
 ### Output Data → Output Node
 Raw transaction output (vout) data:
@@ -43,20 +45,21 @@ Raw transaction output (vout) data:
 ### Input Data → Input Node
 Raw transaction input (vin) data:
 - `inputId` → **Derived**: Concatenation of `{txid}:{inputIndex}`
-- `inputIndex`, `previousTxid`, `previousOutputIndex`, `scriptSig`, `sequence` → Direct mapping from vin
+- `inputIndex`, `scriptSig`, `sequence` → Direct mapping from vin, stored as node properties
 - `witness` → Direct mapping from vin.txinwitness (SegWit transactions only)
+- `previousTxid`, `previousOutputIndex` → Used to create the SPENDS relationship (not stored as node properties)
 
 ### Address Data → Address Node
 **Not present in raw blockchain** - Addresses are **deterministically derived** by:
 1. Parsing the `scriptPubKey` from each output
-2. Extracting the address based on script type (P2PKH, P2SH, P2WPKH, P2WSH, P2TR)
+2. Extracting the address based on script type (P2PKH, P2SH, P2WPKH, P2WSH, P2TR, P2PK)
 3. For details see [ADDRESS_DERIVATION.md](../bitcoin/ADDRESS_DERIVATION.md)
 
 ### Relationship Data
 - `HAS_INPUT`, `HAS_OUTPUT`, `INCLUDED_IN`, `LOCKED_TO` → **Directly derivable** from transaction structure
 - `SPENDS` → **Requires lookup**: Match `input.previousTxid:previousOutputIndex` to existing Output nodes
-- `PERFORMS` → **Derived**: Follow `Input → SPENDS → Output → LOCKED_TO → Address` to find sender
-- `BENEFITS_TO` → **Derived**: Follow `Output → LOCKED_TO → Address` to find recipient
+- `PERFORMS` → **Derived**: Conceptually follows `Input → SPENDS → Output → LOCKED_TO → Address` to find sender (pre-aggregated in Rust, not graph-traversed)
+- `BENEFITS_TO` → **Derived**: Conceptually follows `Output → LOCKED_TO → Address` to find recipient (pre-aggregated in Rust, not graph-traversed)
 - `NEXT_BLOCK` → **Derived**: Link blocks by sequential height
 
 ---
@@ -78,7 +81,7 @@ Raw transaction input (vin) data:
 ║                   SPENDS                                                              ║
 ║                      │                                                                ║
 ║                      ▼                                                                ║
-║                   Input 0 ──HAS_INPUT──► Transaction ──HAS_OUTPUT──► Output 0         ║
+║                   Input 0 ◄──HAS_INPUT── Transaction ──HAS_OUTPUT──► Output 0         ║
 ║                                                       ──HAS_OUTPUT──► Output 1         ║
 ║                                                                          │             ║
 ║                                                                          │             ║
@@ -116,9 +119,8 @@ A Bitcoin address that can send or receive funds.
 | Property | Type | Description |
 |----------|------|-------------|
 | address | STRING | Bitcoin address (e.g., `1A1zP1...`, `bc1q...`, `bc1p...`) |
-| type | STRING | Address type: `P2PKH`, `P2SH`, `P2WPKH`, `P2WSH`, `P2TR` |
 
-Note: Address nodes are derived by parsing the scriptPubKey of outputs. They don't exist explicitly in raw blockchain data but are deterministically derivable.
+Note: Address nodes are derived by parsing the scriptPubKey of outputs. They don't exist explicitly in raw blockchain data but are deterministically derivable. The address type (P2PKH, P2SH, etc.) is encoded in the address format itself and can be determined from the corresponding Output's `scriptType` property via the LOCKED_TO relationship.
 
 ---
 
@@ -132,9 +134,9 @@ A Bitcoin transaction that moves value.
 | blockHeight | INTEGER | Block number containing this transaction |
 | blockHash | STRING | Hash of the containing block |
 | timestamp | DATETIME | Block timestamp |
-| totalInput | FLOAT | Sum of all input amounts (BTC) |
-| totalOutput | FLOAT | Sum of all output amounts (BTC) |
-| fee | FLOAT | Miner fee (totalInput - totalOutput) |
+| totalInput | INTEGER | Sum of all input amounts (satoshis) |
+| totalOutput | INTEGER | Sum of all output amounts (satoshis) |
+| fee | INTEGER | Miner fee: totalInput - totalOutput (satoshis) |
 | size | INTEGER | Transaction size in bytes |
 | vsize | INTEGER | Virtual size (SegWit) |
 | weight | INTEGER | Transaction weight units |
@@ -152,9 +154,9 @@ A transaction output representing a "coin" that can be spent once.
 |----------|------|-------------|
 | outputId | STRING | Unique identifier: `{txid}:{outputIndex}` |
 | outputIndex | INTEGER | Position in transaction outputs (0, 1, 2...) |
-| amount | FLOAT | Amount in BTC |
+| amount | INTEGER | Amount in satoshis (1 BTC = 100,000,000 satoshis) |
 | scriptPubKey | STRING | Locking script (defines who can spend) |
-| scriptType | STRING | Script type: `P2PKH`, `P2SH`, `P2WPKH`, `P2WSH`, `P2TR`, `NULL_DATA`, `UNKNOWN` |
+| scriptType | STRING | Script type: `P2PKH`, `P2SH`, `P2WPKH`, `P2WSH`, `P2TR`, `P2PK`, `NULL_DATA`, `UNKNOWN` |
 | isSpent | BOOLEAN | Has this output been spent? |
 | spentInTxid | STRING | Transaction ID that spent this output (null if unspent) |
 | spentAtHeight | INTEGER | Block height when spent (null if unspent) |
@@ -171,13 +173,13 @@ A transaction input that spends a previous output.
 |----------|------|-------------|
 | inputId | STRING | Unique identifier: `{txid}:{inputIndex}` |
 | inputIndex | INTEGER | Position in transaction inputs (0, 1, 2...) |
-| previousTxid | STRING | Transaction ID containing the output being spent |
-| previousOutputIndex | INTEGER | Index of the output being spent |
 | scriptSig | STRING | Unlocking script (proves authorisation to spend) |
 | sequence | INTEGER | Sequence number |
 | witness | [STRING] | Witness data array (SegWit transactions) |
 
 Coinbase transactions have a single input with no previous output reference.
+
+**Note:** The `previousTxid` and `previousOutputIndex` from the raw blockchain data are used during ingestion to create the SPENDS relationship to the referenced Output node, but are not stored as properties on the Input node itself. The SPENDS relationship encodes this link structurally.
 
 ---
 
@@ -199,7 +201,6 @@ A block in the blockchain.
 | difficulty | FLOAT | Mining difficulty |
 | nonce | INTEGER | Mining nonce |
 | version | INTEGER | Block version |
-| chainwork | STRING | Cumulative chain work |
 
 ---
 
@@ -218,6 +219,8 @@ Tracks the progress of blockchain ingestion to enable resume-on-failure.
 
 **Purpose**: Allows ingestion to resume from the last successfully processed block after a failure or interruption. Since each block is ingested in a single Neo4j transaction, at most one block needs to be reprocessed on resume.
 
+**Sentinel value**: The initial `lastProcessedHeight` is set to `-999` (not `-1`) to work around a neo4rs driver bug that misreads `-1` as `255`. A value of `-999` means "not yet started".
+
 **Note**: This is metadata for the ingestion process, not part of the blockchain data itself. It can be safely deleted and recreated without affecting the blockchain graph.
 
 ---
@@ -226,12 +229,12 @@ Tracks the progress of blockchain ingestion to enable resume-on-failure.
 
 ### Simplified Layer (Follow the Money)
 
-| Relationship | Direction | Description |
-|--------------|-----------|-------------|
-| PERFORMS | `(:Address)-[:PERFORMS]->(:Transaction)` | Address whose UTXO was spent as an input |
-| BENEFITS_TO | `(:Transaction)-[:BENEFITS_TO]->(:Address)` | Address that received an output |
+| Relationship | Direction | Properties | Description |
+|--------------|-----------|------------|-------------|
+| PERFORMS | `(:Address)-[:PERFORMS]->(:Transaction)` | `inputCount` (INTEGER), `amountSpent` (INTEGER, satoshis) | Address whose UTXO was spent as an input |
+| BENEFITS_TO | `(:Transaction)-[:BENEFITS_TO]->(:Address)` | `outputCount` (INTEGER), `amountReceived` (INTEGER, satoshis) | Address that received an output |
 
-These relationships are derived during ingest by examining which addresses controlled the spent inputs and which addresses received the outputs.
+These relationships are pre-aggregated in Rust during ingestion. Each relationship aggregates all inputs/outputs between a given address and transaction into a single relationship with totals.
 
 ---
 
@@ -239,7 +242,7 @@ These relationships are derived during ingest by examining which addresses contr
 
 | Relationship | Direction | Description |
 |--------------|-----------|-------------|
-| HAS_INPUT | `(:Input)-[:HAS_INPUT]->(:Transaction)` | Input feeds into transaction |
+| HAS_INPUT | `(:Transaction)-[:HAS_INPUT]->(:Input)` | Transaction has this input |
 | HAS_OUTPUT | `(:Transaction)-[:HAS_OUTPUT]->(:Output)` | Transaction produces output |
 | SPENDS | `(:Input)-[:SPENDS]->(:Output)` | Input consumes a previous output |
 | LOCKED_TO | `(:Output)-[:LOCKED_TO]->(:Address)` | Output is controlled by address |
@@ -283,7 +286,7 @@ These relationships are derived during ingest by examining which addresses contr
 │    │                      │                       │       │
 │    │ LOCKED_TO            │            LOCKED_TO  │       │
 │    │                      │                       │       │
-│  Output ◄────── SPENDS ── Input ─── HAS_INPUT ──► Transaction ─── HAS_OUTPUT ──► Output
+│  Output ◄────── SPENDS ── Input ◄── HAS_INPUT ─── Transaction ─── HAS_OUTPUT ──► Output
 │ (previous)                                                                          │
 │                                                                                     │
 │                                                                                     │
