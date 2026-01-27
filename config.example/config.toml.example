@@ -1,0 +1,151 @@
+# =============================================================================
+# Bitcoin Chain Graph - Configuration
+# =============================================================================
+#
+# Copy this file to get started:
+#   cp config.example/config.toml.example config/default.toml
+#
+# Then edit it for your environment (at minimum: blocks_dir, neo4j password).
+#
+# These defaults are tuned for a mid-range server (4-8 cores, 16-32GB RAM).
+# Comments throughout explain how to scale each setting up or down.
+# =============================================================================
+
+[bitcoin]
+# Path to Bitcoin blocks directory containing .blk files.
+# Update this to match your Bitcoin Core data directory.
+#   Linux default:  ~/.bitcoin/blocks
+#   macOS default:  ~/Library/Application Support/Bitcoin/blocks
+#   Development:    ./test_data/blocks
+blocks_dir = "/data/bitcoin/blocks"
+
+# Starting block height for ingestion (0 = genesis block)
+start_height = 0
+
+# Optional: stop ingestion at this height.
+# Omit or comment out to sync all the way to the chain tip.
+# Useful for testing or bounded analysis.
+# end_height = 100000
+
+[neo4j]
+# Neo4j Bolt connection
+uri = "bolt://localhost:7687"
+user = "neo4j"
+password = "CHANGE_ME"          # <-- set your Neo4j password here
+database = "neo4j"
+
+# Connection pool sizing
+#   Low resource (2 cores):    max = 4,   min = 1
+#   Default (4-8 cores):       max = 20,  min = 2
+#   High performance (16+):    max = 50,  min = 4
+#   Ultra (40+ cores):         max = 100, min = 16
+max_connections = 20
+min_connections = 2
+
+# Connection timeout in seconds
+connection_timeout_secs = 30
+
+# Rows fetched per network round-trip (higher = fewer round-trips, more memory)
+fetch_size = 500
+
+# Query retry attempts on transient failures
+max_retries = 3
+
+# Chunk size for UNWIND write queries
+#   Low resource: 1000    Default: 5000    High: 10000-20000
+write_batch_size = 5000
+
+[ingestion]
+# Number of blocks per processing batch
+#   Low resource: 10-50    Default: 5000    High/Ultra: 5000-10000
+batch_size = 5000
+
+# Maximum memory budget per batch (MB)
+#   Low resource: 128    Default: 512    High: 2048    Ultra: 4096
+max_batch_memory_mb = 512
+
+# Data integrity validation
+enable_validation = true
+
+# Run validation queries every N blocks (higher = less overhead)
+#   Low resource: 10000    Default: 10000    Aggressive: 1000
+validate_every_n_blocks = 10000
+
+# Save checkpoint every N batches (higher = faster, but more re-work on crash)
+#   Safe: 1    Balanced: 10    Aggressive: 50
+checkpoint_interval = 10
+
+# Resume behavior
+auto_resume = true
+validate_on_resume = true
+
+[performance]
+# UTXO cache memory budget in megabytes.
+# Each cached entry uses ~72 bytes (36-byte key + 36-byte value).
+#   2 MB    ~ 28k entries,   hit rate ~40-50%   (low resource)
+#   15 MB   ~ 208k entries                      (minimal)
+#   140 MB  ~ 1.9M entries,  hit rate 85-95%    (recommended)
+#   500 MB  ~ 6.9M entries                      (high performance)
+#   1400 MB ~ 19.4M entries, hit rate 95-99%    (ultra)
+# Higher = fewer Neo4j lookups = faster ingestion.
+utxo_cache_memory_mb = 140
+
+# Blocks to scan backwards for cache pre-warming on startup.
+# Loads recent UTXOs from .blk files (fast) instead of Neo4j (slow).
+#   Low resource: 1000    Default: 1000000    Set to 0 to disable.
+utxo_prewarm_depth = 1000000
+
+# Concurrent batch writes to Neo4j
+#   Low resource: 1    Default: 4    High: 8-16    Ultra: 16-32
+parallel_batches = 4
+
+# Report ingestion progress every N blocks
+#   Frequent: 50    Default: 500    Infrequent: 1000
+progress_report_interval = 500
+
+[logging]
+# Log level: trace, debug, info, warn, error
+# Can also be overridden with the RUST_LOG environment variable.
+level = "info"
+
+# Set to true for structured JSON log output (useful for log aggregators).
+json_format = false
+
+# =============================================================================
+# [bitcoin_rpc] - LIVE MODE ONLY
+# =============================================================================
+# Uncomment this entire section to enable live mode (RPC catchup + ZMQ streaming).
+# Requires a running Bitcoin Core node with RPC and ZMQ enabled.
+#
+# In your bitcoin.conf:
+#   rpcuser=btcgraph
+#   rpcpassword=your-rpc-password
+#   zmqpubhashblock=tcp://127.0.0.1:28332
+#
+# If accessing Bitcoin Core over SSH:
+#   ssh -L 8332:127.0.0.1:8332 -L 28332:127.0.0.1:28332 -N user@host
+#
+# [bitcoin_rpc]
+# url = "http://localhost:8332"
+# user = "btcgraph"
+# password = "CHANGE_ME"
+#
+# # Blocks to fetch in parallel during RPC catchup phase
+# #   Conservative: 50    Default: 200    Aggressive: 500
+# batch_size = 200
+#
+# # Timeout for individual RPC requests (seconds)
+# timeout_secs = 30
+#
+# # ZMQ endpoint for real-time block notifications
+# # Must match bitcoin.conf zmqpubhashblock setting
+# zmq_endpoint = "tcp://127.0.0.1:28332"
+#
+# # Maximum concurrent in-flight RPC requests during batch fetching
+# rpc_max_concurrent = 32
+#
+# # ZMQ reconnection settings
+# zmq_max_reconnect_attempts = 5
+# zmq_reconnect_base_delay_ms = 1000
+# zmq_recv_timeout_mins = 60
+# zmq_max_consecutive_failures = 10
