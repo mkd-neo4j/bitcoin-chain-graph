@@ -108,30 +108,36 @@ async fn create_indexes(graph: &Graph) -> Result<()> {
 /// This is informational — logs a warning if fewer constraints than expected
 /// are found, but does not fail. Useful for catching silent schema issues.
 async fn verify_schema(graph: &Graph) -> Result<()> {
-    let mut result = graph
+    let result = graph
         .execute(query("SHOW CONSTRAINTS"))
-        .await
-        .map_err(|e| WriterError::DatabaseError(
-            format!("Failed to verify constraints: {}", e)
-        ))?;
+        .await;
 
-    let mut constraint_count = 0;
-    while let Some(_row) = result.next().await
-        .map_err(|e| WriterError::DatabaseError(format!("Failed to read constraint: {}", e)))? {
-        constraint_count += 1;
-    }
+    match result {
+        Ok(mut rows) => {
+            let mut constraint_count = 0;
+            while let Ok(Some(_row)) = rows.next().await {
+                constraint_count += 1;
+            }
 
-    if constraint_count < EXPECTED_CONSTRAINTS {
-        tracing::warn!(
-            expected = EXPECTED_CONSTRAINTS,
-            found = constraint_count,
-            "Schema verification: fewer constraints than expected"
-        );
-    } else {
-        tracing::info!(
-            constraints = constraint_count,
-            "Schema verification passed"
-        );
+            if constraint_count < EXPECTED_CONSTRAINTS {
+                tracing::warn!(
+                    expected = EXPECTED_CONSTRAINTS,
+                    found = constraint_count,
+                    "Schema verification: fewer constraints than expected"
+                );
+            } else {
+                tracing::info!(
+                    constraints = constraint_count,
+                    "Schema verification passed"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Schema verification skipped: SHOW CONSTRAINTS not available"
+            );
+        }
     }
 
     Ok(())
