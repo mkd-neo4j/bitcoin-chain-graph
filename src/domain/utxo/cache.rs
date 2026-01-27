@@ -376,7 +376,7 @@ impl<W: GraphWriter> UtxoCache<W> {
     /// from that shard.
     pub fn insert(&self, key: UtxoKey, output: CachedOutput) {
         let idx = Self::shard_index(&key);
-        let mut shard = self.shards[idx].lock().unwrap();
+        let mut shard = self.shards[idx].lock().expect("UTXO shard mutex poisoned");
         shard.put(key, output);
         self.stats.record_insert();
     }
@@ -392,7 +392,7 @@ impl<W: GraphWriter> UtxoCache<W> {
         // Try cache first
         {
             let idx = Self::shard_index(key);
-            let mut shard = self.shards[idx].lock().unwrap();
+            let mut shard = self.shards[idx].lock().expect("UTXO shard mutex poisoned");
             if let Some(output) = shard.get(key) {
                 self.stats.record_hit();
                 return Ok(output.clone());
@@ -417,7 +417,7 @@ impl<W: GraphWriter> UtxoCache<W> {
         Ok(CachedOutput {
             output_index: output_data.output_index,
             amount: output_data.amount,
-            script_type: output_data.script_type.parse().unwrap(),
+            script_type: output_data.script_type.parse().unwrap_or(ScriptTypeTag::Unknown),
             address: output_data.address.map(|a| Arc::from(a.as_str())),
         })
     }
@@ -427,7 +427,7 @@ impl<W: GraphWriter> UtxoCache<W> {
     /// Returns `true` if the output was in cache and removed.
     pub fn remove(&self, key: &UtxoKey) -> bool {
         let idx = Self::shard_index(key);
-        let mut shard = self.shards[idx].lock().unwrap();
+        let mut shard = self.shards[idx].lock().expect("UTXO shard mutex poisoned");
         let removed = shard.pop(key).is_some();
         if removed {
             self.stats.record_removal();
@@ -456,7 +456,7 @@ impl<W: GraphWriter> UtxoCache<W> {
             if indices.is_empty() {
                 continue;
             }
-            let mut shard = self.shards[shard_idx].lock().unwrap();
+            let mut shard = self.shards[shard_idx].lock().expect("UTXO shard mutex poisoned");
             for &i in indices {
                 let key = &keys[i];
                 if let Some(output) = shard.get(key) {
@@ -478,7 +478,7 @@ impl<W: GraphWriter> UtxoCache<W> {
     /// for misses). Returns all found outputs keyed by UtxoKey. Reduces N Neo4j
     /// round-trips to 1 UNWIND query for all cache misses.
     ///
-    /// Outputs not found in either cache or Neo4j are silently skipped.
+    /// Outputs not found in either cache or Neo4j are skipped with a warning.
     pub async fn get_many_with_fallback(
         &self,
         keys: &[UtxoKey],
@@ -497,7 +497,7 @@ impl<W: GraphWriter> UtxoCache<W> {
                     let cached = CachedOutput {
                         output_index: output.output_index,
                         amount: output.amount,
-                        script_type: output.script_type.parse().unwrap(),
+                        script_type: output.script_type.parse().unwrap_or(ScriptTypeTag::Unknown),
                         address: output.address.as_deref().map(Arc::from),
                     };
                     // Also insert into cache for future lookups
@@ -505,6 +505,22 @@ impl<W: GraphWriter> UtxoCache<W> {
                     found.insert(key, cached);
                 }
             }
+        }
+
+        if found.len() < keys.len() {
+            let missing_count = keys.len() - found.len();
+            let missing_ids: Vec<String> = keys
+                .iter()
+                .filter(|k| !found.contains_key(k))
+                .take(5)
+                .map(|k| k.to_output_id_string())
+                .collect();
+            tracing::warn!(
+                missing_count,
+                total_requested = keys.len(),
+                sample_missing_ids = ?missing_ids,
+                "UTXOs not found in cache or Neo4j — fee/amount calculations may be inaccurate"
+            );
         }
 
         Ok(found)
@@ -521,7 +537,7 @@ impl<W: GraphWriter> UtxoCache<W> {
             if indices.is_empty() {
                 continue;
             }
-            let mut shard = self.shards[shard_idx].lock().unwrap();
+            let mut shard = self.shards[shard_idx].lock().expect("UTXO shard mutex poisoned");
             for &i in indices {
                 if shard.pop(&keys[i]).is_some() {
                     self.stats.record_removal();
@@ -536,7 +552,7 @@ impl<W: GraphWriter> UtxoCache<W> {
     /// Useful for pre-warming analysis without disturbing cache order.
     pub fn contains(&self, key: &UtxoKey) -> bool {
         let idx = Self::shard_index(key);
-        let shard = self.shards[idx].lock().unwrap();
+        let shard = self.shards[idx].lock().expect("UTXO shard mutex poisoned");
         shard.peek(key).is_some()
     }
 
@@ -553,7 +569,7 @@ impl<W: GraphWriter> UtxoCache<W> {
 
     /// Get total number of entries across all shards.
     pub fn len(&self) -> usize {
-        self.shards.iter().map(|s| s.lock().unwrap().len()).sum()
+        self.shards.iter().map(|s| s.lock().expect("UTXO shard mutex poisoned").len()).sum()
     }
 
     /// Check if cache is empty.
@@ -565,7 +581,7 @@ impl<W: GraphWriter> UtxoCache<W> {
     pub fn capacity(&self) -> usize {
         self.shards
             .iter()
-            .map(|s| s.lock().unwrap().cap().get())
+            .map(|s| s.lock().expect("UTXO shard mutex poisoned").cap().get())
             .sum()
     }
 
@@ -588,7 +604,7 @@ impl<W: GraphWriter> UtxoCache<W> {
     /// pre-warming should stop.
     pub fn insert_prewarm(&self, key: UtxoKey, output: CachedOutput) -> bool {
         let idx = Self::shard_index(&key);
-        let mut shard = self.shards[idx].lock().unwrap();
+        let mut shard = self.shards[idx].lock().expect("UTXO shard mutex poisoned");
 
         if shard.len() >= shard.cap().get() {
             return false;
@@ -602,18 +618,18 @@ impl<W: GraphWriter> UtxoCache<W> {
     /// Check if cache has capacity for more entries (any shard not full).
     pub fn has_capacity(&self) -> bool {
         self.shards.iter().any(|s| {
-            let shard = s.lock().unwrap();
+            let shard = s.lock().expect("UTXO shard mutex poisoned");
             shard.len() < shard.cap().get()
         })
     }
 
     /// Get cache fill percentage (0.0 to 1.0).
     pub fn fill_percentage(&self) -> f64 {
-        let total_len: usize = self.shards.iter().map(|s| s.lock().unwrap().len()).sum();
+        let total_len: usize = self.shards.iter().map(|s| s.lock().expect("UTXO shard mutex poisoned").len()).sum();
         let total_cap: usize = self
             .shards
             .iter()
-            .map(|s| s.lock().unwrap().cap().get())
+            .map(|s| s.lock().expect("UTXO shard mutex poisoned").cap().get())
             .sum();
         if total_cap == 0 {
             0.0

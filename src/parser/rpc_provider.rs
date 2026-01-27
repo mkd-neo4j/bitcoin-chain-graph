@@ -97,7 +97,7 @@ impl RpcBlockProvider {
             }
         }
 
-        Err(last_error.unwrap())
+        Err(last_error.expect("retry loop completed without recording an error"))
     }
 
     /// Execute a single RPC request (no retry)

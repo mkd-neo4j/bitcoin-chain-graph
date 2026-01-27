@@ -421,9 +421,12 @@ async fn run_streaming_ingestion(
 
         // Ingest batch when full or at end
         if batch.len() >= batch_size || height == max_height {
+            if batch.is_empty() {
+                continue;
+            }
             let batch_start = Instant::now();
-            let batch_start_height = batch.first().unwrap().0;
-            let batch_end_height = batch.last().unwrap().0;
+            let batch_start_height = batch.first().expect("batch verified non-empty").0;
+            let batch_end_height = batch.last().expect("batch verified non-empty").0;
 
             tracing::info!(
                 start = batch_start_height,
@@ -431,15 +434,26 @@ async fn run_streaming_ingestion(
                 "Ingesting batch"
             );
 
-            orchestrator
+            if let Err(e) = orchestrator
                 .ingest_blocks_batch(&batch, batch_size)
                 .await
-                .with_context(|| {
+            {
+                let stats = orchestrator.cache_stats();
+                tracing::error!(
+                    error = %e,
+                    blocks_processed,
+                    cache_hits = stats.hits,
+                    cache_misses = stats.misses,
+                    hit_rate_pct = format!("{:.2}", stats.hit_rate_percent()),
+                    "Batch ingestion failed — cache stats at time of failure"
+                );
+                return Err(e).with_context(|| {
                     format!(
                         "Failed to ingest batch starting at block {}",
                         batch_start_height
                     )
-                })?;
+                });
+            }
 
             blocks_processed += batch.len();
 
@@ -557,7 +571,10 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
     println!("║  Live Mode: RPC Catchup + ZMQ Real-Time                      ║");
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
-    // Validate RPC config exists
+    // Validate RPC config
+    config
+        .validate_rpc()
+        .context("RPC configuration validation failed for live mode")?;
     let rpc_config = config
         .bitcoin_rpc
         .as_ref()
@@ -619,11 +636,7 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
     println!("   Chain tip: {}", tip);
     println!(
         "   Blocks behind: {}",
-        if tip >= resume_height {
-            tip - resume_height
-        } else {
-            0
-        }
+        tip.saturating_sub(resume_height)
     );
     println!("   RPC batch size: {}", rpc_batch_size);
     println!("   ZMQ endpoint: {}", rpc_config.zmq_endpoint);
@@ -694,10 +707,22 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         );
 
         // Ingest using existing orchestrator
-        orchestrator
+        if let Err(e) = orchestrator
             .ingest_blocks_batch(&blocks, config.ingestion.batch_size)
             .await
-            .with_context(|| format!("Failed to ingest batch {}-{}", current_height, batch_end))?;
+        {
+            let stats = orchestrator.cache_stats();
+            tracing::error!(
+                error = %e,
+                blocks_processed,
+                cache_hits = stats.hits,
+                cache_misses = stats.misses,
+                hit_rate_pct = format!("{:.2}", stats.hit_rate_percent()),
+                "Batch ingestion failed — cache stats at time of failure"
+            );
+            return Err(e)
+                .with_context(|| format!("Failed to ingest batch {}-{}", current_height, batch_end));
+        }
 
         blocks_processed += blocks.len() as u64;
         current_height = batch_end + 1;

@@ -34,7 +34,7 @@
 
 use crate::domain::{
     BenefitsToData, BlockData, CachedOutput, CheckpointData, InputData, OutputData, PerformsData,
-    TransactionData, UtxoCache, UtxoKey,
+    ScriptTypeTag, TransactionData, UtxoCache, UtxoKey,
 };
 use crate::writer::{GraphWriter, Result, WriterError};
 use bitcoin::{Block, Network};
@@ -412,7 +412,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                         let cached_output = CachedOutput {
                             output_index: output.output_index,
                             amount: output.amount,
-                            script_type: output.script_type.parse().unwrap(),
+                            script_type: output.script_type.parse().unwrap_or(ScriptTypeTag::Unknown),
                             address: output.address.as_deref().map(Arc::from),
                         };
                         self.utxo_cache.insert(key, cached_output);
@@ -663,7 +663,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                     let cached_output = CachedOutput {
                         output_index: output.output_index,
                         amount: output.amount,
-                        script_type: output.script_type.parse().unwrap(),
+                        script_type: output.script_type.parse().unwrap_or(ScriptTypeTag::Unknown),
                         address: output.address.as_deref().map(Arc::from),
                     };
                     self.utxo_cache.insert(key, cached_output);
@@ -837,15 +837,12 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             // Aggregate by (txid, address)
             let mut benefits_map: HashMap<String, (u32, u64)> = HashMap::new();
 
-            for output in &tx.output {
+            for (output_index, output) in tx.output.iter().enumerate() {
                 // Extract address from current block (already in memory)
                 let output_data = OutputData::from_output(
                     output,
                     &txid,
-                    tx.output
-                        .iter()
-                        .position(|o| std::ptr::eq(o, output))
-                        .unwrap() as u32,
+                    output_index as u32,
                     self.network,
                 );
 
