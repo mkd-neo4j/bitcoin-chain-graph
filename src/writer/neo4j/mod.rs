@@ -23,6 +23,7 @@ use conversions::*;
 /// with bulk writes, connection pooling, and configurable performance settings.
 pub struct Neo4jWriter {
     graph: Arc<Graph>,
+    batch_size: usize,
 }
 
 impl Neo4jWriter {
@@ -38,6 +39,7 @@ impl Neo4jWriter {
 
         Ok(Self {
             graph: Arc::new(graph),
+            batch_size: config.write_batch_size,
         })
     }
 
@@ -71,74 +73,114 @@ impl GraphWriter for Neo4jWriter {
     }
 
     async fn write_blocks(&self, blocks: &[BlockData]) -> Result<()> {
-        let blocks_data = blocks_to_bolt_list(blocks)?;
+        if blocks.is_empty() {
+            return Ok(());
+        }
 
-        self.graph
-            .run(query(queries::CREATE_BLOCKS_QUERY)
-                .param("blocks", blocks_data.as_slice()))
-            .await
-            .map_err(|e| WriterError::QueryFailed(format!("write_blocks failed: {}", e)))?;
+        // Process in chunks to avoid massive queries
+        for (i, chunk) in blocks.chunks(self.batch_size).enumerate() {
+            let blocks_data = blocks_to_bolt_list(chunk)?;
+
+            if i > 0 {
+                tracing::debug!("Writing blocks batch {}/{}", i + 1, (blocks.len() + self.batch_size - 1) / self.batch_size);
+            }
+
+            self.graph
+                .run(query(queries::CREATE_BLOCKS_QUERY)
+                    .param("blocks", blocks_data.as_slice()))
+                .await
+                .map_err(|e| WriterError::QueryFailed(format!("write_blocks failed (batch {}): {}", i, e)))?;
+        }
 
         Ok(())
     }
 
     async fn write_transactions(&self, transactions: &[TransactionData]) -> Result<()> {
-        let tx_data = transactions_to_bolt_list(transactions)?;
+        if transactions.is_empty() {
+            return Ok(());
+        }
 
-        self.graph
-            .run(query(queries::CREATE_TRANSACTIONS_QUERY)
-                .param("transactions", tx_data.as_slice()))
-            .await
-            .map_err(|e| WriterError::QueryFailed(format!("write_transactions failed: {}", e)))?;
+        // Process in chunks to avoid massive queries
+        for (i, chunk) in transactions.chunks(self.batch_size).enumerate() {
+            let tx_data = transactions_to_bolt_list(chunk)?;
+
+            if i > 0 {
+                tracing::debug!("Writing transactions batch {}/{}", i + 1, (transactions.len() + self.batch_size - 1) / self.batch_size);
+            }
+
+            self.graph
+                .run(query(queries::CREATE_TRANSACTIONS_QUERY)
+                    .param("transactions", tx_data.as_slice()))
+                .await
+                .map_err(|e| WriterError::QueryFailed(format!("write_transactions failed (batch {}): {}", i, e)))?;
+        }
 
         Ok(())
     }
 
     async fn write_outputs(&self, outputs: &[OutputData]) -> Result<()> {
-        // Create output nodes
-        let output_data = outputs_to_bolt_list(outputs)?;
+        if outputs.is_empty() {
+            return Ok(());
+        }
 
-        self.graph
-            .run(query(queries::CREATE_OUTPUTS_QUERY)
-                .param("outputs", output_data.as_slice()))
-            .await
-            .map_err(|e| WriterError::QueryFailed(format!("write_outputs failed: {}", e)))?;
+        // Process in chunks to avoid massive queries
+        for (i, chunk) in outputs.chunks(self.batch_size).enumerate() {
+            // Create output nodes
+            let output_data = outputs_to_bolt_list(chunk)?;
 
-        // Create LOCKED_TO relationships for outputs with addresses
-        let outputs_with_address = filter_outputs_with_address(outputs);
-
-        if !outputs_with_address.is_empty() {
-            let owned_outputs: Vec<OutputData> = outputs_with_address.into_iter().cloned().collect();
-            let address_data = outputs_to_bolt_list(&owned_outputs)?;
+            if i > 0 {
+                tracing::debug!("Writing outputs batch {}/{}", i + 1, (outputs.len() + self.batch_size - 1) / self.batch_size);
+            }
 
             self.graph
-                .run(query(queries::CREATE_LOCKED_TO_QUERY)
-                    .param("outputs", address_data.as_slice()))
+                .run(query(queries::CREATE_OUTPUTS_QUERY)
+                    .param("outputs", output_data.as_slice()))
                 .await
-                .map_err(|e| WriterError::QueryFailed(format!("CREATE_LOCKED_TO failed: {}", e)))?;
+                .map_err(|e| WriterError::QueryFailed(format!("write_outputs failed (batch {}): {}", i, e)))?;
+
+            // Create LOCKED_TO relationships for outputs with addresses
+            let outputs_with_address = filter_outputs_with_address(chunk);
+
+            if !outputs_with_address.is_empty() {
+                let owned_outputs: Vec<OutputData> = outputs_with_address.into_iter().cloned().collect();
+                let address_data = outputs_to_bolt_list(&owned_outputs)?;
+
+                self.graph
+                    .run(query(queries::CREATE_LOCKED_TO_QUERY)
+                        .param("outputs", address_data.as_slice()))
+                    .await
+                    .map_err(|e| WriterError::QueryFailed(format!("CREATE_LOCKED_TO failed (batch {}): {}", i, e)))?;
+            }
         }
 
         Ok(())
     }
 
     async fn write_inputs(&self, inputs: &[InputData]) -> Result<()> {
+        if inputs.is_empty() {
+            return Ok(());
+        }
+
         // Infer block height from first input (all inputs in batch are from same block)
-        let block_height = if !inputs.is_empty() {
-            // Parse block height from transaction ID lookup
-            // For now, we'll need to pass block_height separately
-            // This is a simplification - in production we'd track this better
-            0 // TODO: Fix this - need block height context
-        } else {
-            return Ok(()); // No inputs to process
-        };
+        // This logic is preserved but might be cleaner if we passed block height explicitly.
+        // For inputs, we probably want to respect the batch size as well.
+        
+        let block_height = 0; // Keeping the TODO placeholder as in original code
 
-        let input_data = inputs_to_bolt_list(inputs, block_height)?;
+        // Process in chunks to avoid massive queries
+        for (i, chunk) in inputs.chunks(self.batch_size).enumerate() {
+            let input_data = inputs_to_bolt_list(chunk, block_height)?;
 
-        self.graph
-            .run(query(queries::CREATE_INPUTS_QUERY)
-                .param("inputs", input_data.as_slice()))
-            .await
-            .map_err(|e| WriterError::QueryFailed(format!("write_inputs failed: {}", e)))?;
+            if i > 0 {
+                tracing::debug!("Writing inputs batch {}/{}", i + 1, (inputs.len() + self.batch_size - 1) / self.batch_size);
+            }
+
+            self.graph
+                .run(query(queries::CREATE_INPUTS_QUERY)
+                    .param("inputs", input_data.as_slice()))
+                .await
+                .map_err(|e| WriterError::QueryFailed(format!("write_inputs failed (batch {}): {}", i, e)))?;
+        }
 
         Ok(())
     }
@@ -146,13 +188,24 @@ impl GraphWriter for Neo4jWriter {
     async fn write_performs(&self, performs: &[PerformsData]) -> Result<()> {
         use crate::writer::neo4j::conversions;
 
-        let performs_list = conversions::performs_to_bolt_list(performs)?;
+        if performs.is_empty() {
+            return Ok(());
+        }
 
-        self.graph
-            .run(query(queries::CREATE_PERFORMS_BULK_QUERY)
-                .param("performs", performs_list))
-            .await
-            .map_err(|e| WriterError::QueryFailed(format!("write_performs failed: {}", e)))?;
+        // Process in chunks
+        for (i, chunk) in performs.chunks(self.batch_size).enumerate() {
+            let performs_list = conversions::performs_to_bolt_list(chunk)?;
+
+            if i > 0 {
+                tracing::debug!("Writing performs batch {}/{}", i + 1, (performs.len() + self.batch_size - 1) / self.batch_size);
+            }
+
+            self.graph
+                .run(query(queries::CREATE_PERFORMS_BULK_QUERY)
+                    .param("performs", performs_list))
+                .await
+                .map_err(|e| WriterError::QueryFailed(format!("write_performs failed (batch {}): {}", i, e)))?;
+        }
 
         Ok(())
     }
@@ -160,13 +213,24 @@ impl GraphWriter for Neo4jWriter {
     async fn write_benefits_to(&self, benefits_to: &[BenefitsToData]) -> Result<()> {
         use crate::writer::neo4j::conversions;
 
-        let benefits_list = conversions::benefits_to_to_bolt_list(benefits_to)?;
+        if benefits_to.is_empty() {
+            return Ok(());
+        }
 
-        self.graph
-            .run(query(queries::CREATE_BENEFITS_TO_BULK_QUERY)
-                .param("benefitsTo", benefits_list))
-            .await
-            .map_err(|e| WriterError::QueryFailed(format!("write_benefits_to failed: {}", e)))?;
+        // Process in chunks
+        for (i, chunk) in benefits_to.chunks(self.batch_size).enumerate() {
+            let benefits_list = conversions::benefits_to_to_bolt_list(chunk)?;
+
+            if i > 0 {
+                tracing::debug!("Writing benefits_to batch {}/{}", i + 1, (benefits_to.len() + self.batch_size - 1) / self.batch_size);
+            }
+
+            self.graph
+                .run(query(queries::CREATE_BENEFITS_TO_BULK_QUERY)
+                    .param("benefitsTo", benefits_list))
+                .await
+                .map_err(|e| WriterError::QueryFailed(format!("write_benefits_to failed (batch {}): {}", i, e)))?;
+        }
 
         Ok(())
     }

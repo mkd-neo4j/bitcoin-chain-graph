@@ -27,6 +27,7 @@ min_connections = 2
 connection_timeout_secs = 30
 fetch_size = 500
 max_retries = 3
+write_batch_size = 5000
 
 [ingestion]
 # Ingestion process settings

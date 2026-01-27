@@ -25,6 +25,7 @@ min_connections = 1
 connection_timeout_secs = 30
 fetch_size = 100
 max_retries = 3
+write_batch_size = 1000
 
 [ingestion]
 # Small batches to conserve memory
