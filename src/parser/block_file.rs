@@ -1,6 +1,7 @@
 use bitcoin::{Block, consensus::deserialize, Network};
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use memmap2::Mmap;
+use tracing::{debug, instrument, trace};
 use thiserror::Error;
 
 /// Magic bytes for different Bitcoin networks
@@ -8,8 +9,7 @@ const MAGIC_MAINNET: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
 const MAGIC_TESTNET: [u8; 4] = [0x0B, 0x11, 0x09, 0x07];
 const MAGIC_REGTEST: [u8; 4] = [0xFA, 0xBF, 0xB5, 0xDA];
 
-/// Default buffer size for block file reading (8MB)
-const DEFAULT_BUFFER_SIZE: usize = 8 * 1024 * 1024;
+
 
 /// Errors that can occur during block file parsing
 #[derive(Error, Debug)]
@@ -33,7 +33,7 @@ pub enum ParseError {
 /// Streaming reader for Bitcoin Core `.blk` files
 ///
 /// Reads and deserializes blocks one at a time from Bitcoin Core's raw block files.
-/// Uses buffered I/O and the `bitcoin` crate for zero-copy parsing.
+/// Uses memory-mapped I/O (mmap) for high-performance zero-copy reading.
 ///
 /// # Example
 /// ```no_run
@@ -46,14 +46,15 @@ pub enum ParseError {
 /// }
 /// ```
 pub struct BlockFileReader {
-    reader: BufReader<File>,
+    mmap: Mmap,
+    cursor: usize,
     file_path: String,
     magic_bytes: &'static [u8; 4],
     blocks_read: usize,
 }
 
 impl BlockFileReader {
-    /// Create a new block file reader with default buffer size
+    /// Create a new block file reader using memory mapping
     ///
     /// # Arguments
     /// * `path` - Path to the `.blk` file
@@ -62,34 +63,8 @@ impl BlockFileReader {
     /// # Returns
     /// A new reader or an error if the file cannot be opened
     pub fn new(path: &str, network: Network) -> Result<Self, ParseError> {
-        Self::with_buffer_size(path, network, DEFAULT_BUFFER_SIZE)
-    }
-
-    /// Create a new block file reader with custom buffer size
-    ///
-    /// # Arguments
-    /// * `path` - Path to the `.blk` file
-    /// * `network` - Bitcoin network (determines magic bytes to expect)
-    /// * `buffer_size` - Size of the read buffer in bytes
-    ///
-    /// # Returns
-    /// A new reader or an error if the file cannot be opened
-    ///
-    /// # Example
-    /// ```no_run
-    /// use bitcoin_chain_graph::parser::BlockFileReader;
-    /// use bitcoin::Network;
-    ///
-    /// // Use larger 16MB buffer for faster reading
-    /// let mut reader = BlockFileReader::with_buffer_size(
-    ///     "blk00000.dat",
-    ///     Network::Bitcoin,
-    ///     16 * 1024 * 1024
-    /// ).unwrap();
-    /// ```
-    pub fn with_buffer_size(path: &str, network: Network, buffer_size: usize) -> Result<Self, ParseError> {
         let file = File::open(path)?;
-        let reader = BufReader::with_capacity(buffer_size, file);
+        let mmap = unsafe { Mmap::map(&file)? };
 
         let magic_bytes = match network {
             Network::Bitcoin => &MAGIC_MAINNET,
@@ -98,12 +73,24 @@ impl BlockFileReader {
             _ => return Err(ParseError::UnsupportedNetwork),
         };
 
+        debug!(path, size = mmap.len(), "Opened block file with mmap");
+
         Ok(Self {
-            reader,
+            mmap,
+            cursor: 0,
             file_path: path.to_string(),
             magic_bytes,
             blocks_read: 0,
         })
+    }
+
+    /// Create a new block file reader with custom buffer size
+    ///
+    /// # Deprecated
+    /// This method is deprecated as the implementation now uses mmap.
+    /// It effectively calls `new()` and ignores the buffer size.
+    pub fn with_buffer_size(path: &str, network: Network, _buffer_size: usize) -> Result<Self, ParseError> {
+        Self::new(path, network)
     }
 
     /// Read next block from file
@@ -114,28 +101,40 @@ impl BlockFileReader {
     /// - `Ok(Some(Block))` - Successfully read and deserialized a block
     /// - `Ok(None)` - End of file reached (normal termination)
     /// - `Err(ParseError)` - Parse error (corrupted file, wrong network, etc.)
+    #[instrument(skip(self), level = "trace")]
     pub fn next_block(&mut self) -> Result<Option<Block>, ParseError> {
-        // Read magic bytes (4 bytes)
-        let mut magic = [0u8; 4];
-        match self.reader.read_exact(&mut magic) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(None); // End of file reached
-            }
-            Err(e) => return Err(ParseError::Io(e)),
+        if self.cursor >= self.mmap.len() {
+            return Ok(None);
         }
 
+        // Check if enough bytes remain for magic (4) + size (4)
+        if self.cursor + 8 > self.mmap.len() {
+            // If we're at the very end (exact match), it's EOF.
+            // If we have trailing bytes but < 8, it's technically EOF or corrupt.
+            // Bitcoin Core files usually pad with zeroes at the end.
+            return Ok(None);
+        }
+
+        // Read magic bytes (4 bytes)
+        let magic_slice = &self.mmap[self.cursor..self.cursor + 4];
+        
         // Verify magic bytes
-        if magic != *self.magic_bytes {
+        if magic_slice != *self.magic_bytes {
+            // Check for zero-padding at end of file (common in blk files)
+            if magic_slice == [0, 0, 0, 0] {
+                return Ok(None);
+            }
+
             let expected = u32::from_le_bytes(*self.magic_bytes);
-            let got = u32::from_le_bytes(magic);
+            let got = u32::from_le_bytes(magic_slice.try_into().unwrap());
             return Err(ParseError::InvalidMagic { expected, got });
         }
+        self.cursor += 4;
 
         // Read block size (4 bytes, little-endian)
-        let mut size_bytes = [0u8; 4];
-        self.reader.read_exact(&mut size_bytes)?;
-        let block_size = u32::from_le_bytes(size_bytes) as usize;
+        let size_slice = &self.mmap[self.cursor..self.cursor + 4];
+        let block_size = u32::from_le_bytes(size_slice.try_into().unwrap()) as usize;
+        self.cursor += 4;
 
         // Validate block size (sanity check)
         if block_size == 0 || block_size > 4_000_000 {
@@ -143,13 +142,21 @@ impl BlockFileReader {
             return Err(ParseError::InvalidBlockSize(block_size));
         }
 
+        // Check if enough data follows
+        if self.cursor + block_size > self.mmap.len() {
+            return Err(ParseError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "File ended before block data complete",
+            )));
+        }
+
         // Read block data
-        let mut block_data = vec![0u8; block_size];
-        self.reader.read_exact(&mut block_data)?;
+        let block_data = &self.mmap[self.cursor..self.cursor + block_size];
+        
+        // Deserialize block using bitcoin crate (zero-copy from mmap slice)
+        let block: Block = deserialize(block_data)?;
 
-        // Deserialize block using bitcoin crate
-        let block: Block = deserialize(&block_data)?;
-
+        self.cursor += block_size;
         self.blocks_read += 1;
 
         Ok(Some(block))
@@ -167,9 +174,7 @@ impl BlockFileReader {
 
     /// Read block at specific file offset (for random access)
     ///
-    /// This method seeks to a specific byte offset in the file and reads
-    /// the block at that position. Used by OrderedBlockIterator to read
-    /// blocks in blockchain height order rather than file order.
+    /// This method reads from the memory map at a specific byte offset.
     ///
     /// # Arguments
     /// * `offset` - Byte offset in file where block data starts
@@ -179,55 +184,43 @@ impl BlockFileReader {
     /// - `Ok(Some(Block))` - Successfully read and deserialized the block
     /// - `Ok(None)` - Invalid offset or end of file
     /// - `Err(ParseError)` - Parse error
-    ///
-    /// # Example
-    /// ```no_run
-    /// use bitcoin_chain_graph::parser::BlockFileReader;
-    /// use bitcoin::Network;
-    ///
-    /// let mut reader = BlockFileReader::new("test_data/blk00000.dat", Network::Bitcoin).unwrap();
-    /// // Read genesis block at offset 8 (after file header)
-    /// if let Some(block) = reader.read_block_at(8).unwrap() {
-    ///     println!("Block hash: {}", block.block_hash());
-    /// }
-    /// ```
     pub fn read_block_at(&mut self, offset: u64) -> Result<Option<Block>, ParseError> {
-        // Seek to specified offset
-        self.reader.seek(SeekFrom::Start(offset))?;
-
-        // Read magic bytes (4 bytes)
-        let mut magic = [0u8; 4];
-        match self.reader.read_exact(&mut magic) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(None); // End of file or invalid offset
-            }
-            Err(e) => return Err(ParseError::Io(e)),
+        let offset = offset as usize;
+        
+        if offset >= self.mmap.len() {
+            return Ok(None);
         }
 
-        // Verify magic bytes
-        if magic != *self.magic_bytes {
-            let expected = u32::from_le_bytes(*self.magic_bytes);
-            let got = u32::from_le_bytes(magic);
-            return Err(ParseError::InvalidMagic { expected, got });
+        // Verify enough bytes for header
+        if offset + 8 > self.mmap.len() {
+            return Ok(None);
         }
 
-        // Read block size (4 bytes, little-endian)
-        let mut size_bytes = [0u8; 4];
-        self.reader.read_exact(&mut size_bytes)?;
-        let block_size = u32::from_le_bytes(size_bytes) as usize;
+        // Read magic bytes
+        let magic_slice = &self.mmap[offset..offset + 4];
+        if magic_slice != *self.magic_bytes {
+             let expected = u32::from_le_bytes(*self.magic_bytes);
+             let got = u32::from_le_bytes(magic_slice.try_into().unwrap());
+             return Err(ParseError::InvalidMagic { expected, got });
+        }
 
-        // Validate block size (sanity check)
+        // Read size
+        let size_slice = &self.mmap[offset + 4..offset + 8];
+        let block_size = u32::from_le_bytes(size_slice.try_into().unwrap()) as usize;
+
         if block_size == 0 || block_size > 4_000_000 {
             return Err(ParseError::InvalidBlockSize(block_size));
         }
 
-        // Read block data
-        let mut block_data = vec![0u8; block_size];
-        self.reader.read_exact(&mut block_data)?;
+        if offset + 8 + block_size > self.mmap.len() {
+             return Err(ParseError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "File ended before block data complete",
+            )));
+        }
 
-        // Deserialize block using bitcoin crate
-        let block: Block = deserialize(&block_data)?;
+        let block_data = &self.mmap[offset + 8..offset + 8 + block_size];
+        let block: Block = deserialize(block_data)?;
 
         Ok(Some(block))
     }

@@ -20,6 +20,7 @@
 use rusty_leveldb::{DB, Options, LdbIterator};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use tracing::{info, debug, instrument, warn};
 
 /// Errors that can occur when reading the block index
 #[derive(Error, Debug)]
@@ -84,6 +85,7 @@ impl BlockIndexReader {
     ///
     /// # Errors
     /// Returns error if index directory doesn't exist or can't be opened
+    #[instrument(skip(blocks_dir), level = "debug")]
     pub fn new(blocks_dir: &str) -> Result<Self> {
         let blocks_path = Path::new(blocks_dir);
         let index_path = blocks_path.join("index");
@@ -118,12 +120,12 @@ impl BlockIndexReader {
     /// This scans all blocks in the LevelDB index (870K+ for full Bitcoin blockchain).
     /// For a full node, this takes 2-5 minutes. Use `get_main_chain_up_to()` for
     /// faster startup when processing a limited height range.
+    #[instrument(skip(self), level = "info")]
     pub fn get_main_chain(&mut self) -> Result<Vec<BlockIndexEntry>> {
         // Scan block index and collect all blocks
         // For large indexes (870K+ blocks), this can take several minutes
-        println!("📚 Building block index from Bitcoin Core LevelDB...");
-        println!("   This scans all 870K+ blocks and takes 2-5 minutes on full blockchain.");
-        println!("   💡 Tip: Use --max-height to speed up for bounded ingestion");
+        info!("Building block index from Bitcoin Core LevelDB...");
+        debug!("Scanning all blocks (may take 2-5 minutes on full blockchain)...");
 
         use rusty_leveldb::LdbIterator;
         let mut chain = Vec::new();
@@ -150,7 +152,7 @@ impl BlockIndexReader {
 
                     // Progress update for large indexes
                     if scanned_count % progress_interval == 0 {
-                        println!("   Scanned {} blocks...", scanned_count);
+                        info!("Scanned {} blocks...", scanned_count);
                     }
                 }
             }
@@ -160,7 +162,7 @@ impl BlockIndexReader {
             return Err(IndexError::CorruptIndex("No blocks found in index".to_string()));
         }
 
-        println!("   ✅ Found {} blocks", chain.len());
+        info!("Found {} blocks", chain.len());
 
         // Step 3: Sort by height to get genesis→tip order
         chain.sort_by_key(|e| e.height);
@@ -201,8 +203,9 @@ impl BlockIndexReader {
     /// let mut reader = BlockIndexReader::new("./blocks")?;
     /// let chain = reader.get_main_chain_up_to(10000)?; // Only load first 10K blocks
     /// ```
+    #[instrument(skip(self), level = "info")]
     pub fn get_main_chain_up_to(&mut self, max_height: u32) -> Result<Vec<BlockIndexEntry>> {
-        println!("📚 Loading block index up to height {} (faster startup)...", max_height);
+        info!("Loading block index up to height {} (faster startup)...", max_height);
 
         use rusty_leveldb::LdbIterator;
         let mut chain = Vec::new();
@@ -237,7 +240,7 @@ impl BlockIndexReader {
 
                     // Progress update for large scans
                     if scanned_count % progress_interval == 0 {
-                        println!("   Scanned {} blocks, kept {} (up to height {})...",
+                        info!("Scanned {} blocks, kept {} (up to height {})...",
                                  scanned_count, kept_count, max_height);
                     }
 
@@ -256,7 +259,7 @@ impl BlockIndexReader {
             return Err(IndexError::CorruptIndex("No blocks found in index".to_string()));
         }
 
-        println!("   ✅ Loaded {} blocks (heights 0 to {})", chain.len(), max_height);
+        info!("Loaded {} blocks (heights 0 to {})", chain.len(), max_height);
 
         // Sort by height to get genesis→max_height order
         chain.sort_by_key(|e| e.height);
@@ -361,7 +364,7 @@ impl BlockIndexReader {
 
         // Fallback: Scan all blocks to find highest height
         // This works for partial indexes (like our test data)
-        println!("⚠️  No 'R' key found, scanning for highest block...");
+        warn!("No 'R' key found, scanning for highest block...");
 
         use rusty_leveldb::LdbIterator;
         let mut iter = self.db.new_iter()
@@ -396,7 +399,7 @@ impl BlockIndexReader {
 
         match max_height {
             Some((height, hash)) => {
-                println!("   Found highest block at height {}", height);
+                info!("Found highest block at height {}", height);
                 Ok(hash)
             }
             None => Err(IndexError::CorruptIndex("No blocks found in index".to_string()))
