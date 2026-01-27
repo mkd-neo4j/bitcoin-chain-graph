@@ -33,7 +33,7 @@
 //! See [INGESTION_ARCHITECTURE.md](../../docs/INGESTION_ARCHITECTURE.md) for detailed design.
 
 use bitcoin::{Block, Network};
-use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData, UtxoCache, UtxoKey, CachedOutput, ScriptTypeTag};
+use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData, UtxoCache, UtxoKey, CachedOutput};
 use crate::writer::{GraphWriter, Result, WriterError};
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -407,7 +407,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                         let cached_output = CachedOutput {
                             output_index: output.output_index,
                             amount: output.amount,
-                            script_type: ScriptTypeTag::from_str(&output.script_type),
+                            script_type: output.script_type.parse().unwrap(),
                             address: output.address.as_deref().map(Arc::from),
                         };
                         self.utxo_cache.insert(key, cached_output);
@@ -644,7 +644,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                     let cached_output = CachedOutput {
                         output_index: output.output_index,
                         amount: output.amount,
-                        script_type: ScriptTypeTag::from_str(&output.script_type),
+                        script_type: output.script_type.parse().unwrap(),
                         address: output.address.as_deref().map(Arc::from),
                     };
                     self.utxo_cache.insert(key, cached_output);

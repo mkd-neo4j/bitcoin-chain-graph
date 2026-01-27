@@ -126,7 +126,7 @@ impl Neo4jWriter {
             return Ok(());
         }
 
-        let total_batches = (items.len() + self.batch_size - 1) / self.batch_size;
+        let total_batches = items.len().div_ceil(self.batch_size);
 
         for (i, chunk) in items.chunks(self.batch_size).enumerate() {
             let bolt_data = convert(chunk);
@@ -223,7 +223,7 @@ impl GraphWriter for Neo4jWriter {
             queries::CREATE_BLOCKS_QUERY,
             "blocks",
             "write_blocks",
-            |chunk| blocks_to_bolt_list(chunk),
+            blocks_to_bolt_list,
         ).await
     }
 
@@ -233,7 +233,7 @@ impl GraphWriter for Neo4jWriter {
             queries::CREATE_TRANSACTIONS_QUERY,
             "transactions",
             "write_transactions",
-            |chunk| transactions_to_bolt_list(chunk),
+            transactions_to_bolt_list,
         ).await
     }
 
@@ -242,7 +242,7 @@ impl GraphWriter for Neo4jWriter {
             return Ok(());
         }
 
-        let total_batches = (outputs.len() + self.batch_size - 1) / self.batch_size;
+        let total_batches = outputs.len().div_ceil(self.batch_size);
 
         // write_outputs needs special handling: two queries per chunk (outputs + LOCKED_TO)
         for (i, chunk) in outputs.chunks(self.batch_size).enumerate() {
@@ -309,7 +309,7 @@ impl GraphWriter for Neo4jWriter {
             queries::CREATE_INPUTS_QUERY,
             "inputs",
             "write_inputs",
-            |chunk| inputs_to_bolt_list(chunk),
+            inputs_to_bolt_list,
         ).await
     }
 
@@ -319,7 +319,7 @@ impl GraphWriter for Neo4jWriter {
             queries::CREATE_PERFORMS_BULK_QUERY,
             "performs",
             "write_performs",
-            |chunk| performs_to_bolt_list(chunk),
+            performs_to_bolt_list,
         ).await
     }
 
@@ -329,7 +329,7 @@ impl GraphWriter for Neo4jWriter {
             queries::CREATE_BENEFITS_TO_BULK_QUERY,
             "benefitsTo",
             "write_benefits_to",
-            |chunk| benefits_to_to_bolt_list(chunk),
+            benefits_to_to_bolt_list,
         ).await
     }
 

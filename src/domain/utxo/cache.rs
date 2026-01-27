@@ -110,10 +110,11 @@ pub enum ScriptTypeTag {
     Unknown = 7,
 }
 
-impl ScriptTypeTag {
-    /// Parse from the string representation used in `OutputData`.
-    pub fn from_str(s: &str) -> Self {
-        match s {
+impl std::str::FromStr for ScriptTypeTag {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s {
             "P2PKH" => Self::P2PKH,
             "P2SH" => Self::P2SH,
             "P2WPKH" => Self::P2WPKH,
@@ -122,8 +123,11 @@ impl ScriptTypeTag {
             "P2PK" => Self::P2PK,
             "NULL_DATA" => Self::NullData,
             _ => Self::Unknown,
-        }
+        })
     }
+}
+
+impl ScriptTypeTag {
 
     /// Convert to the string representation used by Neo4j and `OutputData`.
     pub fn as_str(&self) -> &'static str {
@@ -414,7 +418,7 @@ impl<W: GraphWriter> UtxoCache<W> {
         Ok(CachedOutput {
             output_index: output_data.output_index,
             amount: output_data.amount,
-            script_type: ScriptTypeTag::from_str(&output_data.script_type),
+            script_type: output_data.script_type.parse().unwrap(),
             address: output_data.address.map(|a| Arc::from(a.as_str())),
         })
     }
@@ -493,7 +497,7 @@ impl<W: GraphWriter> UtxoCache<W> {
                     let cached = CachedOutput {
                         output_index: output.output_index,
                         amount: output.amount,
-                        script_type: ScriptTypeTag::from_str(&output.script_type),
+                        script_type: output.script_type.parse().unwrap(),
                         address: output.address.as_deref().map(Arc::from),
                     };
                     // Also insert into cache for future lookups
@@ -1106,10 +1110,10 @@ mod tests {
             "P2PKH", "P2SH", "P2WPKH", "P2WSH", "P2TR", "P2PK", "NULL_DATA", "UNKNOWN",
         ];
         for s in cases {
-            let tag = ScriptTypeTag::from_str(s);
+            let tag: ScriptTypeTag = s.parse().unwrap();
             assert_eq!(tag.as_str(), s, "Round-trip failed for {}", s);
         }
         // Unknown input
-        assert_eq!(ScriptTypeTag::from_str("GARBAGE").as_str(), "UNKNOWN");
+        assert_eq!("GARBAGE".parse::<ScriptTypeTag>().unwrap().as_str(), "UNKNOWN");
     }
 }

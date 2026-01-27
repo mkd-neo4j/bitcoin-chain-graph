@@ -94,8 +94,10 @@ impl BlockIndexReader {
             return Err(IndexError::IndexNotFound(index_path.display().to_string()));
         }
 
-        let mut options = Options::default();
-        options.create_if_missing = false; // Don't create, must exist
+        let options = Options {
+            create_if_missing: false, // Don't create, must exist
+            ..Options::default()
+        };
 
         let db = DB::open(&index_path, options)
             .map_err(|e| IndexError::Database(format!("{:?}", e)))?;
