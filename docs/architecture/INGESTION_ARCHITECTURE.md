@@ -1,12 +1,14 @@
 # Bitcoin Blockchain Ingestion Architecture
 
-How to load Bitcoin blockchain data from raw block files into Neo4j according to the [DATA_MODEL.md](../neo4j/DATA_MODEL.md) specification.
+How Bitcoin blockchain data is loaded into Neo4j according to the [DATA_MODEL.md](../neo4j/DATA_MODEL.md) specification.
 
 ---
 
 ## Overview
 
-This ingestion process reads Bitcoin Core's raw block files (`.blk` files) and transforms them into our dual-layer Neo4j graph model. The process must handle dependencies carefully - outputs must exist before inputs can reference them, and addresses must be derived before relationships can be created.
+This ingestion process reads Bitcoin Core's raw block files (`.blk` files) and transforms them into our dual-layer Neo4j graph model. The process must handle dependencies carefully — outputs must exist before inputs can reference them, and addresses must be derived before relationships can be created.
+
+Transaction amounts (`totalInput`, `totalOutput`, `fee`) are calculated in Rust using an in-memory UTXO cache, avoiding expensive Neo4j graph traversals (see [Phase 3](#phase-3-create-transaction-nodes-with-amounts)).
 
 ---
 
@@ -30,7 +32,7 @@ Each `.blk` file contains:
 - **Block data**: Raw serialized block (header + transactions)
 
 ### Reading Strategy
-1. Parse `.blk` files sequentially (blk00000.dat → blk00001.dat → ...)
+1. Parse `.blk` files sequentially (blk00000.dat -> blk00001.dat -> ...)
 2. Each file contains multiple blocks concatenated together
 3. Blocks within files may not be in height order (due to how Bitcoin Core writes them)
 4. Use block header's `previousHash` to reconstruct chain order
@@ -39,31 +41,21 @@ Each `.blk` file contains:
 
 ## Processing Phases
 
-Ingestion must follow a strict ordering to satisfy dependency requirements:
+Ingestion follows a strict phase ordering to satisfy dependency requirements. Phases 2 and 3 are swapped from the traditional ordering to support same-block UTXO references (see rationale below).
 
 ### Phase 1: Create Block Nodes
 - Read block header from `.blk` file
-- Create `Block` node with all properties
+- Create `Block` node with all properties (height, hash, timestamp, difficulty, version, bits, nonce, size, weight, txCount)
 - Create `NEXT_BLOCK` relationship to previous block (if not genesis)
 
 **Why first?** Transaction nodes reference their containing block via `blockHeight` and `INCLUDED_IN` relationship.
 
----
-
-### Phase 2: Create Transaction Nodes
-For each transaction in the block:
-- Parse transaction data (txid, version, locktime, etc.)
-- Calculate `isCoinbase` (check if first input has null previous output)
-- Create `Transaction` node
-- Create `INCLUDED_IN` relationship to the Block node
-
-**Why second?** Outputs need to exist before Inputs can reference them via SPENDS. But Transactions must exist before Outputs.
-
-**Note:** `totalInput`, `totalOutput`, and `fee` cannot be fully calculated yet (see Phase 6).
+**Source:** `ingest_block_node()` in `src/domain/ingestion.rs`
 
 ---
 
-### Phase 3: Create Output Nodes and Address Relationships
+### Phase 2: Create Output Nodes, Address Relationships, and Populate UTXO Cache
+
 For each output in each transaction:
 1. Parse output data (outputIndex, amount, scriptPubKey)
 2. Derive `scriptType` from scriptPubKey (see [ADDRESS_DERIVATION.md](../bitcoin/ADDRESS_DERIVATION.md))
@@ -73,14 +65,42 @@ For each output in each transaction:
    - `isSpent = false` (initially unspent)
    - `spentInTxid = null`
    - `spentAtHeight = null`
-5. Create `HAS_OUTPUT` relationship: `Transaction → Output`
+5. Create `HAS_OUTPUT` relationship: `Transaction -> Output`
 6. If address was successfully derived:
    - Create or MERGE `Address` node
-   - Create `LOCKED_TO` relationship: `Output → Address`
+   - Create `LOCKED_TO` relationship: `Output -> Address`
+7. **Insert output into UTXO cache** for use in Phase 3 amount calculations
 
-**Why third?** Outputs must exist before Phase 4 can create SPENDS relationships to them.
+Neo4j write and cache population run concurrently via `tokio::join!` (Neo4j is I/O-bound, cache inserts are CPU-bound).
 
-**Special case:** OP_RETURN outputs have `scriptType = 'NULL_DATA'` and no address - skip LOCKED_TO relationship (see [SPECIAL_CASES.md](../bitcoin/SPECIAL_CASES.md)).
+**Why second (before transactions)?** Bitcoin allows transactions to spend outputs created by earlier transactions in the **same block**. By creating outputs and populating the UTXO cache before calculating transaction amounts, same-block UTXO references resolve correctly. For example, in block 546, Transaction 2 spends an output from Transaction 1 in the same block.
+
+**Special case:** OP_RETURN outputs have `scriptType = 'NULL_DATA'` and no address — skip LOCKED_TO relationship (see [SPECIAL_CASES.md](../bitcoin/SPECIAL_CASES.md)).
+
+**Source:** `ingest_outputs_and_cache()` in `src/domain/ingestion.rs`
+
+---
+
+### Phase 3: Create Transaction Nodes WITH Amounts
+
+For each transaction in the block:
+1. Parse transaction data (txid, version, locktime, size, vsize, weight, isCoinbase)
+2. **Calculate amounts in Rust using the UTXO cache:**
+   - `total_output = sum(tx.output.amount)` — trivial, from current block data
+   - `total_input`:
+     - **Coinbase:** `0` (no inputs)
+     - **Regular:** Batch lookup all input previous outputs from UTXO cache via `get_many_with_fallback()`. Cache misses fall back to a single UNWIND Neo4j query.
+   - `fee = total_input.saturating_sub(total_output)` (coinbase: `0`)
+3. Create `Transaction` node with all properties including `totalInput`, `totalOutput`, `fee`
+4. Create `INCLUDED_IN` relationship to the Block node
+
+**Why third (after outputs)?** Outputs must be in the UTXO cache before amount calculation can reference them. This is the key change from the original design where transactions were Phase 2 and outputs were Phase 3.
+
+**Performance:** Calculating amounts in Rust with cache lookups is 10-100x faster than the original Phase 5 approach of Neo4j graph traversals (3 Cypher queries per block).
+
+**Batch mode:** In `ingest_blocks_batch()`, PERFORMS relationship data is also aggregated during this phase (see [Phase 6](#phase-6-create-simplified-layer-relationships)) to avoid redundant cache lookups.
+
+**Source:** `ingest_transactions_with_amounts()` in `src/domain/ingestion.rs`
 
 ---
 
@@ -88,74 +108,67 @@ For each output in each transaction:
 For each input in each transaction:
 1. Parse input data (inputIndex, previousTxid, previousOutputIndex, scriptSig, sequence, witness)
 2. Create `Input` node with `inputId = {txid}:{inputIndex}`
-3. Create `HAS_INPUT` relationship: `Input → Transaction`
-4. **Lookup the previous output** being spent:
-   - Query: `MATCH (o:Output {outputId: $previousTxid + ':' + $previousOutputIndex})`
-5. Create `SPENDS` relationship: `Input → Output`
+3. Create `HAS_INPUT` relationship: `Input -> Transaction`
+4. **Lookup the previous output** being spent
+5. Create `SPENDS` relationship: `Input -> Output`
 6. **Update the spent output** with spent metadata:
    - `SET o.isSpent = true`
    - `SET o.spentInTxid = {current transaction txid}`
    - `SET o.spentAtHeight = {current block height}`
 
-**Why fourth?** Cannot create SPENDS until the referenced Output nodes exist from Phase 3.
+**Coinbase exception:** Coinbase transactions have one input with no previous output. The coinbase input node is created but no SPENDS relationship is generated (identified by `previousOutputIndex = 4294967295`).
 
-**Coinbase exception:** Coinbase transactions have one input with no previous output. Skip steps 4-6 (see [SPECIAL_CASES.md](../bitcoin/SPECIAL_CASES.md)).
+**Cache removal is deferred** to Phase 7. Spent outputs must remain in the cache because Phase 6 needs them for PERFORMS relationship lookups.
 
-**Critical dependency:** This phase requires that ALL previous transactions have completed Phase 3 before this transaction's Phase 4 runs. This means you must process blocks in chain order (by height).
-
----
-
-### Phase 5: Calculate Transaction Amounts
-Now that all inputs have SPENDS relationships:
-1. For each non-coinbase transaction:
-   - Calculate `totalInput` by summing amounts of all spent outputs:
-     ```cypher
-     MATCH (t:Transaction {txid: $txid})<-[:HAS_INPUT]-(i:Input)-[:SPENDS]->(prevOut:Output)
-     WITH t, sum(prevOut.amount) as totalIn
-     SET t.totalInput = totalIn
-     ```
-   - Calculate `totalOutput` by summing transaction outputs:
-     ```cypher
-     MATCH (t:Transaction {txid: $txid})-[:HAS_OUTPUT]->(o:Output)
-     WITH t, sum(o.amount) as totalOut
-     SET t.totalOutput = totalOut
-     ```
-   - Calculate fee: `SET t.fee = t.totalInput - t.totalOutput`
-
-2. For coinbase transactions:
-   - `totalInput = 0` (no inputs spent)
-   - `totalOutput = sum(output amounts)`
-   - `fee = 0`
-
-**Why fifth?** Cannot calculate totalInput until SPENDS relationships exist and point to outputs with known amounts.
+**Source:** `ingest_inputs()` in `src/domain/ingestion.rs`
 
 ---
 
-### Phase 6: Derive Simplified Layer Relationships
-Create the "follow the money" relationships:
+### Phase 5: REMOVED
 
-#### PERFORMS Relationship (Address → Transaction)
-For each transaction input that spends a previous output:
-```cypher
-MATCH (t:Transaction {txid: $txid})<-[:HAS_INPUT]-(i:Input)
-MATCH (i)-[:SPENDS]->(prevOut:Output)-[:LOCKED_TO]->(addr:Address)
-MERGE (addr)-[:PERFORMS]->(t)
-```
+> **This phase no longer exists.** Transaction amounts (`totalInput`, `totalOutput`, `fee`) are now calculated in Phase 3 using the UTXO cache in Rust.
+>
+> The original Phase 5 performed expensive Neo4j graph traversals (3 Cypher queries per block) to walk `Transaction <- Input -> Output` paths. This was the primary performance bottleneck. The UTXO cache approach is 10-100x faster.
+
+---
+
+### Phase 6: Create Simplified Layer Relationships
+
+Create pre-aggregated "follow the money" relationships using data computed in Rust:
+
+#### PERFORMS Relationship (Address -> Transaction)
+For each non-coinbase transaction, aggregate input addresses:
+- During Phase 3 (or batch mode), UTXO cache lookups resolve the address of each spent output
+- Group by (address, txid), sum input counts and amounts
+- Write `PERFORMS` relationships with `inputCount` and `amountSpent` properties
 
 This answers: "Which address performed this transaction?" (i.e., whose funds were spent)
 
-#### BENEFITS_TO Relationship (Transaction → Address)
-For each transaction output that goes to an address:
-```cypher
-MATCH (t:Transaction {txid: $txid})-[:HAS_OUTPUT]->(o:Output)-[:LOCKED_TO]->(addr:Address)
-MERGE (t)-[:BENEFITS_TO]->(addr)
-```
+#### BENEFITS_TO Relationship (Transaction -> Address)
+For each transaction, aggregate output addresses:
+- During Phase 2, output addresses are already derived
+- Group by (txid, address), sum output counts and amounts
+- Write `BENEFITS_TO` relationships with `outputCount` and `amountReceived` properties
 
 This answers: "Which addresses benefited from this transaction?" (i.e., who received funds)
 
-**Why last?** Both relationships require traversing the complete graph structure created in Phases 1-4.
+**Batch mode parallelism:** In `ingest_blocks_batch()`, PERFORMS and BENEFITS_TO data is partitioned into 4 buckets by address hash. Each bucket is written in a separate `tokio::spawn` task. This enables parallel Neo4j writes without deadlocks (different buckets target different addresses).
 
 **Note:** Multiple inputs from the same address create only one PERFORMS relationship (use MERGE). Multiple outputs to the same address create only one BENEFITS_TO relationship.
+
+**Source:** `write_simplified_layer_rust()` and `extract_simplified_layer_data()` in `src/domain/ingestion.rs`
+
+---
+
+### Phase 7: UTXO Cache Eviction
+
+Remove spent outputs from the UTXO cache:
+- Collect all `UtxoKey`s for non-coinbase inputs in the current block
+- Call `utxo_cache.remove_many(&spent_keys)` for batch removal
+
+**Why after Phase 6?** Phase 6 looks up spent outputs to build PERFORMS relationships (needs the address of the previous output). Removing them before Phase 6 would cause cache misses and unnecessary Neo4j fallback queries.
+
+**Source:** `remove_spent_outputs_from_cache()` in `src/domain/ingestion.rs`
 
 ---
 
@@ -163,15 +176,20 @@ This answers: "Which addresses benefited from this transaction?" (i.e., who rece
 
 ### Block-by-Block Sequential Processing
 
-**Required:** Blocks MUST be processed in height order (0 → 1 → 2 → ...) because:
+**Required:** Blocks MUST be processed in height order (0 -> 1 -> 2 -> ...) because:
 - Transaction inputs reference outputs from previous transactions
 - Previous transactions might be in earlier blocks
 - Cannot create SPENDS relationship until referenced output exists
 
-**Process:**
-1. Read all blocks from `.blk` files
-2. Sort blocks by height (using `previousHash` linkage to reconstruct order)
-3. Process each block sequentially through all 6 phases before moving to next block
+**Single-block mode** (`ingest_block()`):
+1. Process each block through all 7 phases before moving to the next block
+2. Update checkpoint after each block
+
+**Batch mode** (`ingest_blocks_batch()`):
+1. Accumulate multiple blocks (configurable batch size, default: 5000)
+2. Process all blocks in the batch through each phase sequentially
+3. Within each phase, bulk-write all accumulated data in a single Neo4j UNWIND query
+4. Update checkpoint after each batch
 
 ### Within-Block Transaction Ordering
 
@@ -179,45 +197,73 @@ Bitcoin blocks store transactions in a specific order:
 - **First transaction** is always the coinbase (mining reward)
 - **Remaining transactions** can reference outputs from earlier transactions in the same block
 
-**Required:** Process transactions within a block in order (index 0 → 1 → 2 → ...) because:
+**Required:** Process transactions within a block in order (index 0 -> 1 -> 2 -> ...) because:
 - Transaction at index N might spend output from transaction at index M where M < N
-- Must complete Phase 3 (create outputs) for transaction M before starting Phase 4 (create inputs that spend them) for transaction N
+- Phase 2 must create outputs for transaction M before Phase 3 can calculate amounts for transaction N
 
 ---
 
-## Batch Processing Considerations
+## UTXO Cache
 
-### Neo4j Transaction Boundaries
+### Overview
 
-**Recommendation:** Use one Neo4j write transaction per Bitcoin block.
+The UTXO cache is a 16-shard LRU cache that stores recent transaction outputs in memory. It serves as the primary lookup mechanism for transaction amount calculation (Phase 3) and simplified layer construction (Phase 6), with Neo4j as a fallback for cache misses.
 
-**Rationale:**
-- Each Bitcoin block is self-contained (average ~2,000 transactions)
-- Rolling back a failed block is clean (all-or-nothing)
-- Memory usage is bounded and predictable
-- Progress tracking is block-level (easy to resume on failure)
+### Architecture
 
-**Alternative:** Batch multiple small blocks (early blockchain) into single Neo4j transaction for performance.
+```
+┌─────────────────────────────────────────────────────────┐
+│                      UtxoCache<W>                       │
+│                                                         │
+│  ┌──────────┐ ┌──────────┐      ┌──────────┐           │
+│  │ Shard 0  │ │ Shard 1  │ ...  │ Shard 15 │  16 shards│
+│  │ Mutex<   │ │ Mutex<   │      │ Mutex<   │           │
+│  │  LRU     │ │  LRU     │      │  LRU     │           │
+│  │  Cache>  │ │  Cache>  │      │  Cache>  │           │
+│  └──────────┘ └──────────┘      └──────────┘           │
+│                                                         │
+│  writer: Arc<W>         (Neo4j fallback on miss)        │
+│  stats: AtomicStats     (lock-free hit/miss counters)   │
+└─────────────────────────────────────────────────────────┘
+```
 
-### Memory Management
+### Key Design
 
-**Challenge:** Must keep UTXO set in memory or database to look up spent outputs.
+| Component | Size | Description |
+|-----------|------|-------------|
+| `UtxoKey` | 36 bytes | Stack-allocated: 32-byte txid (raw bytes) + 4-byte vout. Zero allocation from `OutPoint`. |
+| `CachedOutput` | ~36 bytes | `output_index: u32`, `amount: u64`, `script_type: ScriptTypeTag` (1 byte enum), `address: Option<Arc<str>>` |
+| Per-entry overhead | ~72 bytes | Key + value + LRU bookkeeping |
+| Sharding | 16 shards | Shard index = XOR of txid bytes, masked to 4 bits. Each shard has its own `Mutex<LruCache>`. |
 
-**Strategy options:**
-1. **Query Neo4j for each input:** Simple but slow
-   ```cypher
-   MATCH (o:Output {outputId: $prevTxid + ':' + $prevIndex})
-   ```
+### Memory Budget
 
-2. **Cache recent outputs in memory:** Faster, assumes locality
-   - Keep last N blocks' outputs in memory map
-   - Fall back to Neo4j query for older outputs
+Configured via `performance.utxo_cache_memory_mb` (default: 140 MB):
 
-3. **Build UTXO index:** Fastest, requires separate index structure
-   - Maintain in-memory or disk-based UTXO set
-   - Update as outputs are created and spent
+| Memory | Entries | Use Case |
+|--------|---------|----------|
+| 2 MB | ~28,000 | Low resource / testing |
+| 15 MB | ~208,000 | Light ingestion |
+| 140 MB | ~1,944,000 | Default (production) |
+| 500 MB | ~6,940,000 | High performance |
+| 1400 MB | ~19,440,000 | Ultra performance |
 
-**Recommendation for initial implementation:** Start with option 1 (query Neo4j) for simplicity. Optimize later if needed.
+### Operations
+
+- **`insert(key, value)`** — Add output to cache (Phase 2)
+- **`get_many(&[UtxoKey])`** — Batch lookup, grouping by shard to acquire each lock once
+- **`get_many_with_fallback(&[UtxoKey])`** — Cache lookup + single UNWIND Neo4j query for all misses
+- **`remove_many(&[UtxoKey])`** — Batch removal of spent outputs (Phase 7)
+- **`enable_prewarm_mode()` / `disable_prewarm_mode()`** — Suppress stats during cache pre-warming
+
+### Cache Pre-Warming (Resume)
+
+When resuming ingestion, the cache starts empty. To avoid poor hit rates during the first blocks:
+1. Load `utxo_prewarm_depth` blocks backwards from the resume point (default: 1,000,000)
+2. Insert all unspent outputs from those blocks into the cache
+3. Pre-warming reads from `.blk` files (fast disk I/O), not Neo4j
+
+**Source:** `src/domain/utxo/cache.rs`
 
 ---
 
@@ -228,7 +274,7 @@ Bitcoin blocks store transactions in a specific order:
 **Track ingestion progress:**
 ```cypher
 CREATE (checkpoint:IngestionCheckpoint {
-  lastProcessedHeight: -1,
+  lastProcessedHeight: -999,
   lastProcessedHash: null,
   lastProcessedFile: null,
   lastProcessedFileOffset: null,
@@ -237,31 +283,40 @@ CREATE (checkpoint:IngestionCheckpoint {
 })
 ```
 
-**Initialize before processing Genesis block:**
-- Set `lastProcessedHeight = -1` (no blocks processed yet)
-- Set `lastProcessedHash = null`
-- Set `lastProcessedFile = null` (will be set to "blk00000.dat" after first block)
+> **Note:** The sentinel height is `-999` (not `-1`) due to a neo4rs driver limitation with signed integer handling.
 
 **Update after each successful block:**
 ```cypher
-MATCH (c:IngestionCheckpoint)
+MERGE (c:IngestionCheckpoint)
 SET c.lastProcessedHeight = $blockHeight,
     c.lastProcessedHash = $blockHash,
     c.lastProcessedFile = $blkFileName,
     c.lastProcessedFileOffset = $fileOffset,
-    c.timestamp = datetime(),
-    c.status = "in_progress"
+    c.timestamp = $timestamp,
+    c.status = $status
 ```
 
 **Example values after processing Genesis block (block 0):**
-```cypher
+```json
 {
-  lastProcessedHeight: 0,
-  lastProcessedHash: "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
-  lastProcessedFile: "blk00000.dat",
-  lastProcessedFileOffset: 293,  // Optional: byte offset after genesis block
-  timestamp: datetime(),
-  status: "in_progress"
+  "lastProcessedHeight": 0,
+  "lastProcessedHash": "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+  "lastProcessedFile": "blk00000.dat",
+  "lastProcessedFileOffset": null,
+  "timestamp": 1706000000,
+  "status": "in_progress"
+}
+```
+
+**Checkpoint data model:**
+```rust
+pub struct CheckpointData {
+    pub last_processed_height: i32,    // -999 for initial, then block height
+    pub last_processed_hash: String,
+    pub last_processed_file: String,
+    pub last_processed_file_offset: Option<u64>,
+    pub timestamp: i64,                // Unix epoch seconds
+    pub status: String,                // "in_progress", "completed", "paused", "error"
 }
 ```
 
@@ -274,40 +329,15 @@ SET c.status = "completed",
 
 ### Resume from Failure
 
-**Query checkpoint to resume:**
-```cypher
-MATCH (c:IngestionCheckpoint)
-RETURN c.lastProcessedHeight AS lastHeight,
-       c.lastProcessedHash AS lastHash,
-       c.lastProcessedFile AS lastFile,
-       c.status AS status
-```
-
 **Resume logic:**
-1. If `lastProcessedHeight = -1`: Start from Genesis block (block 0) in `blk00000.dat`
+1. If `lastProcessedHeight = -999`: Start from Genesis block (block 0) in `blk00000.dat`
 2. If `lastProcessedHeight >= 0`: Resume from block `lastProcessedHeight + 1`
-3. Use `lastProcessedFile` to determine which `.blk` file to continue reading
-4. Optionally use `lastProcessedFileOffset` to seek directly to the next block in the file
-
-**File transition handling:**
-- If processing moves from `blk00000.dat` to `blk00001.dat`, update `lastProcessedFile`
-- Parser can determine when to move to next file by tracking block counts per file
-- Checkpoint always reflects the last successfully processed block
+3. Pre-warm UTXO cache before resuming forward ingestion
 
 **Partial block reprocessing:**
 - Since each block is ingested in a single Neo4j transaction, a failed block is automatically rolled back
 - On resume, retry the failed block (height `lastProcessedHeight + 1`)
-- **At most, 1 block is reprocessed** - clean Neo4j transaction boundaries guarantee consistency
-
-**Data integrity verification before resume (optional):**
-```cypher
-// Verify last processed block exists in database
-MATCH (b:Block {height: $lastProcessedHeight})
-WHERE b.hash = $lastProcessedHash
-RETURN b
-
-// If not found or hash mismatch, consider re-ingesting from earlier checkpoint
-```
+- **At most, 1 block is reprocessed** — clean Neo4j transaction boundaries guarantee consistency
 
 **Error recovery:**
 - If `status = "error"`: Review logs, fix issue, reset status to "in_progress", resume
@@ -336,41 +366,49 @@ CREATE CONSTRAINT block_height_unique FOR (b:Block) REQUIRE b.height IS UNIQUE;
 CREATE INDEX output_spent FOR (o:Output) ON (o.isSpent);
 ```
 
-**Why:** Looking up outputs by `outputId` during Phase 4 will happen millions of times. Without unique constraint, performance will degrade catastrophically.
-
 ### MERGE vs CREATE
 
 **For nodes:**
-- Use `CREATE` for Blocks, Transactions, Inputs, Outputs (guaranteed unique by validation)
+- Use `MERGE` for Blocks, Transactions, Inputs, Outputs (idempotent for resume safety)
 - Use `MERGE` for Addresses (same address appears many times)
 
 **For relationships:**
 - Use `CREATE` for HAS_INPUT, HAS_OUTPUT, SPENDS, LOCKED_TO, INCLUDED_IN (1:1 relationships)
 - Use `MERGE` for PERFORMS, BENEFITS_TO (many inputs/outputs may map to same address)
 
-### Parallel Processing
+### UTXO Cache-Based Amount Calculation
 
-**Initial recommendation:** Process blocks sequentially (simpler, safer).
+The UTXO cache eliminates Neo4j as a bottleneck for amount calculation:
+- **Cache hit:** Direct memory lookup (~nanoseconds per entry)
+- **Cache miss:** Single UNWIND Neo4j query for all misses in a batch (~milliseconds)
+- **Expected hit rate:** 95-99% for sequential ingestion with sufficient cache size
+- **Net effect:** Phase 3 processes at memory speed instead of database speed
 
-**Future optimization:** Process multiple blocks in parallel IF:
-- Blocks are far enough apart (no transaction dependencies between them)
-- Example: Process block 1000 and block 500000 simultaneously (no overlapping UTXOs)
-- Requires sophisticated dependency analysis
+### Parallel Simplified Layer Writes
+
+In batch mode, PERFORMS and BENEFITS_TO writes are parallelized:
+1. Data is partitioned into 4 buckets by address hash
+2. Each bucket is written by a separate `tokio::spawn` task
+3. Address-based partitioning ensures no two tasks write to the same Address node
+4. This avoids Neo4j deadlocks while enabling 4x write parallelism
 
 ---
 
 ## Implementation Checklist
 
-- [ ] Parse Bitcoin Core `.blk` files correctly (magic bytes, block size, block data)
-- [ ] Reconstruct block ordering by height (use previousHash links)
-- [ ] Implement address derivation for all script types (see [ADDRESS_DERIVATION.md](../bitcoin/ADDRESS_DERIVATION.md))
-- [ ] Handle special cases: coinbase, OP_RETURN, genesis block (see [SPECIAL_CASES.md](../bitcoin/SPECIAL_CASES.md))
-- [ ] Process phases in correct order (1→2→3→4→5→6)
-- [ ] Process transactions within block in order
-- [ ] Create Neo4j constraints and indexes before ingestion
-- [ ] Implement checkpointing for resume-on-failure
+- [x] Parse Bitcoin Core `.blk` files correctly (magic bytes, block size, block data)
+- [x] Reconstruct block ordering by height (using LevelDB block index)
+- [x] Implement address derivation for all script types (see [ADDRESS_DERIVATION.md](../bitcoin/ADDRESS_DERIVATION.md))
+- [x] Handle special cases: coinbase, OP_RETURN, genesis block (see [SPECIAL_CASES.md](../bitcoin/SPECIAL_CASES.md))
+- [x] Process phases in correct order (1 -> 2(outputs) -> 3(tx+amounts) -> 4(inputs) -> 5(removed) -> 6(simplified) -> 7(cache eviction))
+- [x] Process transactions within block in order
+- [x] Create Neo4j constraints and indexes before ingestion
+- [x] Implement checkpointing for resume-on-failure
+- [x] UTXO cache with Neo4j fallback for amount calculation
+- [x] Batch mode with parallel simplified layer writes
+- [x] Cache pre-warming for resume operations
 - [ ] Add validation after each block (see [VALIDATION.md](../neo4j/VALIDATION.md))
-- [ ] Test with early blocks (simple P2PKH) before modern blocks (SegWit, Taproot)
+- [x] Test with early blocks (simple P2PKH) before modern blocks (SegWit, Taproot)
 
 ---
 
@@ -380,6 +418,7 @@ CREATE INDEX output_spent FOR (o:Output) ON (o.isSpent);
 2. Read [SPECIAL_CASES.md](../bitcoin/SPECIAL_CASES.md) to handle coinbase transactions, OP_RETURN, and genesis block
 3. Read [CYPHER_EXAMPLES.md](../neo4j/CYPHER_EXAMPLES.md) for concrete Cypher query patterns for each phase
 4. Read [VALIDATION.md](../neo4j/VALIDATION.md) for data integrity checks during and after ingestion
+5. Read [REAL_TIME_ARCHITECTURE.md](REAL_TIME_ARCHITECTURE.md) for live mode (RPC + ZMQ)
 
 ---
 
