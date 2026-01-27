@@ -6,7 +6,7 @@ High-performance Rust implementation for ingesting Bitcoin blockchain data into 
 
 ## 🎯 Project Goals
 
-Load Bitcoin Core raw block files (`.blk`) into Neo4j to enable:
+Load Bitcoin blockchain data into Neo4j to enable:
 - **Financial crime investigation**: Follow the money through transaction chains
 - **Blockchain forensics**: Detailed UTXO-level analysis
 - **Network analysis**: Identify transaction patterns and clusters
@@ -17,27 +17,30 @@ Load Bitcoin Core raw block files (`.blk`) into Neo4j to enable:
 ## ✨ Key Features
 
 ### Dual-Layer Graph Model
-- **Simplified layer**: Direct Address → Transaction → Address paths for "follow the money" queries
+- **Simplified layer**: Address → Transaction → Address with aggregated amounts for "follow the money" queries
 - **Detailed layer**: Complete UTXO mechanics with Inputs, Outputs, and SPENDS relationships
 - Single Transaction node shared between layers for flexibility
+
+### Three Ingestion Modes
+- **Offline** (`ingest`/`resume`): Stream from Bitcoin Core `.blk` files for bulk historical sync
+- **RPC catchup** (`live`): Fetch blocks from a running Bitcoin Core node via JSON-RPC
+- **ZMQ real-time** (`live`): Subscribe to new block notifications for live chain following
+
+### Checkpoint & Resume
+- Idempotent MERGE-based checkpointing for crash recovery
+- Automatic resume from last processed block
+- Cache pre-warming on restart for faster throughput
 
 ### High Performance
 - **50-100 blocks/sec** on early chain (blocks 0-100k)
 - **1-5 blocks/sec** on modern chain (blocks 700k+)
-- Memory-efficient: <2GB resident memory
-- Multi-core parallelism with Rust's tokio + rayon
+- Concurrent I/O and CPU overlapping with batch UTXO operations
+- Configurable UTXO cache (15MB-1.4GB+) with Neo4j fallback
 
 ### Complete Bitcoin Support
 - All address types: P2PKH, P2SH, P2WPKH, P2WSH, P2TR, P2PK
-- SegWit witness data
-- Taproot support
+- SegWit witness data and Taproot support
 - Special cases: coinbase, OP_RETURN, genesis block
-
-### Rust Implementation
-- Zero-cost abstractions
-- No garbage collection overhead
-- Memory safety without runtime cost
-- Excellent concurrency primitives
 
 ---
 
@@ -57,54 +60,85 @@ docker run -d \
   neo4j:5
 
 # Ensure Bitcoin Core is synced with block files at ~/.bitcoin/blocks/
+
+# For live mode only: enable RPC and ZMQ in bitcoin.conf
+# rpcuser=btcgraph
+# rpcpassword=your-rpc-password
+# zmqpubhashblock=tcp://127.0.0.1:28332
 ```
 
 ### Build and Run
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/bitcoin-chain-graph.git
+git clone https://github.com/mkd-neo4j/bitcoin-chain-graph.git
 cd bitcoin-chain-graph
+
+# Copy and edit configuration
+cp config.example/default.toml.example config/default.toml
+# Edit config/default.toml: set blocks_dir, neo4j password, etc.
 
 # Build release binary (optimized)
 cargo build --release
 
 # Initialize Neo4j schema (constraints and indexes)
-./target/release/bitcoin-chain-graph init-schema
+./target/release/bitcoin-chain-graph init-schema --config config/default.toml
 
-# Ingest first 1000 blocks
-./target/release/bitcoin-chain-graph ingest \
-  --start-height 0 \
-  --end-height 1000 \
-  --batch-size 50
+# Ingest from .blk files (offline mode)
+./target/release/bitcoin-chain-graph ingest --config config/default.toml
 
-# Validate ingested data
-./target/release/bitcoin-chain-graph validate
+# Check progress
+./target/release/bitcoin-chain-graph status --config config/default.toml
 
-# View ingestion statistics
-./target/release/bitcoin-chain-graph stats
+# Resume after interruption
+./target/release/bitcoin-chain-graph resume --config config/default.toml
+
+# Live mode: RPC catchup + ZMQ real-time streaming
+./target/release/bitcoin-chain-graph live --config config/default.toml
 ```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `init-schema` | Create Neo4j constraints, indexes, and initial checkpoint |
+| `ingest` | Fresh ingestion from genesis block (offline, `.blk` files) |
+| `resume` | Continue from last checkpoint (with UTXO cache pre-warming) |
+| `status` | Show checkpoint progress and resume information |
+| `live` | Two-phase: RPC catchup then ZMQ real-time streaming |
+
+All commands accept `--config <FILE>` (default: `config/default.toml`).
+`ingest`, `resume`, and `live` accept `--max-height <N>` to stop at a specific block.
 
 ### Configuration
 
-Create `.env` file:
+Create a TOML config file (see [`config.example/`](config.example/) for profiles):
 
-```bash
-# Neo4j connection
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=password
-NEO4J_DATABASE=neo4j
+```toml
+[bitcoin]
+blocks_dir = "/path/to/bitcoin/blocks"
 
-# Bitcoin block files
-BITCOIN_BLOCKS_DIR=/home/user/.bitcoin/blocks
+[neo4j]
+uri = "bolt://localhost:7687"
+user = "neo4j"
+password = "your-password"
 
-# Performance tuning
-BATCH_SIZE=50                 # Blocks per Neo4j transaction
-UTXO_CACHE_SIZE=200000       # Recent outputs to cache in memory
-WORKER_THREADS=4              # Parallel workers
-LOG_LEVEL=info
+[ingestion]
+batch_size = 50
+
+[performance]
+utxo_cache_memory_mb = 140
+
+# Optional: for live mode only
+[bitcoin_rpc]
+url = "http://localhost:8332"
+user = "btcgraph"
+password = "your-rpc-password"
+zmq_endpoint = "tcp://127.0.0.1:28332"
 ```
+
+Configuration profiles: `low-resource`, `default`, `high-performance`, `ultra-performance`.
+See [`config.example/README.md`](config.example/README.md) for details.
 
 ---
 
@@ -124,7 +158,7 @@ LOG_LEVEL=info
 | 100,000-110,000 | 25 blocks/sec | 40ms | ~7 minutes |
 | 750,000-751,000 | 4.5 blocks/sec | 222ms | ~4 hours |
 
-**Memory Usage**: 1.2-1.8 GB resident (with 200k UTXO cache)
+**Memory Usage**: Depends on UTXO cache size (configurable from 15MB to 1.4GB+). Typical: 1.2-1.8 GB resident.
 
 ---
 
@@ -135,6 +169,7 @@ Comprehensive documentation in [`docs/`](docs/):
 ### Architecture
 - **[ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)** - System architecture
 - **[INGESTION_ARCHITECTURE.md](docs/architecture/INGESTION_ARCHITECTURE.md)** - 6-phase ingestion process
+- **[REAL_TIME_ARCHITECTURE.md](docs/REAL_TIME_ARCHITECTURE.md)** - Live mode: RPC catchup + ZMQ streaming
 
 ### Bitcoin Domain Knowledge
 - **[ADDRESS_DERIVATION.md](docs/bitcoin/ADDRESS_DERIVATION.md)** - Bitcoin address extraction
@@ -189,7 +224,7 @@ ORDER BY o.amount DESC
 MATCH (t:Transaction)
 WHERE t.timestamp >= datetime($startDate)
   AND t.timestamp <= datetime($endDate)
-  AND t.totalOutput > 100.0
+  AND t.totalOutput > 10000000000  // amounts in satoshis (1 BTC = 100,000,000)
 RETURN t.txid, t.totalOutput, t.timestamp
 ORDER BY t.totalOutput DESC
 LIMIT 100
@@ -204,27 +239,28 @@ More examples in [docs/CYPHER_EXAMPLES.md](docs/neo4j/CYPHER_EXAMPLES.md)
 ### Data Flow
 
 ```
-Bitcoin Core         Rust Ingestion Tool           Neo4j Database
-    .blk files  →   Parser → Processor   →   Graph (dual-layer)
-                         ↓
-                    UTXO Cache (LRU)
-                         ↓
-                    Batch Builder
-                         ↓
-                    Bulk Insert (UNWIND)
+Bitcoin Core              Rust Ingestion Tool              Neo4j
+                     ┌──────────────────────────┐
+  .blk files ───────>│                          │
+  RPC (catchup) ────>│  Parser → Orchestrator   │──> Graph
+  ZMQ (real-time) ──>│      ↕ UTXO Cache        │   (dual-layer)
+                     └──────────────────────────┘
 ```
 
 ### Graph Model
 
 ```
 Simplified Layer:
-  Address --PERFORMS--> Transaction --BENEFITS_TO--> Address
+  Address -[PERFORMS {inputCount, amountSpent}]-> Transaction
+  Transaction -[BENEFITS_TO {outputCount, amountReceived}]-> Address
 
 Detailed Layer:
-  Input --SPENDS--> Output --LOCKED_TO--> Address
-                    ↓
-  Transaction --HAS_INPUT--> Input
-  Transaction --HAS_OUTPUT--> Output
+  Transaction -[:HAS_INPUT]-> Input -[:SPENDS]-> Output -[:LOCKED_TO]-> Address
+  Transaction -[:HAS_OUTPUT]-> Output
+
+Block Chain:
+  Block -[:NEXT_BLOCK]-> Block
+  Transaction -[:INCLUDED_IN]-> Block
 ```
 
 See [docs/DATA_MODEL.md](docs/neo4j/DATA_MODEL.md) for complete schema.
@@ -285,9 +321,9 @@ cargo doc --open
 - [x] UTXO cache with LRU eviction
 - [x] Bulk insert optimization
 - [x] Comprehensive documentation
-- [ ] Parallel block processing
-- [ ] Resume from checkpoint
-- [ ] Real-time ingestion (monitor new blocks)
+- [x] Parallel block processing
+- [x] Resume from checkpoint
+- [x] Real-time ingestion (RPC catchup + ZMQ streaming)
 - [ ] GraphQL API for queries
 - [ ] Neo4j Bloom visualizations
 - [ ] Testnet and regtest support
@@ -309,7 +345,7 @@ Contributions are welcome! Please:
 
 ## 📜 License
 
-[Add your license here - e.g., MIT, Apache 2.0]
+Apache-2.0
 
 ---
 
@@ -325,8 +361,8 @@ Contributions are welcome! Please:
 ## 📞 Support
 
 - **Documentation**: [docs/README.md](docs/README.md)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/bitcoin-chain-graph/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/bitcoin-chain-graph/discussions)
+- **Issues**: [GitHub Issues](https://github.com/mkd-neo4j/bitcoin-chain-graph/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/mkd-neo4j/bitcoin-chain-graph/discussions)
 
 ---
 
@@ -350,10 +386,12 @@ Contributions are welcome! Please:
 - 2TB+ NVMe SSD (RAID 0)
 - Use case: Research, high-throughput analysis
 
+**Live mode** additionally requires a running Bitcoin Core node with RPC and ZMQ enabled.
+
 ---
 
 **Built with ❤️ and ⚡ Rust**
 
 ---
 
-*Last updated: January 2025*
+*Last updated: January 2026*
