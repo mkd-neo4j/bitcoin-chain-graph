@@ -843,5 +843,5 @@ CREATE (prevBlock)-[:NEXT_BLOCK]->(newBlock);
 - [Neo4j Cypher Manual](https://neo4j.com/docs/cypher-manual/current/)
 - [Neo4j Cypher Refcard](https://neo4j.com/docs/cypher-refcard/current/)
 - [DATA_MODEL.md](DATA_MODEL.md) - Schema reference
-- [INGESTION_ARCHITECTURE.md](INGESTION_ARCHITECTURE.md) - Processing phases
+- [INGESTION_ARCHITECTURE.md](../architecture/INGESTION_ARCHITECTURE.md) - Processing phases
 - [VALIDATION.md](VALIDATION.md) - Data integrity checks

@@ -136,7 +136,7 @@ LIMIT 100
 
 **If violations found:**
 - Address derivation may have failed for a valid script type
-- Check [ADDRESS_DERIVATION.md](ADDRESS_DERIVATION.md) logic
+- Check [ADDRESS_DERIVATION.md](../bitcoin/ADDRESS_DERIVATION.md) logic
 - Manually inspect scriptPubKey to determine if address should be derivable
 
 ---
@@ -692,6 +692,6 @@ Run these queries after ingestion:
 ## References
 
 - [DATA_MODEL.md](DATA_MODEL.md) - Schema definition
-- [INGESTION_ARCHITECTURE.md](INGESTION_ARCHITECTURE.md) - Processing phases
+- [INGESTION_ARCHITECTURE.md](../architecture/INGESTION_ARCHITECTURE.md) - Processing phases
 - [CYPHER_EXAMPLES.md](CYPHER_EXAMPLES.md) - Query patterns
 - [Bitcoin Developer Reference](https://developer.bitcoin.org/reference/transactions.html)

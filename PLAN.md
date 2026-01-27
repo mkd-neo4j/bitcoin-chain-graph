@@ -70,7 +70,7 @@ This document will be updated as milestones are completed:
 - ✅ Execution time: <100ms for first 100 blocks
 
 ### References
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - Layer 1: Parser
+- [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) - Layer 1: Parser
 - [rust/BINARY_PARSING.md](docs/rust/BINARY_PARSING.md) - Block file format
 - [test_data/README.md](test_data/README.md) - Test data details
 
@@ -100,8 +100,8 @@ This document will be updated as milestones are completed:
 - ✅ NULL_DATA outputs handled gracefully
 
 ### References
-- [ADDRESS_DERIVATION.md](docs/ADDRESS_DERIVATION.md) - Complete address extraction guide
-- [SPECIAL_CASES.md](docs/SPECIAL_CASES.md) - Edge cases
+- [ADDRESS_DERIVATION.md](docs/bitcoin/ADDRESS_DERIVATION.md) - Complete address extraction guide
+- [SPECIAL_CASES.md](docs/bitcoin/SPECIAL_CASES.md) - Edge cases
 
 ---
 
@@ -128,8 +128,8 @@ This document will be updated as milestones are completed:
 - ✅ No `neo4rs` imports in domain layer
 
 ### References
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - Domain models
-- [DATA_MODEL.md](docs/DATA_MODEL.md) - Node properties
+- [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) - Domain models
+- [DATA_MODEL.md](docs/neo4j/DATA_MODEL.md) - Node properties
 
 ---
 
@@ -157,7 +157,7 @@ This document will be updated as milestones are completed:
 - ✅ No Neo4j dependencies yet
 
 ### References
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md:208-256) - GraphWriter trait definition
+- [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md:208-256) - GraphWriter trait definition
 
 ---
 
@@ -190,8 +190,8 @@ This document will be updated as milestones are completed:
 - ✅ All phases call GraphWriter trait methods
 
 ### References
-- [INGESTION_ARCHITECTURE.md](docs/INGESTION_ARCHITECTURE.md) - 6-phase process
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md:130-193) - Orchestrator examples
+- [INGESTION_ARCHITECTURE.md](docs/architecture/INGESTION_ARCHITECTURE.md) - 6-phase process
+- [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md:130-193) - Orchestrator examples
 
 ---
 
@@ -226,9 +226,9 @@ This document will be updated as milestones are completed:
 - ✅ All queries parameterized
 
 ### References
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md:259-573) - Neo4j implementation
+- [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md:259-573) - Neo4j implementation
 - [rust/NEO4J_INTEGRATION.md](docs/rust/NEO4J_INTEGRATION.md) - Connection setup
-- [CYPHER_EXAMPLES.md](docs/CYPHER_EXAMPLES.md) - All queries
+- [CYPHER_EXAMPLES.md](docs/neo4j/CYPHER_EXAMPLES.md) - All queries
 
 ---
 
@@ -351,9 +351,9 @@ This document will be updated as milestones are completed:
 - **Expected speedup**: 10-100x for ingestion (2.55M queries → ~10k cache miss queries)
 
 ### References
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md:168-190) - UTXO cache abstraction
+- [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md:168-190) - UTXO cache abstraction
 - [rust/MEMORY_STRATEGY.md](docs/rust/MEMORY_STRATEGY.md) - Cache sizing
-- [INGESTION_ARCHITECTURE.md](docs/INGESTION_ARCHITECTURE.md) - Phase 5 & 6 details
+- [INGESTION_ARCHITECTURE.md](docs/architecture/INGESTION_ARCHITECTURE.md) - Phase 5 & 6 details
 - Current session: Performance bottleneck analysis and optimization strategy
 
 ---
@@ -386,9 +386,9 @@ This document will be updated as milestones are completed:
 - ✅ Checkpoint tracks .blk file name
 
 ### References
-- [DATA_MODEL.md](docs/DATA_MODEL.md:206-222) - IngestionCheckpoint node
-- [INGESTION_ARCHITECTURE.md](docs/INGESTION_ARCHITECTURE.md:226-315) - Checkpoint strategy
-- [CYPHER_EXAMPLES.md](docs/CYPHER_EXAMPLES.md:94-227) - Checkpoint queries
+- [DATA_MODEL.md](docs/neo4j/DATA_MODEL.md:206-222) - IngestionCheckpoint node
+- [INGESTION_ARCHITECTURE.md](docs/architecture/INGESTION_ARCHITECTURE.md:226-315) - Checkpoint strategy
+- [CYPHER_EXAMPLES.md](docs/neo4j/CYPHER_EXAMPLES.md:94-227) - Checkpoint queries
 
 ---
 
@@ -421,7 +421,7 @@ This document will be updated as milestones are completed:
 
 ### References
 - [rust/SETUP.md](docs/rust/SETUP.md) - CLI commands
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md:540-567) - Wiring example
+- [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md:540-567) - Wiring example
 
 ---
 
@@ -454,7 +454,7 @@ This document will be updated as milestones are completed:
 - ✅ Tests cover all documented special cases
 
 ### References
-- [SPECIAL_CASES.md](docs/SPECIAL_CASES.md) - Complete edge case documentation
+- [SPECIAL_CASES.md](docs/bitcoin/SPECIAL_CASES.md) - Complete edge case documentation
 
 ---
 
@@ -484,7 +484,7 @@ This document will be updated as milestones are completed:
 - ✅ Failed blocks don't corrupt database
 
 ### References
-- [VALIDATION.md](docs/VALIDATION.md) - Validation queries
+- [VALIDATION.md](docs/neo4j/VALIDATION.md) - Validation queries
 
 ---
 

@@ -37,7 +37,7 @@ Raw transaction data from blocks:
 Raw transaction output (vout) data:
 - `outputId` → **Derived**: Concatenation of `{txid}:{outputIndex}`
 - `outputIndex`, `amount`, `scriptPubKey` → Direct mapping from vout
-- `scriptType` → **Derived**: Parsed from scriptPubKey (see [ADDRESS_DERIVATION.md](ADDRESS_DERIVATION.md))
+- `scriptType` → **Derived**: Parsed from scriptPubKey (see [ADDRESS_DERIVATION.md](../bitcoin/ADDRESS_DERIVATION.md))
 - `isSpent`, `spentInTxid`, `spentAtHeight` → **State tracking**: Updated when output is later consumed by an input
 
 ### Input Data → Input Node
@@ -50,7 +50,7 @@ Raw transaction input (vin) data:
 **Not present in raw blockchain** - Addresses are **deterministically derived** by:
 1. Parsing the `scriptPubKey` from each output
 2. Extracting the address based on script type (P2PKH, P2SH, P2WPKH, P2WSH, P2TR)
-3. For details see [ADDRESS_DERIVATION.md](ADDRESS_DERIVATION.md)
+3. For details see [ADDRESS_DERIVATION.md](../bitcoin/ADDRESS_DERIVATION.md)
 
 ### Relationship Data
 - `HAS_INPUT`, `HAS_OUTPUT`, `INCLUDED_IN`, `LOCKED_TO` → **Directly derivable** from transaction structure

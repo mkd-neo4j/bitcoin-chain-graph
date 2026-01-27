@@ -896,7 +896,7 @@ pub fn next_block(&mut self) -> Result<Option<Block>> {
 
 ## Next Steps
 
-1. Review [NEO4J_INTEGRATION.md](rust/NEO4J_INTEGRATION.md) for Neo4j-specific implementation details
-2. Review [TESTING.md](rust/TESTING.md) for testing strategy with mock writer
-3. Review [SETUP.md](rust/SETUP.md) for detailed project structure
+1. Review [NEO4J_INTEGRATION.md](../rust/NEO4J_INTEGRATION.md) for Neo4j-specific implementation details
+2. Review [TESTING.md](../rust/TESTING.md) for testing strategy with mock writer
+3. Review [SETUP.md](../rust/SETUP.md) for detailed project structure
 4. Review [INGESTION_ARCHITECTURE.md](INGESTION_ARCHITECTURE.md) for 6-phase ingestion process

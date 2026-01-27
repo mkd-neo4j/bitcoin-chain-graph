@@ -1,6 +1,6 @@
 # Bitcoin Blockchain Ingestion Architecture
 
-How to load Bitcoin blockchain data from raw block files into Neo4j according to the [DATA_MODEL.md](DATA_MODEL.md) specification.
+How to load Bitcoin blockchain data from raw block files into Neo4j according to the [DATA_MODEL.md](../neo4j/DATA_MODEL.md) specification.
 
 ---
 
@@ -66,7 +66,7 @@ For each transaction in the block:
 ### Phase 3: Create Output Nodes and Address Relationships
 For each output in each transaction:
 1. Parse output data (outputIndex, amount, scriptPubKey)
-2. Derive `scriptType` from scriptPubKey (see [ADDRESS_DERIVATION.md](ADDRESS_DERIVATION.md))
+2. Derive `scriptType` from scriptPubKey (see [ADDRESS_DERIVATION.md](../bitcoin/ADDRESS_DERIVATION.md))
 3. Derive `address` from scriptPubKey (if parseable)
 4. Create `Output` node with:
    - `outputId = {txid}:{outputIndex}`
@@ -80,7 +80,7 @@ For each output in each transaction:
 
 **Why third?** Outputs must exist before Phase 4 can create SPENDS relationships to them.
 
-**Special case:** OP_RETURN outputs have `scriptType = 'NULL_DATA'` and no address - skip LOCKED_TO relationship (see [SPECIAL_CASES.md](SPECIAL_CASES.md)).
+**Special case:** OP_RETURN outputs have `scriptType = 'NULL_DATA'` and no address - skip LOCKED_TO relationship (see [SPECIAL_CASES.md](../bitcoin/SPECIAL_CASES.md)).
 
 ---
 
@@ -99,7 +99,7 @@ For each input in each transaction:
 
 **Why fourth?** Cannot create SPENDS until the referenced Output nodes exist from Phase 3.
 
-**Coinbase exception:** Coinbase transactions have one input with no previous output. Skip steps 4-6 (see [SPECIAL_CASES.md](SPECIAL_CASES.md)).
+**Coinbase exception:** Coinbase transactions have one input with no previous output. Skip steps 4-6 (see [SPECIAL_CASES.md](../bitcoin/SPECIAL_CASES.md)).
 
 **Critical dependency:** This phase requires that ALL previous transactions have completed Phase 3 before this transaction's Phase 4 runs. This means you must process blocks in chain order (by height).
 
@@ -316,7 +316,7 @@ RETURN b
 
 ### Validation During Ingestion
 
-After each block, optionally verify (see [VALIDATION.md](VALIDATION.md)):
+After each block, optionally verify (see [VALIDATION.md](../neo4j/VALIDATION.md)):
 - All transactions have `totalInput = totalOutput + fee` (except coinbase)
 - All inputs have corresponding SPENDS relationships (except coinbase)
 - All outputs with parseable addresses have LOCKED_TO relationships
@@ -363,23 +363,23 @@ CREATE INDEX output_spent FOR (o:Output) ON (o.isSpent);
 
 - [ ] Parse Bitcoin Core `.blk` files correctly (magic bytes, block size, block data)
 - [ ] Reconstruct block ordering by height (use previousHash links)
-- [ ] Implement address derivation for all script types (see [ADDRESS_DERIVATION.md](ADDRESS_DERIVATION.md))
-- [ ] Handle special cases: coinbase, OP_RETURN, genesis block (see [SPECIAL_CASES.md](SPECIAL_CASES.md))
+- [ ] Implement address derivation for all script types (see [ADDRESS_DERIVATION.md](../bitcoin/ADDRESS_DERIVATION.md))
+- [ ] Handle special cases: coinbase, OP_RETURN, genesis block (see [SPECIAL_CASES.md](../bitcoin/SPECIAL_CASES.md))
 - [ ] Process phases in correct order (1→2→3→4→5→6)
 - [ ] Process transactions within block in order
 - [ ] Create Neo4j constraints and indexes before ingestion
 - [ ] Implement checkpointing for resume-on-failure
-- [ ] Add validation after each block (see [VALIDATION.md](VALIDATION.md))
+- [ ] Add validation after each block (see [VALIDATION.md](../neo4j/VALIDATION.md))
 - [ ] Test with early blocks (simple P2PKH) before modern blocks (SegWit, Taproot)
 
 ---
 
 ## Next Steps
 
-1. Read [ADDRESS_DERIVATION.md](ADDRESS_DERIVATION.md) to understand how to parse scriptPubKey and extract addresses
-2. Read [SPECIAL_CASES.md](SPECIAL_CASES.md) to handle coinbase transactions, OP_RETURN, and genesis block
-3. Read [CYPHER_EXAMPLES.md](CYPHER_EXAMPLES.md) for concrete Cypher query patterns for each phase
-4. Read [VALIDATION.md](VALIDATION.md) for data integrity checks during and after ingestion
+1. Read [ADDRESS_DERIVATION.md](../bitcoin/ADDRESS_DERIVATION.md) to understand how to parse scriptPubKey and extract addresses
+2. Read [SPECIAL_CASES.md](../bitcoin/SPECIAL_CASES.md) to handle coinbase transactions, OP_RETURN, and genesis block
+3. Read [CYPHER_EXAMPLES.md](../neo4j/CYPHER_EXAMPLES.md) for concrete Cypher query patterns for each phase
+4. Read [VALIDATION.md](../neo4j/VALIDATION.md) for data integrity checks during and after ingestion
 
 ---
 

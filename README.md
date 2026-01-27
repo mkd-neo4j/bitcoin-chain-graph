@@ -132,13 +132,18 @@ LOG_LEVEL=info
 
 Comprehensive documentation in [`docs/`](docs/):
 
-### General (Language-Agnostic)
-- **[DATA_MODEL.md](docs/DATA_MODEL.md)** - Neo4j graph schema
-- **[INGESTION_ARCHITECTURE.md](docs/INGESTION_ARCHITECTURE.md)** - 6-phase ingestion process
-- **[ADDRESS_DERIVATION.md](docs/ADDRESS_DERIVATION.md)** - Bitcoin address extraction
-- **[SPECIAL_CASES.md](docs/SPECIAL_CASES.md)** - Edge case handling
-- **[CYPHER_EXAMPLES.md](docs/CYPHER_EXAMPLES.md)** - Query library
-- **[VALIDATION.md](docs/VALIDATION.md)** - Data integrity checks
+### Architecture
+- **[ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)** - System architecture
+- **[INGESTION_ARCHITECTURE.md](docs/architecture/INGESTION_ARCHITECTURE.md)** - 6-phase ingestion process
+
+### Bitcoin Domain Knowledge
+- **[ADDRESS_DERIVATION.md](docs/bitcoin/ADDRESS_DERIVATION.md)** - Bitcoin address extraction
+- **[SPECIAL_CASES.md](docs/bitcoin/SPECIAL_CASES.md)** - Edge case handling
+
+### Neo4j Database
+- **[DATA_MODEL.md](docs/neo4j/DATA_MODEL.md)** - Neo4j graph schema
+- **[CYPHER_EXAMPLES.md](docs/neo4j/CYPHER_EXAMPLES.md)** - Query library
+- **[VALIDATION.md](docs/neo4j/VALIDATION.md)** - Data integrity checks
 
 ### Rust Implementation
 - **[rust/SETUP.md](docs/rust/SETUP.md)** - Project setup and dependencies
@@ -190,7 +195,7 @@ ORDER BY t.totalOutput DESC
 LIMIT 100
 ```
 
-More examples in [docs/CYPHER_EXAMPLES.md](docs/CYPHER_EXAMPLES.md)
+More examples in [docs/CYPHER_EXAMPLES.md](docs/neo4j/CYPHER_EXAMPLES.md)
 
 ---
 
@@ -222,7 +227,7 @@ Detailed Layer:
   Transaction --HAS_OUTPUT--> Output
 ```
 
-See [docs/DATA_MODEL.md](docs/DATA_MODEL.md) for complete schema.
+See [docs/DATA_MODEL.md](docs/neo4j/DATA_MODEL.md) for complete schema.
 
 ---
 

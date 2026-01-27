@@ -1170,7 +1170,7 @@ mod tests {
 
 - [neo4rs Documentation](https://docs.rs/neo4rs/latest/neo4rs/)
 - [Neo4j Cypher Manual](https://neo4j.com/docs/cypher-manual/current/)
-- [../CYPHER_EXAMPLES.md](../CYPHER_EXAMPLES.md) - Cypher query patterns
+- [CYPHER_EXAMPLES.md](../neo4j/CYPHER_EXAMPLES.md) - Cypher query patterns
 
 ---
 

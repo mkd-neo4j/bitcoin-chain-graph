@@ -857,7 +857,7 @@ open coverage/index.html
 - [Criterion Benchmarking](https://bheisler.github.io/criterion.rs/book/)
 - [Proptest Property Testing](https://proptest-rs.github.io/proptest/)
 - [Testcontainers](https://docs.rs/testcontainers/latest/testcontainers/)
-- [../VALIDATION.md](../VALIDATION.md) - Data integrity validation queries
+- [VALIDATION.md](../neo4j/VALIDATION.md) - Data integrity validation queries
 
 ---
 

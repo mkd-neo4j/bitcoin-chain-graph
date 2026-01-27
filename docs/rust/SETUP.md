@@ -163,7 +163,7 @@ let orchestrator = IngestionOrchestrator::new(Arc::new(writer));
 - No accidental coupling
 - Type-safe dependency injection
 
-See [ARCHITECTURE.md](../ARCHITECTURE.md) for detailed explanation of this design.
+See [ARCHITECTURE.md](../architecture/ARCHITECTURE.md) for detailed explanation of this design.
 
 ---
 
