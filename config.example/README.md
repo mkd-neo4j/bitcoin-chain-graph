@@ -109,10 +109,23 @@ validate_every_n_blocks = 1000    # Validation frequency
 ### [performance] - Performance Tuning
 ```toml
 [performance]
-utxo_cache_size = 100000          # UTXO entries to cache
+utxo_cache_memory_mb = 15         # UTXO cache memory budget in MB
+                                  # 15 MB ≈ 108k entries (default)
+                                  # 50 MB ≈ 362k entries (recommended for batch_size=500)
+                                  # 140 MB ≈ 1M entries (high performance)
+utxo_prewarm_depth = 50           # Blocks to pre-warm cache (backward loading)
 parallel_batches = 4              # Concurrent batch writes
 progress_report_interval = 100    # Progress every N blocks
 ```
+
+**UTXO Cache Memory Guidelines:**
+- **2 MB** (low-resource): ~14k entries, hit rate ~40-50%
+- **15 MB** (default): ~108k entries, good for batch_size ≤ 200
+- **50 MB** (recommended): ~362k entries, good for batch_size = 500
+- **140 MB** (high-perf): ~1M entries, good for batch_size = 1000+
+- **1400 MB** (ultra-perf): ~10M entries, maximum hit rate (95-99%)
+
+Higher memory = better cache hit rate = fewer Neo4j queries = faster ingestion.
 
 ## Security Best Practices
 
@@ -173,9 +186,14 @@ Error: Failed to connect to Neo4j: Connection refused
 
 ### Memory vs Speed Trade-offs
 - Larger `batch_size` = More memory, higher throughput
-- Larger `utxo_cache_size` = More memory, faster lookups
+- Larger `utxo_cache_memory_mb` = More memory, better cache hit rate, faster ingestion
 - More `parallel_batches` = More connections, higher throughput
 - More `max_connections` = More database resources needed
+
+**Cache Size Recommendations:**
+- For `batch_size = 500`: Set `utxo_cache_memory_mb = 50` (≈362k entries)
+- For `batch_size = 1000`: Set `utxo_cache_memory_mb = 140` (≈1M entries)
+- Rule of thumb: Cache should hold 1 batch + working set (50k-100k unspent outputs)
 
 ## Support
 

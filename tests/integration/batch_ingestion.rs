@@ -43,7 +43,7 @@ async fn test_ingest_first_4_files() {
     println!("   ✅ Connected");
 
     // Create orchestrator
-    let cache_size = config.performance.utxo_cache_size;
+    let cache_size = config.performance.cache_capacity();
     println!("\n🔧 Creating orchestrator (cache: {} entries)...", cache_size);
     let orchestrator = IngestionOrchestrator::new(writer, Network::Bitcoin, cache_size);
 

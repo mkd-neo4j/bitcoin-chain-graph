@@ -111,6 +111,8 @@ pub struct UtxoCache<W: GraphWriter> {
     writer: Arc<W>,
     /// Cache statistics
     stats: Arc<Mutex<UtxoCacheStats>>,
+    /// Pre-warming mode flag (prevents eviction during backward loading)
+    prewarm_mode: Arc<Mutex<bool>>,
 }
 
 impl<W: GraphWriter> UtxoCache<W> {
@@ -133,6 +135,7 @@ impl<W: GraphWriter> UtxoCache<W> {
             )),
             writer,
             stats: Arc::new(Mutex::new(UtxoCacheStats::default())),
+            prewarm_mode: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -259,6 +262,77 @@ impl<W: GraphWriter> UtxoCache<W> {
         let cache = self.cache.lock().unwrap();
         cache.cap().get()
     }
+
+    /// Enable pre-warming mode
+    ///
+    /// In pre-warming mode, inserts using `insert_prewarm()` will stop
+    /// when the cache is full, preventing eviction of existing entries.
+    /// This is used during backward block loading to populate the cache
+    /// without evicting recently added entries.
+    pub fn enable_prewarm_mode(&self) {
+        let mut mode = self.prewarm_mode.lock().unwrap();
+        *mode = true;
+    }
+
+    /// Disable pre-warming mode and return to normal LRU operation
+    ///
+    /// After pre-warming is complete, call this to resume normal LRU
+    /// eviction behavior where new inserts can evict old entries.
+    pub fn disable_prewarm_mode(&self) {
+        let mut mode = self.prewarm_mode.lock().unwrap();
+        *mode = false;
+    }
+
+    /// Insert output during pre-warming (stops when cache is full)
+    ///
+    /// Unlike regular `insert()`, this method will not evict existing
+    /// entries if the cache is full. Instead, it returns `false` to
+    /// indicate pre-warming should stop.
+    ///
+    /// # Arguments
+    ///
+    /// * `output` - Cached output data to insert
+    ///
+    /// # Returns
+    ///
+    /// * `true` - Output was inserted successfully
+    /// * `false` - Cache is full, pre-warming should stop
+    pub fn insert_prewarm(&self, output: CachedOutput) -> bool {
+        let mut cache = self.cache.lock().unwrap();
+
+        // Check if cache is full before inserting
+        if cache.len() >= cache.cap().get() {
+            return false; // Stop pre-warming
+        }
+
+        let output_id = output.output_id.clone();
+        cache.put(output_id, output);
+
+        let mut stats = self.stats.lock().unwrap();
+        stats.inserts += 1;
+
+        true // Continue pre-warming
+    }
+
+    /// Check if cache has capacity for more entries
+    ///
+    /// Returns `true` if cache is not full and can accept more entries
+    /// without evicting existing ones.
+    pub fn has_capacity(&self) -> bool {
+        let cache = self.cache.lock().unwrap();
+        cache.len() < cache.cap().get()
+    }
+
+    /// Get cache fill percentage (0.0 to 1.0)
+    ///
+    /// Returns the ratio of current entries to maximum capacity.
+    /// - 0.0 = empty
+    /// - 0.5 = half full
+    /// - 1.0 = completely full
+    pub fn fill_percentage(&self) -> f64 {
+        let cache = self.cache.lock().unwrap();
+        cache.len() as f64 / cache.cap().get() as f64
+    }
 }
 
 impl<W: GraphWriter> Clone for UtxoCache<W> {
@@ -267,6 +341,7 @@ impl<W: GraphWriter> Clone for UtxoCache<W> {
             cache: Arc::clone(&self.cache),
             writer: Arc::clone(&self.writer),
             stats: Arc::clone(&self.stats),
+            prewarm_mode: Arc::clone(&self.prewarm_mode),
         }
     }
 }
@@ -755,5 +830,139 @@ mod tests {
         println!("   Eviction working: ✓");
         println!("   Fallback to Neo4j: ✓");
         println!("   Hit rate: {:.1}%", stats.hit_rate_percent());
+    }
+
+    #[tokio::test]
+    async fn test_prewarm_mode_basic() {
+        let writer = Arc::new(MockWriter::new());
+        let cache = UtxoCache::new(10, writer); // Small capacity for testing
+
+        // Enable pre-warming mode
+        cache.enable_prewarm_mode();
+
+        // Insert 10 outputs (fill cache exactly)
+        for i in 0..10 {
+            let result = cache.insert_prewarm(CachedOutput {
+                output_id: format!("tx{}:0", i),
+                output_index: 0,
+                amount: (i as u64) * 1000000,
+                script_type: "P2PKH".to_string(),
+                address: Some(format!("addr_{}", i)),
+            });
+            assert!(result, "Insert {} should succeed", i);
+        }
+
+        assert_eq!(cache.len(), 10, "Cache should be full");
+        assert!(!cache.has_capacity(), "Cache should have no capacity");
+        assert_eq!(cache.fill_percentage(), 1.0, "Cache should be 100% full");
+
+        // Try to insert 11th output - should fail (cache full)
+        let result = cache.insert_prewarm(CachedOutput {
+            output_id: "tx10:0".to_string(),
+            output_index: 0,
+            amount: 10000000,
+            script_type: "P2PKH".to_string(),
+            address: Some("addr_10".to_string()),
+        });
+
+        assert!(!result, "Insert should fail when cache is full in prewarm mode");
+        assert_eq!(cache.len(), 10, "Cache should still have 10 entries");
+
+        // Disable pre-warming mode
+        cache.disable_prewarm_mode();
+
+        // Now regular insert should work (with eviction)
+        cache.insert(CachedOutput {
+            output_id: "tx11:0".to_string(),
+            output_index: 0,
+            amount: 11000000,
+            script_type: "P2PKH".to_string(),
+            address: Some("addr_11".to_string()),
+        });
+
+        assert_eq!(cache.len(), 10, "Cache should still have 10 entries (with eviction)");
+
+        // Verify tx11 is in cache (newest)
+        assert!(cache.get("tx11:0").await.is_ok(), "tx11 should be in cache");
+    }
+
+    #[tokio::test]
+    async fn test_fill_percentage_tracking() {
+        let writer = Arc::new(MockWriter::new());
+        let cache = UtxoCache::new(100, writer);
+
+        // Empty cache
+        assert_eq!(cache.fill_percentage(), 0.0);
+        assert!(cache.has_capacity());
+
+        // 25% full
+        for i in 0..25 {
+            cache.insert(CachedOutput {
+                output_id: format!("tx{}:0", i),
+                output_index: 0,
+                amount: 1000000,
+                script_type: "P2PKH".to_string(),
+                address: None,
+            });
+        }
+        assert_eq!(cache.fill_percentage(), 0.25);
+        assert!(cache.has_capacity());
+
+        // 50% full
+        for i in 25..50 {
+            cache.insert(CachedOutput {
+                output_id: format!("tx{}:0", i),
+                output_index: 0,
+                amount: 1000000,
+                script_type: "P2PKH".to_string(),
+                address: None,
+            });
+        }
+        assert_eq!(cache.fill_percentage(), 0.5);
+        assert!(cache.has_capacity());
+
+        // 100% full
+        for i in 50..100 {
+            cache.insert(CachedOutput {
+                output_id: format!("tx{}:0", i),
+                output_index: 0,
+                amount: 1000000,
+                script_type: "P2PKH".to_string(),
+                address: None,
+            });
+        }
+        assert_eq!(cache.fill_percentage(), 1.0);
+        assert!(!cache.has_capacity());
+    }
+
+    #[tokio::test]
+    async fn test_prewarm_stops_when_full() {
+        let writer = Arc::new(MockWriter::new());
+        let cache = UtxoCache::new(50, writer);
+
+        cache.enable_prewarm_mode();
+
+        // Insert outputs until cache is full
+        let mut inserted = 0;
+        for i in 0..1000 {
+            let result = cache.insert_prewarm(CachedOutput {
+                output_id: format!("tx{}:0", i),
+                output_index: 0,
+                amount: 1000000,
+                script_type: "P2PKH".to_string(),
+                address: None,
+            });
+
+            if result {
+                inserted += 1;
+            } else {
+                // Cache is full, pre-warming should stop
+                break;
+            }
+        }
+
+        assert_eq!(inserted, 50, "Should insert exactly 50 outputs (cache capacity)");
+        assert_eq!(cache.len(), 50, "Cache should be full");
+        assert!(!cache.has_capacity(), "Cache should have no capacity");
     }
 }

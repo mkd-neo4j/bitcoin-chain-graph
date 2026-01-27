@@ -28,10 +28,11 @@ use bitcoin::Network;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::Instant;
+use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use bitcoin_chain_graph::config::{Config, ConfigLoader};
 use bitcoin_chain_graph::domain::IngestionOrchestrator;
-use bitcoin_chain_graph::parser::BatchedBlockLoader;
+use bitcoin_chain_graph::parser::SingleBlockLoader;
 use bitcoin_chain_graph::writer::Neo4jWriter;
 
 /// Bitcoin Chain Graph - Blockchain ingestion into Neo4j
@@ -53,22 +54,18 @@ enum Commands {
     /// Initialize Neo4j schema and create initial checkpoint
     InitSchema,
 
-    /// Start fresh ingestion from genesis block
+    /// Start fresh ingestion from genesis block (lazy streaming mode)
     Ingest {
-        /// Number of .blk files to process (default: all files)
-        #[arg(short, long)]
-        files: Option<u32>,
-
-        /// Starting file number (default: 0 for blk00000.dat)
-        #[arg(long, default_value = "0")]
-        start_file: u32,
+        /// Maximum block height to process (default: all blocks)
+        #[arg(long)]
+        max_height: Option<u32>,
     },
 
-    /// Resume ingestion from last checkpoint
+    /// Resume ingestion from last checkpoint (lazy streaming with cache pre-warming)
     Resume {
-        /// Number of .blk files to process from resume point (default: all remaining)
-        #[arg(short, long)]
-        files: Option<u32>,
+        /// Maximum block height to process (default: all blocks)
+        #[arg(long)]
+        max_height: Option<u32>,
     },
 
     /// Display checkpoint status and progress
@@ -86,12 +83,46 @@ async fn main() -> Result<()> {
     config.validate()
         .context("Configuration validation failed")?;
 
+    // Initialize logging
+    init_logging(&config);
+
     match cli.command {
         Commands::InitSchema => init_schema(&config).await,
-        Commands::Ingest { files, start_file } => ingest(&config, start_file, files).await,
-        Commands::Resume { files } => resume(&config, files).await,
+        Commands::Ingest { max_height } => ingest(&config, max_height).await,
+        Commands::Resume { max_height } => resume(&config, max_height).await,
         Commands::Status => status(&config).await,
     }
+}
+
+/// Initialize tracing subscriber for structured logging
+fn init_logging(config: &Config) {
+    // Check for RUST_LOG environment variable, otherwise use config
+    let log_level = std::env::var("RUST_LOG")
+        .unwrap_or_else(|_| config.logging.level.clone());
+
+    // Create env filter
+    let env_filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(&log_level))
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    // Setup formatting layer
+    let fmt_layer = fmt::layer()
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_line_number(false)
+        .with_ansi(true);
+
+    // Initialize subscriber
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .init();
+
+    tracing::info!(
+        log_level = %log_level,
+        config_file = ?config,
+        "Logging initialized"
+    );
 }
 
 /// Initialize Neo4j schema and create initial checkpoint
@@ -106,7 +137,7 @@ async fn init_schema(config: &Config) -> Result<()> {
         .context("Failed to connect to Neo4j")?;
     println!("   ✅ Connected successfully");
 
-    let cache_size = config.performance.utxo_cache_size;
+    let cache_size = config.performance.cache_capacity();
     let orchestrator = IngestionOrchestrator::new(writer, Network::Bitcoin, cache_size);
 
     println!("\n🏗️  Initializing schema (constraints + indexes)...");
@@ -123,24 +154,14 @@ async fn init_schema(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Start fresh ingestion from genesis block
-async fn ingest(config: &Config, start_file: u32, file_count: Option<u32>) -> Result<()> {
+/// Start fresh ingestion from genesis block (streaming mode)
+async fn ingest(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
     println!("╔════════════════════════════════════════════════════════════════╗");
-    println!("║  Bitcoin Chain Graph Ingestion                                 ║");
+    println!("║  Start Fresh Ingestion (Streaming Mode)                       ║");
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
-    println!("📝 Configuration:");
-    println!("   Neo4j URI: {}", config.neo4j.uri);
-    println!("   Database: {}", config.neo4j.database);
-    println!("   Blocks dir: {}", config.bitcoin.blocks_dir);
-    println!("   Batch size: {}", config.ingestion.batch_size);
-    println!("   UTXO cache: {} entries (~{:.1} MB)",
-        config.performance.utxo_cache_size,
-        (config.performance.utxo_cache_size as f64 * 138.0) / 1_000_000.0
-    );
-
     // Connect to Neo4j
-    println!("\n🔌 Connecting to Neo4j...");
+    println!("🔌 Connecting to Neo4j at {}...", config.neo4j.uri);
     let writer = Neo4jWriter::new(config.neo4j.clone())
         .await
         .context("Failed to connect to Neo4j")?;
@@ -150,7 +171,7 @@ async fn ingest(config: &Config, start_file: u32, file_count: Option<u32>) -> Re
     let orchestrator = IngestionOrchestrator::new(
         writer,
         Network::Bitcoin,
-        config.performance.utxo_cache_size
+        config.performance.cache_capacity()
     );
 
     // Check if schema is initialized
@@ -175,58 +196,27 @@ async fn ingest(config: &Config, start_file: u32, file_count: Option<u32>) -> Re
         return Ok(());
     }
 
-    println!("\n📂 Loading .blk files...");
-    let end_file = if let Some(count) = file_count {
-        start_file + count - 1
-    } else {
-        // Default: process up to blk00099.dat (or until files don't exist)
-        start_file + 99
-    };
+    // Determine max_height: CLI arg > config.bitcoin.end_height > chain tip
+    let max_height = cli_max_height
+        .or(config.bitcoin.end_height)
+        .unwrap_or(u32::MAX);  // Will stop when blocks run out
 
-    let file_numbers: Vec<u32> = (start_file..=end_file).collect();
-    println!("   File range: blk{:05}.dat to blk{:05}.dat", start_file, end_file);
+    // Create lazy-loading block loader (instant startup)
+    println!("\n📚 Initializing lazy block loader (instant startup)...");
+    let loader = SingleBlockLoader::new(&config.bitcoin.blocks_dir, Network::Bitcoin)
+        .context("Failed to initialize block loader")?;
 
-    let mut loader = BatchedBlockLoader::new(&config.bitcoin.blocks_dir, Network::Bitcoin);
-    let blocks = loader.load_files(&file_numbers)
-        .context("Failed to load block files")?;
+    println!("   Target height range: 0 to {}",
+        if max_height == u32::MAX { "chain tip".to_string() } else { max_height.to_string() });
 
-    if blocks.is_empty() {
-        println!("\n❌ No blocks found in specified file range");
-        return Ok(());
-    }
-
-    println!("   ✅ Loaded {} blocks", blocks.len());
-
-    // Start ingestion
-    println!("\n🚀 Starting batch ingestion...");
-    let start = Instant::now();
-
-    orchestrator.ingest_blocks_batch(&blocks, config.ingestion.batch_size)
-        .await
-        .context("Batch ingestion failed")?;
-
-    let duration = start.elapsed();
-    let bps = blocks.len() as f64 / duration.as_secs_f64();
-
-    println!("\n✅ Ingestion complete!");
-    println!("   Blocks: {}", blocks.len());
-    println!("   Duration: {:.2}s", duration.as_secs_f64());
-    println!("   Speed: {:.2} blocks/sec", bps);
-
-    // Show cache stats
-    let stats = orchestrator.cache_stats();
-    println!("\n💾 UTXO Cache:");
-    println!("   Final size: {}", orchestrator.cache_size());
-    println!("   Hit rate: {:.2}%", stats.hit_rate_percent());
-    println!("   Hits: {}, Misses: {}", stats.hits, stats.misses);
-
-    Ok(())
+    // Start streaming ingestion (no pre-warming for fresh start)
+    run_streaming_ingestion(config, orchestrator, loader, 0, max_height, false).await
 }
 
-/// Resume ingestion from last checkpoint
-async fn resume(config: &Config, file_count: Option<u32>) -> Result<()> {
+/// Resume ingestion from last checkpoint (streaming with pre-warming)
+async fn resume(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
     println!("╔════════════════════════════════════════════════════════════════╗");
-    println!("║  Resume Ingestion from Checkpoint                              ║");
+    println!("║  Resume Ingestion (Streaming with Pre-warming)                ║");
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
     // Connect to Neo4j
@@ -240,7 +230,7 @@ async fn resume(config: &Config, file_count: Option<u32>) -> Result<()> {
     let orchestrator = IngestionOrchestrator::new(
         writer,
         Network::Bitcoin,
-        config.performance.utxo_cache_size
+        config.performance.cache_capacity()
     );
 
     // Get checkpoint
@@ -270,60 +260,169 @@ async fn resume(config: &Config, file_count: Option<u32>) -> Result<()> {
 
     println!("\n🔄 Resume Plan:");
     println!("   Resume from block: {}", resume_height);
-    println!("   Starting file: {}", checkpoint.last_processed_file);
 
-    // Parse file number from checkpoint
-    let last_file_num = parse_file_number(&checkpoint.last_processed_file)?;
-    let start_file = last_file_num;
+    // Determine max_height: CLI arg > config.bitcoin.end_height > chain tip
+    let max_height = cli_max_height
+        .or(config.bitcoin.end_height)
+        .unwrap_or(u32::MAX);  // Will stop when blocks run out
 
-    let end_file = if let Some(count) = file_count {
-        start_file + count - 1
-    } else {
-        start_file + 99 // Default: process remaining files
-    };
+    // Create lazy-loading block loader (instant startup)
+    tracing::info!("Initializing lazy block loader");
+    let loader = SingleBlockLoader::new(&config.bitcoin.blocks_dir, Network::Bitcoin)
+        .context("Failed to initialize block loader")?;
 
-    println!("   File range: blk{:05}.dat to blk{:05}.dat", start_file, end_file);
+    tracing::info!(
+        start = resume_height,
+        end = if max_height == u32::MAX { "chain tip".to_string() } else { max_height.to_string() },
+        "Target height range"
+    );
 
-    println!("\n📂 Loading blocks from resume point...");
-    let file_numbers: Vec<u32> = (start_file..=end_file).collect();
-
-    let mut loader = BatchedBlockLoader::new(&config.bitcoin.blocks_dir, Network::Bitcoin);
-    let all_blocks = loader.load_files(&file_numbers)
-        .context("Failed to load block files")?;
-
-    // Filter to blocks >= resume_height
-    let blocks: Vec<_> = all_blocks.into_iter()
-        .filter(|(height, _, _)| *height >= resume_height)
-        .collect();
-
-    if blocks.is_empty() {
-        println!("\n✅ No new blocks to process. Ingestion is up to date!");
+    if resume_height >= max_height && max_height != u32::MAX {
+        tracing::info!("No new blocks to process. Ingestion is up to date");
         return Ok(());
     }
 
-    println!("   ✅ Loaded {} blocks to process", blocks.len());
+    // Start streaming ingestion with pre-warming
+    run_streaming_ingestion(config, orchestrator, loader, resume_height, max_height, true).await
+}
 
-    // Start ingestion
-    println!("\n🚀 Resuming batch ingestion...");
-    let start = Instant::now();
+/// Core streaming ingestion function with optional cache pre-warming
+async fn run_streaming_ingestion(
+    config: &Config,
+    orchestrator: IngestionOrchestrator<Neo4jWriter>,
+    mut loader: SingleBlockLoader,
+    start_height: u32,
+    max_height: u32,
+    enable_prewarm: bool,
+) -> Result<()> {
+    let start_time = Instant::now();
+    let mut blocks_processed = 0;
 
-    orchestrator.ingest_blocks_batch(&blocks, config.ingestion.batch_size)
-        .await
-        .context("Batch ingestion failed")?;
+    // Pre-warm cache if resuming and configured
+    if enable_prewarm && config.performance.utxo_prewarm_depth > 0 && start_height > 0 {
+        let cache = orchestrator.get_cache();
+        cache.enable_prewarm_mode();
 
-    let duration = start.elapsed();
-    let bps = blocks.len() as f64 / duration.as_secs_f64();
+        let prewarm_blocks = loader.prewarm_cache(
+            cache,
+            start_height,
+            config.performance.utxo_prewarm_depth
+        ).await
+        .context("Cache pre-warming failed")?;
 
-    println!("\n✅ Resume complete!");
-    println!("   Blocks processed: {}", blocks.len());
-    println!("   Duration: {:.2}s", duration.as_secs_f64());
-    println!("   Speed: {:.2} blocks/sec", bps);
+        cache.disable_prewarm_mode();
 
-    // Show cache stats
+        println!("   Pre-warmed {} blocks, cache at {:.1}%",
+                 prewarm_blocks, cache.fill_percentage() * 100.0);
+    }
+
+    // Pre-load full index range (single scan optimization)
+    if max_height != u32::MAX {
+        tracing::info!("Pre-loading index for range {}-{}", start_height, max_height);
+        loader.preload_full_range(start_height, max_height)
+            .context("Failed to preload index range")?;
+    }
+
+    // Start streaming ingestion with batching
+    tracing::info!("Starting streaming ingestion with batching");
+    let batch_size = config.ingestion.batch_size;
+    tracing::info!(batch_size = batch_size, "Batch configuration");
+
+    let mut batch: Vec<(u32, bitcoin::Block, String)> = Vec::with_capacity(batch_size);
+    let mut batch_start_height = start_height;
+
+    for height in start_height..=max_height {
+        // Load single block (show progress during loading)
+        if batch.is_empty() {
+            batch_start_height = height;
+            let end_range = (height + batch_size as u32 - 1).min(max_height);
+            tracing::info!(
+                start = height,
+                end = end_range,
+                "Loading batch"
+            );
+        }
+
+        // Show progress every 50 blocks during loading
+        if height > batch_start_height && (height - batch_start_height) % 50 == 0 {
+            let progress = height - batch_start_height;
+            let total = batch_size.min((max_height - batch_start_height + 1) as usize);
+            let pct = (progress as f64 / total as f64) * 100.0;
+            tracing::debug!(
+                progress = progress,
+                total = total,
+                percent = format!("{:.0}%", pct),
+                "Batch loading progress"
+            );
+        }
+
+        let (h, block, file_name) = match loader.load_block(height)? {
+            Some(data) => data,
+            None => {
+                tracing::warn!(height = height, "Block not found, stopping ingestion");
+                break;
+            }
+        };
+
+        // Add to batch
+        batch.push((h, block, file_name));
+
+        // Ingest batch when full or at end
+        if batch.len() >= batch_size || height == max_height {
+            let batch_start = Instant::now();
+            let batch_start_height = batch.first().unwrap().0;
+            let batch_end_height = batch.last().unwrap().0;
+
+            tracing::info!(
+                start = batch_start_height,
+                end = batch_end_height,
+                "Ingesting batch"
+            );
+
+            orchestrator.ingest_blocks_batch(&batch, batch_size).await
+                .with_context(|| format!("Failed to ingest batch starting at block {}", batch_start_height))?;
+
+            blocks_processed += batch.len();
+
+            let elapsed = batch_start.elapsed().as_secs_f64();
+            let bps = batch.len() as f64 / elapsed;
+
+            let stats = orchestrator.cache_stats();
+            let cache = orchestrator.get_cache();
+            tracing::info!(
+                blocks_per_sec = format!("{:.1}", bps),
+                cache_size = orchestrator.cache_size(),
+                cache_capacity = config.performance.cache_capacity(),
+                cache_memory_mb = config.performance.utxo_cache_memory_mb,
+                cache_fill_pct = format!("{:.1}", cache.fill_percentage() * 100.0),
+                hit_rate_pct = format!("{:.1}", stats.hit_rate_percent()),
+                "Batch complete"
+            );
+
+            // Clear batch for next iteration
+            batch.clear();
+        }
+    }
+
+    let total_duration = start_time.elapsed();
+    let overall_bps = blocks_processed as f64 / total_duration.as_secs_f64();
+
+    // Show final cache stats
     let stats = orchestrator.cache_stats();
-    println!("\n💾 UTXO Cache:");
-    println!("   Final size: {}", orchestrator.cache_size());
-    println!("   Hit rate: {:.2}%", stats.hit_rate_percent());
+
+    tracing::info!(
+        blocks_processed = blocks_processed,
+        duration_secs = format!("{:.2}", total_duration.as_secs_f64()),
+        avg_blocks_per_sec = format!("{:.2}", overall_bps),
+        cache_size = orchestrator.cache_size(),
+        cache_capacity = config.performance.cache_capacity(),
+        cache_memory_mb = config.performance.utxo_cache_memory_mb,
+        cache_fill_pct = format!("{:.1}", orchestrator.cache_size() as f64 / config.performance.cache_capacity() as f64 * 100.0),
+        hit_rate_pct = format!("{:.2}", stats.hit_rate_percent()),
+        hits = stats.hits,
+        misses = stats.misses,
+        "Streaming ingestion complete"
+    );
 
     Ok(())
 }
@@ -340,7 +439,7 @@ async fn status(config: &Config) -> Result<()> {
         .await
         .context("Failed to connect to Neo4j")?;
 
-    let cache_size = config.performance.utxo_cache_size;
+    let cache_size = config.performance.cache_capacity();
     let orchestrator = IngestionOrchestrator::new(writer, Network::Bitcoin, cache_size);
 
     // Get checkpoint
@@ -386,31 +485,4 @@ async fn status(config: &Config) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Parse file number from filename (e.g., "blk00000.dat" -> 0)
-fn parse_file_number(filename: &str) -> Result<u32> {
-    let num_str = filename
-        .strip_prefix("blk")
-        .and_then(|s| s.strip_suffix(".dat"))
-        .context("Invalid file name format")?;
-
-    num_str.parse::<u32>()
-        .context("Failed to parse file number")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_file_number() {
-        assert_eq!(parse_file_number("blk00000.dat").unwrap(), 0);
-        assert_eq!(parse_file_number("blk00001.dat").unwrap(), 1);
-        assert_eq!(parse_file_number("blk00042.dat").unwrap(), 42);
-        assert_eq!(parse_file_number("blk00999.dat").unwrap(), 999);
-
-        assert!(parse_file_number("invalid.dat").is_err());
-        assert!(parse_file_number("blk.dat").is_err());
-    }
 }

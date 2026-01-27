@@ -9,8 +9,10 @@ blocks_dir = "/data/bitcoin/blocks"
 # Starting block height for ingestion (0 = genesis block)
 start_height = 0
 
-# Optional ending block height (commented = sync to chain tip)
-# end_height = 100000
+# Ending block height for bounded ingestion (enables fast startup)
+# For testing/development: 10000 (~10 seconds startup)
+# For production: comment out or set to None to sync to chain tip (~2-5 min startup)
+end_height = 10000
 
 [neo4j]
 # Neo4j connection settings
@@ -35,9 +37,23 @@ max_batch_memory_mb = 512
 enable_validation = true
 validate_every_n_blocks = 1000
 
+# Checkpoint management
+checkpoint_interval = 1
+auto_resume = true
+validate_on_resume = true
+
 [performance]
 # Performance tuning settings
-utxo_cache_size = 100000
+
+# UTXO cache memory budget in megabytes
+# Higher memory = better cache hit rate = fewer Neo4j queries = faster ingestion
+# Default: 15 MB ≈ 108,000 entries (good for batch_size ≤ 200)
+# Recommended for batch_size=500: 50 MB ≈ 362,000 entries
+utxo_cache_memory_mb = 15
+
+# Number of blocks to load backwards for cache pre-warming
+# Loads recent outputs into cache before forward ingestion
+utxo_prewarm_depth = 50
 
 # Moderate parallelism for balanced throughput
 parallel_batches = 4

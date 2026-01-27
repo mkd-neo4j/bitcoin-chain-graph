@@ -88,7 +88,7 @@ async fn test_full_ingestion_all_files() {
     println!("   ✅ Connected successfully");
 
     // Create orchestrator with UTXO cache
-    let cache_size = config.performance.utxo_cache_size;
+    let cache_size = config.performance.cache_capacity();
     println!("\n🔧 Creating ingestion orchestrator...");
     println!("   UTXO cache size: {} entries (~{:.1} MB)",
         cache_size,

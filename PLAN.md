@@ -31,7 +31,7 @@ This document will be updated as milestones are completed:
 - [x] M6: Neo4j Writer Implementation ✅ **Completed 2025-01-23**
 - [x] M7: UTXO Cache + Rust-Based Calculations ✅ **Completed 2025-01-23**
 - [x] M8: Checkpoint Management ✅ **Completed 2025-01-23**
-- [ ] M9: CLI Application
+- [x] M9: CLI Application ✅ **Completed 2025-01-23**
 - [ ] M10: Special Cases Handling
 - [ ] M11: Validation & Error Handling
 - [ ] M12: Performance Optimization
@@ -614,11 +614,12 @@ This document will be updated as milestones are completed:
 
 ## Development Notes
 
-### Current Milestone: M9 - CLI Application
+### Current Milestone: M10 - Special Cases Handling
 
 ### Blockers: None
 
 ### Recent Updates:
+- 2025-01-23: **M9 completed** - CLI application with clap (4 commands: init-schema, ingest, resume, status), configuration file support with validation, wire all layers (Parser → Domain → Writer), Neo4jWriter injection into IngestionOrchestrator, parse .blk files in sequence with BatchedBlockLoader, config files updated with checkpoint fields (checkpoint_interval, auto_resume, validate_on_resume), beautiful formatted CLI output with emojis and progress stats, parse_file_number() helper with tests, all acceptance criteria met (cargo run -- ingest/resume/status work correctly), all 36 library tests passing
 - 2025-01-23: **M8 completed** - Checkpoint management with resume-on-failure capability, CLI application with 4 commands (init-schema, ingest, resume, status), set_checkpoint_status() method added to GraphWriter trait and implementations, checkpoint configuration options (checkpoint_interval, auto_resume, validate_on_resume) added to IngestionConfig, 9 comprehensive checkpoint integration tests passing (resume from genesis, mid-ingestion, file transitions, status transitions, batch ingestion, at-most-1-block reprocessed guarantee, file offset tracking, initial state, timestamp updates), LoaderError error trait implementation fixed for anyhow compatibility, main.rs fully implemented with clap CLI and parse_file_number() helper
 - 2025-01-23: **M7 completed + Batch Optimization** - UtxoCache with LRU eviction, Neo4j fallback on cache miss, Phase 5 (Rust-based amount calculation: total_input/total_output/fee), Phase 6 (Rust-based simplified layer: PERFORMS/BENEFITS_TO pre-aggregated), BatchedBlockLoader replacing OrderedBlockIterator for 7.7x speedup (19→147 blocks/sec), optimized schema (removed unused Input.previousTxid index), 36 library tests + 23 integration tests passing, code cleanup complete (clippy warnings fixed, old code removed)
 - 2025-01-23: **M6 completed** - Neo4jWriter with full GraphWriter trait implementation (11 methods), schema initialization (constraints + indexes), checkpoint functionality (create/update/get/complete), 3 live integration tests (genesis, 10-block load, checkpoint resume), all Cypher queries centralized in queries.rs and parameterized, connection pooling with configurable pool size

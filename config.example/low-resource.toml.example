@@ -35,9 +35,20 @@ max_batch_memory_mb = 128
 enable_validation = false
 validate_every_n_blocks = 10000
 
+# Checkpoint management
+checkpoint_interval = 1
+auto_resume = true
+validate_on_resume = true
+
 [performance]
 # Minimal cache and parallelism
-utxo_cache_size = 10000
+
+# UTXO cache memory budget (minimal for low-resource systems)
+# 2 MB ≈ 14,000 entries - expect hit rate ~40-50%
+utxo_cache_memory_mb = 2
+
+# Minimal pre-warming for low-memory systems
+utxo_prewarm_depth = 10
 
 # Sequential processing (no parallelism)
 parallel_batches = 1

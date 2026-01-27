@@ -34,7 +34,7 @@
 
 use bitcoin::{Block, Network};
 use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData, UtxoCache, CachedOutput};
-use crate::writer::{GraphWriter, Result};
+use crate::writer::{GraphWriter, Result, WriterError};
 use std::sync::Arc;
 use std::collections::HashMap;
 
@@ -69,7 +69,7 @@ pub struct IngestionOrchestrator<W: GraphWriter> {
     utxo_cache: UtxoCache<W>,
 }
 
-impl<W: GraphWriter> IngestionOrchestrator<W> {
+impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// Create a new orchestrator with the given writer, network, and cache size
     ///
     /// # Arguments
@@ -162,6 +162,22 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
         self.utxo_cache.len()
     }
 
+    /// Get reference to the UTXO cache
+    ///
+    /// Returns a reference to the internal UTXO cache for direct access.
+    /// This is useful for cache pre-warming during resume operations.
+    ///
+    /// # Example
+    /// ```no_run
+    /// // Pre-warm cache before resuming ingestion
+    /// cache.enable_prewarm_mode();
+    /// loader.prewarm_cache(orchestrator.get_cache(), start_height, 50).await?;
+    /// cache.disable_prewarm_mode();
+    /// ```
+    pub fn get_cache(&self) -> &UtxoCache<W> {
+        &self.utxo_cache
+    }
+
     /// Get current checkpoint
     ///
     /// Returns the current checkpoint state for status reporting.
@@ -241,13 +257,16 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
         // Now outputs from earlier transactions in this block are in cache
         self.ingest_transactions_with_amounts(block, height).await?;
 
-        // Phase 4: Create Input nodes and remove spent outputs from cache (M7)
-        self.ingest_inputs_and_update_cache(block, height).await?;
+        // Phase 4: Create Input nodes (cache removal deferred to Phase 7)
+        self.ingest_inputs(block, height).await?;
 
         // Phase 5: REMOVED in M7 - amounts calculated in Phase 3
 
         // Phase 6: Create simplified layer from pre-aggregated data (M7)
         self.write_simplified_layer_rust(block).await?;
+
+        // Phase 7: Remove spent outputs from cache (must be AFTER Phase 6!)
+        self.remove_spent_outputs_from_cache(block).await?;
 
         // Update checkpoint after successful ingestion
         let checkpoint = CheckpointData {
@@ -301,16 +320,25 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
                 batch_idx + 1, start_height, end_height, blocks_in_batch);
 
             // Phase 1: Accumulate all block data
+            let phase1_start = std::time::Instant::now();
             let mut block_data_batch = Vec::with_capacity(blocks_in_batch);
             for (height, block, _file_name) in chunk {
                 block_data_batch.push(BlockData::from_block(block, *height));
             }
 
             // Write blocks in one batch
-            println!("   Phase 1: Writing {} blocks...", block_data_batch.len());
+            let write_start = std::time::Instant::now();
             self.writer.write_blocks(&block_data_batch).await?;
+            tracing::debug!(
+                phase = "1_blocks",
+                count = block_data_batch.len(),
+                accumulate_secs = format!("{:.2}", phase1_start.elapsed().as_secs_f64()),
+                write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
+                "Phase complete"
+            );
 
             // Phase 2: Accumulate outputs and populate cache (BEFORE transactions!)
+            let phase2_start = std::time::Instant::now();
             let mut output_data_batch = Vec::new();
             for (_height, block, _file_name) in chunk {
                 for tx in &block.txdata {
@@ -328,8 +356,15 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
             }
 
             // Write outputs in one batch
-            println!("   Phase 2: Writing {} outputs...", output_data_batch.len());
+            let write_start = std::time::Instant::now();
             self.writer.write_outputs(&output_data_batch).await?;
+            tracing::debug!(
+                phase = "2_outputs",
+                count = output_data_batch.len(),
+                accumulate_secs = format!("{:.2}", phase2_start.elapsed().as_secs_f64()),
+                write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
+                "Phase complete"
+            );
 
             // Populate UTXO cache (needed for same-block references!)
             for output in &output_data_batch {
@@ -344,6 +379,7 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
             }
 
             // Phase 3: Accumulate transactions (with amounts calculated from cache)
+            let phase3_start = std::time::Instant::now();
             let mut transaction_data_batch = Vec::new();
             for (height, block, _file_name) in chunk {
                 let block_hash = block.block_hash().to_string();
@@ -375,10 +411,18 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
             }
 
             // Write transactions in one batch
-            println!("   Phase 3: Writing {} transactions...", transaction_data_batch.len());
+            let write_start = std::time::Instant::now();
             self.writer.write_transactions(&transaction_data_batch).await?;
+            tracing::debug!(
+                phase = "3_transactions",
+                count = transaction_data_batch.len(),
+                accumulate_secs = format!("{:.2}", phase3_start.elapsed().as_secs_f64()),
+                write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
+                "Phase complete"
+            );
 
-            // Phase 4: Accumulate inputs and update cache
+            // Phase 4: Accumulate inputs (cache removal deferred to Phase 6)
+            let phase4_start = std::time::Instant::now();
             let mut input_data_batch = Vec::new();
             for (_height, block, _file_name) in chunk {
                 for tx in &block.txdata {
@@ -386,24 +430,89 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
                     for (input_index, input) in tx.input.iter().enumerate() {
                         let input_data = InputData::from_input(input, &txid, input_index as u32);
                         input_data_batch.push(input_data);
-
-                        // Remove spent output from cache
-                        if !tx.is_coinbase() {
-                            let output_id = format!("{}:{}", input.previous_output.txid, input.previous_output.vout);
-                            self.utxo_cache.remove(&output_id);
-                        }
                     }
                 }
             }
 
             // Write inputs in one batch
-            println!("   Phase 4: Writing {} inputs...", input_data_batch.len());
+            let write_start = std::time::Instant::now();
             self.writer.write_inputs(&input_data_batch).await?;
+            tracing::debug!(
+                phase = "4_inputs",
+                count = input_data_batch.len(),
+                accumulate_secs = format!("{:.2}", phase4_start.elapsed().as_secs_f64()),
+                write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
+                "Phase complete"
+            );
 
-            // Phase 5: Simplified layer (per-block processing needed)
-            println!("   Phase 5: Writing simplified layer...");
+            // Phase 5: Simplified layer (batch accumulation + parallel writes)
+            let phase5_start = std::time::Instant::now();
+
+            // Accumulate ALL simplified layer data from batch
+            let mut all_performs_data = Vec::new();
+            let mut all_benefits_to_data = Vec::new();
+
             for (_height, block, _file_name) in chunk {
-                self.write_simplified_layer_rust(block).await?;
+                // Extract simplified layer data for this block
+                let (performs_data, benefits_to_data) = self.extract_simplified_layer_data(block).await?;
+                all_performs_data.extend(performs_data);
+                all_benefits_to_data.extend(benefits_to_data);
+            }
+
+            // Partition data by address hash to enable parallel writes without deadlocks
+            const NUM_BUCKETS: usize = 4;
+
+            let performs_buckets = Self::partition_performs_by_address(&all_performs_data, NUM_BUCKETS);
+            let benefits_buckets = Self::partition_benefits_by_address(&all_benefits_to_data, NUM_BUCKETS);
+
+            // Spawn parallel tasks (one per bucket)
+            let mut tasks = Vec::new();
+
+            for bucket_idx in 0..NUM_BUCKETS {
+                let performs = performs_buckets[bucket_idx].clone();
+                let benefits = benefits_buckets[bucket_idx].clone();
+                let writer = Arc::clone(&self.writer);
+
+                let task = tokio::spawn(async move {
+                    // Write PERFORMS first, then BENEFITS_TO (sequential within bucket)
+                    // This ensures same addresses are handled without deadlock
+                    if !performs.is_empty() {
+                        writer.write_performs(&performs).await?;
+                    }
+                    if !benefits.is_empty() {
+                        writer.write_benefits_to(&benefits).await?;
+                    }
+                    Ok::<_, WriterError>(())
+                });
+
+                tasks.push(task);
+            }
+
+            // Wait for all buckets to complete
+            for (idx, task) in tasks.into_iter().enumerate() {
+                task.await
+                    .map_err(|e| WriterError::QueryFailed(format!("Bucket {} task panicked: {}", idx, e)))??;
+            }
+
+            tracing::debug!(
+                phase = "5_simplified",
+                performs_count = all_performs_data.len(),
+                benefits_count = all_benefits_to_data.len(),
+                write_secs = format!("{:.2}", phase5_start.elapsed().as_secs_f64()),
+                "Phase complete"
+            );
+
+            // Phase 6: Remove spent outputs from cache (deferred from Phase 4)
+            // This must happen AFTER Phase 5 because Phase 5 needs to lookup spent outputs
+            for (_height, block, _file_name) in chunk {
+                for tx in &block.txdata {
+                    if !tx.is_coinbase() {
+                        for input in &tx.input {
+                            let output_id = format!("{}:{}", input.previous_output.txid, input.previous_output.vout);
+                            self.utxo_cache.remove(&output_id);
+                        }
+                    }
+                }
             }
 
             // Update checkpoint after each batch
@@ -543,18 +652,18 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
         self.writer.write_transactions(&transactions).await
     }
 
-    /// Phase 4: Create Input nodes and remove spent outputs from cache (M7)
+    /// Phase 4: Create Input nodes (cache removal deferred to Phase 7)
     ///
     /// Creates Input nodes with properties, HAS_INPUT relationships to transactions,
     /// and SPENDS relationships to previous outputs. Also updates spent outputs
     /// with spent metadata.
     ///
-    /// **M7 Addition**: After successful write, removes spent outputs from the UTXO
-    /// cache to keep it focused on unspent outputs.
+    /// **M7 Note**: Cache removal is deferred until after Phase 6 (simplified layer)
+    /// because Phase 6 needs to lookup spent outputs to build PERFORMS relationships.
     ///
     /// Coinbase inputs are created but have no SPENDS relationship (they don't
     /// spend any previous output).
-    async fn ingest_inputs_and_update_cache(&self, block: &Block, _height: u32) -> Result<()> {
+    async fn ingest_inputs(&self, block: &Block, _height: u32) -> Result<()> {
         let mut all_inputs = Vec::new();
 
         for tx in &block.txdata {
@@ -571,30 +680,35 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
         }
 
         // Write inputs to database
-        self.writer.write_inputs(&all_inputs).await?;
+        self.writer.write_inputs(&all_inputs).await
+    }
 
-        // M7: Remove spent outputs from UTXO cache
-        for input in &all_inputs {
-            // Skip coinbase inputs
-            if input.previous_output_index != 0xFFFFFFFF {
-                let output_id = format!("{}:{}", input.previous_txid, input.previous_output_index);
-                self.utxo_cache.remove(&output_id);
+    /// Phase 7: Remove spent outputs from UTXO cache
+    ///
+    /// Must be called AFTER Phase 6 (simplified layer) because Phase 6 needs
+    /// to lookup spent outputs to build PERFORMS relationships.
+    ///
+    /// Removes spent outputs from cache to keep it focused on unspent outputs.
+    async fn remove_spent_outputs_from_cache(&self, block: &Block) -> Result<()> {
+        for tx in &block.txdata {
+            if !tx.is_coinbase() {
+                for input in &tx.input {
+                    let output_id = format!("{}:{}", input.previous_output.txid, input.previous_output.vout);
+                    self.utxo_cache.remove(&output_id);
+                }
             }
         }
-
         Ok(())
     }
 
-    /// Phase 6: Create simplified layer from pre-aggregated data (M7 - Rust calculation)
+    /// Extract simplified layer data from a block (PERFORMS + BENEFITS_TO)
     ///
-    /// Creates direct relationships for easier querying:
-    /// - PERFORMS: Address → Transaction (who performed the transaction)
-    /// - BENEFITS_TO: Transaction → Address (who received funds)
+    /// Extracts data WITHOUT writing to database, allowing batch accumulation.
+    /// This enables batching multiple blocks together for parallel writes.
     ///
-    /// **M7 Change**: Aggregation is performed in Rust using UTXO cache lookups,
-    /// avoiding expensive Neo4j graph traversals. Data is pre-aggregated before
-    /// being sent to Neo4j for bulk relationship creation.
-    async fn write_simplified_layer_rust(&self, block: &Block) -> Result<()> {
+    /// # Returns
+    /// Tuple of (PERFORMS data, BENEFITS_TO data) for this block
+    async fn extract_simplified_layer_data(&self, block: &Block) -> Result<(Vec<PerformsData>, Vec<BenefitsToData>)> {
         let mut performs_data: Vec<PerformsData> = Vec::new();
         let mut benefits_to_data: Vec<BenefitsToData> = Vec::new();
 
@@ -668,6 +782,25 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
             }
         }
 
+        Ok((performs_data, benefits_to_data))
+    }
+
+    /// Phase 6: Create simplified layer from pre-aggregated data (M7 - Rust calculation)
+    ///
+    /// Creates direct relationships for easier querying:
+    /// - PERFORMS: Address → Transaction (who performed the transaction)
+    /// - BENEFITS_TO: Transaction → Address (who received funds)
+    ///
+    /// **M7 Change**: Aggregation is performed in Rust using UTXO cache lookups,
+    /// avoiding expensive Neo4j graph traversals. Data is pre-aggregated before
+    /// being sent to Neo4j for bulk relationship creation.
+    ///
+    /// This method is used for single-block ingestion. For batch ingestion,
+    /// use `extract_simplified_layer_data()` followed by parallel writes.
+    async fn write_simplified_layer_rust(&self, block: &Block) -> Result<()> {
+        // Extract data using the shared extraction method
+        let (performs_data, benefits_to_data) = self.extract_simplified_layer_data(block).await?;
+
         // Write pre-aggregated relationships to database (no graph traversal)
         if !performs_data.is_empty() {
             self.writer.write_performs(&performs_data).await?;
@@ -678,5 +811,55 @@ impl<W: GraphWriter> IngestionOrchestrator<W> {
         }
 
         Ok(())
+    }
+
+    /// Calculate deterministic hash for a string
+    ///
+    /// Uses standard library hash to ensure consistent bucket assignment.
+    fn calculate_string_hash(s: &str) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        s.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Partition PERFORMS data into buckets by address hash
+    ///
+    /// Distributes data into N buckets based on from_address hash to enable
+    /// parallel writes without deadlocks (different buckets = different addresses).
+    fn partition_performs_by_address(performs: &[PerformsData], num_buckets: usize) -> Vec<Vec<PerformsData>> {
+        let mut buckets: Vec<Vec<PerformsData>> = (0..num_buckets)
+            .map(|_| Vec::new())
+            .collect();
+
+        for item in performs {
+            // Hash address and map to bucket
+            let hash = Self::calculate_string_hash(&item.from_address);
+            let bucket_idx = (hash % num_buckets as u64) as usize;
+            buckets[bucket_idx].push(item.clone());
+        }
+
+        buckets
+    }
+
+    /// Partition BENEFITS_TO data into buckets by address hash
+    ///
+    /// Distributes data into N buckets based on to_address hash to enable
+    /// parallel writes without deadlocks (different buckets = different addresses).
+    fn partition_benefits_by_address(benefits: &[BenefitsToData], num_buckets: usize) -> Vec<Vec<BenefitsToData>> {
+        let mut buckets: Vec<Vec<BenefitsToData>> = (0..num_buckets)
+            .map(|_| Vec::new())
+            .collect();
+
+        for item in benefits {
+            // Hash address and map to bucket
+            let hash = Self::calculate_string_hash(&item.to_address);
+            let bucket_idx = (hash % num_buckets as u64) as usize;
+            buckets[bucket_idx].push(item.clone());
+        }
+
+        buckets
     }
 }
