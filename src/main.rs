@@ -27,12 +27,13 @@ use anyhow::{Context, Result};
 use bitcoin::Network;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use bitcoin_chain_graph::config::{Config, ConfigLoader};
 use bitcoin_chain_graph::domain::IngestionOrchestrator;
-use bitcoin_chain_graph::parser::SingleBlockLoader;
+use bitcoin_chain_graph::parser::{SingleBlockLoader, RpcBlockProvider, ZmqBlockListener};
 use bitcoin_chain_graph::writer::Neo4jWriter;
 
 /// Bitcoin Chain Graph - Blockchain ingestion into Neo4j
@@ -42,7 +43,7 @@ use bitcoin_chain_graph::writer::Neo4jWriter;
 #[command(version)]
 struct Cli {
     /// Path to configuration file
-    #[arg(short, long, value_name = "FILE", default_value = "config/default.toml")]
+    #[arg(short, long, global = true, value_name = "FILE", default_value = "config/default.toml")]
     config: PathBuf,
 
     #[command(subcommand)]
@@ -70,6 +71,13 @@ enum Commands {
 
     /// Display checkpoint status and progress
     Status,
+
+    /// Live mode: catch up via RPC then stream new blocks in real-time via ZMQ
+    Live {
+        /// Maximum block height to process (default: follow chain tip indefinitely)
+        #[arg(long)]
+        max_height: Option<u32>,
+    },
 }
 
 #[tokio::main]
@@ -91,6 +99,7 @@ async fn main() -> Result<()> {
         Commands::Ingest { max_height } => ingest(&config, max_height).await,
         Commands::Resume { max_height } => resume(&config, max_height).await,
         Commands::Status => status(&config).await,
+        Commands::Live { max_height } => run_live_ingestion(&config, max_height).await,
     }
 }
 
@@ -483,6 +492,299 @@ async fn status(config: &Config) -> Result<()> {
             println!("   2. Run: cargo run -- ingest");
         }
     }
+
+    Ok(())
+}
+
+/// Live ingestion: catch up via RPC then stream new blocks via ZMQ
+async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║  Live Mode: RPC Catchup + ZMQ Real-Time                      ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    // Validate RPC config exists
+    let rpc_config = config.bitcoin_rpc.as_ref()
+        .context("[bitcoin_rpc] section missing from config file. Required for live mode.")?;
+
+    // Connect to Neo4j
+    println!("🔌 Connecting to Neo4j at {}...", config.neo4j.uri);
+    let writer = Neo4jWriter::new(config.neo4j.clone())
+        .await
+        .context("Failed to connect to Neo4j")?;
+    println!("   ✅ Connected to Neo4j");
+
+    // Create orchestrator (same as ingest/resume)
+    let orchestrator = IngestionOrchestrator::new(
+        writer,
+        Network::Bitcoin,
+        config.performance.cache_capacity(),
+    );
+
+    // Ensure schema is initialized
+    let checkpoint = orchestrator.get_checkpoint().await
+        .context("Failed to check checkpoint")?;
+    if checkpoint.is_none() {
+        println!("\n🏗️  No checkpoint found. Initializing schema...");
+        orchestrator.init_schema().await
+            .context("Failed to initialize schema")?;
+        println!("   ✅ Schema initialized");
+    }
+
+    // Get resume height
+    let resume_height = orchestrator.get_resume_height().await
+        .context("Failed to get resume height")?;
+
+    // Create RPC provider and verify connectivity
+    println!("\n🔌 Connecting to Bitcoin Core RPC at {}...", rpc_config.url);
+    let provider = RpcBlockProvider::new(rpc_config)
+        .context("Failed to create RPC provider")?;
+
+    let tip = provider.verify_connection().await?;
+    println!("   ✅ Connected to Bitcoin Core (chain tip: {})", tip);
+
+    let max_height = cli_max_height.unwrap_or(u32::MAX);
+    let rpc_batch_size = provider.batch_size();
+
+    let start_time = Instant::now();
+    let mut current_height = resume_height;
+    let mut blocks_processed: u64 = 0;
+
+    println!("\n📊 Live Mode Configuration:");
+    println!("   Resume from block: {}", resume_height);
+    println!("   Chain tip: {}", tip);
+    println!("   Blocks behind: {}", if tip >= resume_height { tip - resume_height } else { 0 });
+    println!("   RPC batch size: {}", rpc_batch_size);
+    println!("   ZMQ endpoint: {}", rpc_config.zmq_endpoint);
+
+    // Set up graceful shutdown via Ctrl+C
+    let shutdown_token = CancellationToken::new();
+    let token_clone = shutdown_token.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        tracing::info!("Shutdown signal received, finishing current operation...");
+        token_clone.cancel();
+    });
+
+    // ═══════════════════════════════════════════════════════════════
+    // PHASE A: CATCHUP - Consume blocks as fast as possible via RPC
+    // ═══════════════════════════════════════════════════════════════
+    println!("\n🚀 Phase A: Catchup via RPC...");
+
+    loop {
+        if shutdown_token.is_cancelled() {
+            tracing::info!("Shutdown requested during catchup phase");
+            break;
+        }
+
+        // Re-check tip (it may advance during catchup)
+        let tip = provider.get_tip_height().await
+            .context("Failed to get chain tip during catchup")?;
+        let target = tip.min(max_height);
+
+        if current_height > target {
+            tracing::info!(
+                current_height,
+                chain_tip = tip,
+                "Caught up to chain tip"
+            );
+            break;
+        }
+
+        // Calculate batch size
+        let remaining = (target - current_height + 1) as usize;
+        let fetch_count = remaining.min(rpc_batch_size);
+
+        tracing::info!(
+            start = current_height,
+            count = fetch_count,
+            tip = tip,
+            behind = tip - current_height,
+            "Fetching block batch via RPC"
+        );
+
+        // Fetch blocks in parallel
+        let fetch_start = Instant::now();
+        let blocks = provider.get_block_batch(current_height, fetch_count).await
+            .with_context(|| format!("Failed to fetch RPC batch at height {}", current_height))?;
+
+        if blocks.is_empty() {
+            tracing::warn!("Empty batch returned, stopping catchup");
+            break;
+        }
+
+        let fetch_elapsed = fetch_start.elapsed();
+        let batch_end = blocks.last().map(|(h, _, _)| *h).unwrap_or(current_height);
+
+        tracing::info!(
+            fetched = blocks.len(),
+            fetch_secs = format!("{:.2}", fetch_elapsed.as_secs_f64()),
+            "RPC fetch complete, ingesting..."
+        );
+
+        // Ingest using existing orchestrator
+        orchestrator.ingest_blocks_batch(&blocks, config.ingestion.batch_size).await
+            .with_context(|| format!("Failed to ingest batch {}-{}", current_height, batch_end))?;
+
+        blocks_processed += blocks.len() as u64;
+        current_height = batch_end + 1;
+
+        // Log progress
+        let stats = orchestrator.cache_stats();
+        let total_elapsed = start_time.elapsed().as_secs_f64();
+        let overall_bps = blocks_processed as f64 / total_elapsed;
+
+        tracing::info!(
+            processed_up_to = batch_end,
+            total_blocks = blocks_processed,
+            avg_bps = format!("{:.1}", overall_bps),
+            cache_hit_rate = format!("{:.1}%", stats.hit_rate_percent()),
+            "Batch ingested"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // PHASE B: TRANSITION
+    // ═══════════════════════════════════════════════════════════════
+    let catchup_elapsed = start_time.elapsed();
+    tracing::info!(
+        blocks = blocks_processed,
+        duration_secs = format!("{:.1}", catchup_elapsed.as_secs_f64()),
+        "Catchup phase complete"
+    );
+
+    if max_height != u32::MAX && current_height > max_height {
+        println!("\n✅ Reached max_height {}. Exiting.", max_height);
+        return Ok(());
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // PHASE C: REAL-TIME - Listen for new blocks via ZMQ
+    // ═══════════════════════════════════════════════════════════════
+    println!("\n👂 Phase C: Real-time mode via ZMQ...");
+    println!("   Listening at: {}", rpc_config.zmq_endpoint);
+    println!("   Press Ctrl+C to stop\n");
+
+    // Establish persistent ZMQ connection (stays open across blocks)
+    let mut zmq_listener = ZmqBlockListener::from_config(rpc_config);
+    zmq_listener.connect().await
+        .context("Failed to establish ZMQ connection")?;
+
+    let max_consecutive_failures = rpc_config.zmq_max_consecutive_failures;
+    let mut consecutive_failures: u32 = 0;
+
+    loop {
+        tracing::info!("Waiting for new block via ZMQ...");
+
+        // Wait for ZMQ notification with graceful shutdown support
+        let block_hash = tokio::select! {
+            _ = shutdown_token.cancelled() => {
+                tracing::info!("Shutdown signal received in ZMQ listener");
+                break;
+            }
+            result = zmq_listener.recv_block_hash() => {
+                match result {
+                    Ok(hash) => {
+                        consecutive_failures = 0;
+                        hash
+                    }
+                    Err(e) => {
+                        consecutive_failures += 1;
+                        tracing::error!(
+                            error = %e,
+                            consecutive_failures,
+                            max = max_consecutive_failures,
+                            "ZMQ recv failed"
+                        );
+
+                        if consecutive_failures >= max_consecutive_failures {
+                            return Err(e.context(format!(
+                                "ZMQ listener failed {} consecutive times, giving up",
+                                consecutive_failures
+                            )));
+                        }
+
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                }
+            }
+        };
+
+        tracing::info!(
+            block_hash = %block_hash,
+            "New block notification received"
+        );
+
+        // Fetch the new tip height and ingest any new blocks
+        // (handles multi-block gaps if we somehow missed one)
+        let tip = provider.get_tip_height().await
+            .context("Failed to get chain tip after ZMQ notification")?;
+
+        // Enforce max_height in real-time mode
+        let effective_tip = tip.min(max_height);
+
+        if current_height <= effective_tip {
+            let new_blocks = effective_tip - current_height + 1;
+            tracing::info!(
+                new_blocks,
+                from = current_height,
+                to = effective_tip,
+                "Ingesting new blocks"
+            );
+
+            for height in current_height..=effective_tip {
+                let block_data = provider.get_block(height).await
+                    .with_context(|| format!("Failed to fetch block {} via RPC", height))?;
+
+                if let Some(block_tuple) = block_data {
+                    orchestrator.ingest_blocks_batch(&[block_tuple], 1).await
+                        .with_context(|| format!("Failed to ingest block {}", height))?;
+
+                    blocks_processed += 1;
+                    tracing::info!(
+                        height,
+                        total_blocks = blocks_processed,
+                        "Block ingested (real-time)"
+                    );
+                }
+            }
+
+            current_height = effective_tip + 1;
+        }
+
+        // Periodic ZMQ health stats
+        if blocks_processed % 10 == 0 && blocks_processed > 0 {
+            let zmq_stats = zmq_listener.stats();
+            tracing::info!(
+                zmq_messages = zmq_stats.messages_received,
+                zmq_reconnections = zmq_stats.reconnections,
+                zmq_errors = zmq_stats.recv_errors,
+                zmq_sequence_gaps = zmq_stats.sequence_gaps,
+                total_blocks = blocks_processed,
+                "ZMQ listener health"
+            );
+        }
+
+        // Exit if we've reached the user-specified max_height
+        if max_height != u32::MAX && current_height > max_height {
+            println!("\n✅ Reached max_height {} in real-time mode. Exiting.", max_height);
+            break;
+        }
+    }
+
+    // Graceful shutdown: log final stats
+    let zmq_stats = zmq_listener.stats();
+    let total_elapsed = start_time.elapsed();
+    tracing::info!(
+        total_blocks = blocks_processed,
+        last_height = current_height.saturating_sub(1),
+        duration_secs = format!("{:.1}", total_elapsed.as_secs_f64()),
+        zmq_messages = zmq_stats.messages_received,
+        zmq_reconnections = zmq_stats.reconnections,
+        zmq_errors = zmq_stats.recv_errors,
+        zmq_sequence_gaps = zmq_stats.sequence_gaps,
+        "Live ingestion shutdown complete"
+    );
 
     Ok(())
 }

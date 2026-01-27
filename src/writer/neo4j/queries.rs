@@ -288,14 +288,18 @@ pub const SET_CHECKPOINT_STATUS_QUERY: &str = r#"
 
 /// Update checkpoint after successful block ingestion
 ///
+/// Uses MERGE to guarantee the checkpoint node exists and is updated.
+/// If the node was deleted or never created, MERGE will create it and
+/// then SET applies the properties — preventing silent no-ops.
+///
 /// Parameters:
 /// - $height: Last successfully processed block height
 /// - $hash: Last successfully processed block hash
-/// - $file: .blk file name
+/// - $file: .blk file name or source identifier (e.g., "rpc")
 /// - $offset: File offset
 /// - $status: Checkpoint status
 pub const UPDATE_CHECKPOINT_QUERY: &str = r#"
-    MATCH (c:IngestionCheckpoint)
+    MERGE (c:IngestionCheckpoint)
     SET c.lastProcessedHeight = $height,
         c.lastProcessedHash = $hash,
         c.lastProcessedFile = $file,

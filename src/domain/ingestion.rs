@@ -588,6 +588,11 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                     status: "in_progress".to_string(),
                 };
                 self.writer.update_checkpoint(&checkpoint).await?;
+                tracing::info!(
+                    checkpoint_height = *height,
+                    checkpoint_file = %file_name,
+                    "Checkpoint updated"
+                );
             }
 
             tracing::info!(batch = batch_idx + 1, "Batch complete");
