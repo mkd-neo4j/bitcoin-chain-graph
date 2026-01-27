@@ -50,7 +50,7 @@ validate_on_resume = true
 utxo_cache_memory_mb = 1400
 
 # Maximum pre-warming for ultra-high cache hit rates
-utxo_prewarm_depth = 200
+utxo_prewarm_depth = 10000
 
 # Maximum parallelism for dedicated hardware
 parallel_batches = 32

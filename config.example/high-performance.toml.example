@@ -49,7 +49,7 @@ validate_on_resume = true
 utxo_cache_memory_mb = 140
 
 # Aggressive pre-warming for high cache hit rates
-utxo_prewarm_depth = 100
+utxo_prewarm_depth = 10000
 
 # High concurrency for maximum throughput
 parallel_batches = 16

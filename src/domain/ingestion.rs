@@ -33,7 +33,7 @@
 //! See [INGESTION_ARCHITECTURE.md](../../docs/INGESTION_ARCHITECTURE.md) for detailed design.
 
 use bitcoin::{Block, Network};
-use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData, UtxoCache, CachedOutput};
+use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData, UtxoCache, UtxoKey, CachedOutput, ScriptTypeTag};
 use crate::writer::{GraphWriter, Result, WriterError};
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -52,7 +52,7 @@ use std::collections::HashMap;
 /// #[tokio::main]
 /// async fn main() {
 ///     let writer = MockWriter::new();
-///     let cache_size = 100_000; // 100k outputs (~15MB)
+///     let cache_size = 100_000; // 100k outputs (~7MB)
 ///     let orchestrator = IngestionOrchestrator::new(writer, Network::Bitcoin, cache_size);
 ///
 ///     // Initialize schema
@@ -75,13 +75,13 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// # Arguments
     /// * `writer` - Implementation of GraphWriter trait (MockWriter or Neo4jWriter)
     /// * `network` - Bitcoin network for address derivation (Bitcoin, Testnet, Regtest)
-    /// * `cache_size` - UTXO cache capacity (default: 100,000 entries ≈ 15MB)
+    /// * `cache_size` - UTXO cache capacity (default: 100,000 entries ≈ 7MB)
     ///
     /// # Cache Size Guidelines
-    /// - Low resource (2GB RAM): 50,000 entries (~7MB)
-    /// - Default (8GB RAM): 100,000 entries (~15MB)
-    /// - High performance (32GB RAM): 1,000,000 entries (~150MB)
-    /// - Ultra performance (128GB RAM): 10,000,000 entries (~1.5GB)
+    /// - Low resource (2GB RAM): 50,000 entries (~4MB)
+    /// - Default (8GB RAM): 100,000 entries (~7MB)
+    /// - High performance (32GB RAM): 1,000,000 entries (~72MB)
+    /// - Ultra performance (128GB RAM): 10,000,000 entries (~720MB)
     pub fn new(writer: W, network: Network, cache_size: usize) -> Self {
         let writer_arc = Arc::new(writer);
         let utxo_cache = UtxoCache::new(cache_size, Arc::clone(&writer_arc));
@@ -266,7 +266,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         self.write_simplified_layer_rust(block).await?;
 
         // Phase 7: Remove spent outputs from cache (must be AFTER Phase 6!)
-        self.remove_spent_outputs_from_cache(block).await?;
+        self.remove_spent_outputs_from_cache(block);
 
         // Update checkpoint after successful ingestion
         let checkpoint = CheckpointData {
@@ -337,14 +337,25 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 "Phase complete"
             );
 
+            // Pre-count totals for capacity pre-allocation
+            let total_txs: usize = chunk.iter().map(|(_, b, _)| b.txdata.len()).sum();
+            let total_outputs: usize = chunk.iter()
+                .flat_map(|(_, b, _)| b.txdata.iter())
+                .map(|tx| tx.output.len())
+                .sum();
+            let total_inputs: usize = chunk.iter()
+                .flat_map(|(_, b, _)| b.txdata.iter())
+                .map(|tx| tx.input.len())
+                .sum();
+
             // Pre-build simplified layer accumulators (populated during Phases 2 and 3
             // to avoid redundant address derivation and cache lookups in Phase 5)
-            let mut all_performs_data: Vec<PerformsData> = Vec::new();
-            let mut all_benefits_to_data: Vec<BenefitsToData> = Vec::new();
+            let mut all_performs_data: Vec<PerformsData> = Vec::with_capacity(total_txs);
+            let mut all_benefits_to_data: Vec<BenefitsToData> = Vec::with_capacity(total_txs);
 
             // Phase 2: Accumulate outputs, populate cache, AND build BENEFITS_TO (BEFORE transactions!)
             let phase2_start = std::time::Instant::now();
-            let mut output_data_batch = Vec::new();
+            let mut output_data_batch = Vec::with_capacity(total_outputs);
             for (_height, block, _file_name) in chunk {
                 for tx in &block.txdata {
                     let txid = tx.txid().to_string();
@@ -380,9 +391,26 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 }
             }
 
-            // Write outputs in one batch
+            // Write outputs to Neo4j AND populate cache concurrently.
+            // Neo4j write is I/O-bound; cache population is CPU-bound.
+            // tokio::join! overlaps the Neo4j network wait with cache inserts.
             let write_start = std::time::Instant::now();
-            self.writer.write_outputs(&output_data_batch).await?;
+            let write_future = self.writer.write_outputs(&output_data_batch);
+            let cache_future = async {
+                for output in &output_data_batch {
+                    if let Some(key) = UtxoKey::from_hex_txid(&output.txid, output.output_index) {
+                        let cached_output = CachedOutput {
+                            output_index: output.output_index,
+                            amount: output.amount,
+                            script_type: ScriptTypeTag::from_str(&output.script_type),
+                            address: output.address.as_deref().map(Arc::from),
+                        };
+                        self.utxo_cache.insert(key, cached_output);
+                    }
+                }
+            };
+            let (write_result, _) = tokio::join!(write_future, cache_future);
+            write_result?;
             tracing::debug!(
                 phase = "2_outputs",
                 count = output_data_batch.len(),
@@ -391,21 +419,9 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 "Phase complete"
             );
 
-            // Populate UTXO cache (needed for same-block references!)
-            for output in &output_data_batch {
-                let cached_output = CachedOutput {
-                    output_id: output.output_id.clone(),
-                    output_index: output.output_index,
-                    amount: output.amount,
-                    script_type: output.script_type.clone(),
-                    address: output.address.clone(),
-                };
-                self.utxo_cache.insert(cached_output);
-            }
-
             // Phase 3: Accumulate transactions (with amounts calculated from cache) AND build PERFORMS
             let phase3_start = std::time::Instant::now();
-            let mut transaction_data_batch = Vec::new();
+            let mut transaction_data_batch = Vec::with_capacity(total_txs);
             for (height, block, _file_name) in chunk {
                 let block_hash = block.block_hash().to_string();
                 let timestamp = block.header.time as i64;
@@ -418,20 +434,22 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                     let total_input: u64 = if tx.is_coinbase() {
                         0
                     } else {
-                        let mut sum = 0u64;
+                        // Batch lookup with Neo4j fallback for all cache misses
+                        let keys: Vec<UtxoKey> = tx.input.iter()
+                            .map(|i| UtxoKey::from_outpoint(&i.previous_output))
+                            .collect();
+                        let found = self.utxo_cache.get_many_with_fallback(&keys).await?;
+
                         // Build PERFORMS aggregation alongside amount calculation
                         let mut performs_map: HashMap<String, (u32, u64)> = HashMap::new();
-
-                        for input in &tx.input {
-                            let output_id = format!("{}:{}", input.previous_output.txid, input.previous_output.vout);
-                            let cached_output = self.utxo_cache.get(&output_id).await?;
-                            sum += cached_output.amount;
-
-                            // Aggregate PERFORMS (address already in cache result)
-                            if let Some(address) = cached_output.address {
-                                let entry = performs_map.entry(address).or_insert((0, 0));
+                        let mut sum: u64 = 0;
+                        for output in found.values() {
+                            sum += output.amount;
+                            if let Some(ref address) = output.address {
+                                let addr_str: &str = address;
+                                let entry = performs_map.entry(addr_str.to_string()).or_insert((0, 0));
                                 entry.0 += 1;
-                                entry.1 += cached_output.amount;
+                                entry.1 += output.amount;
                             }
                         }
 
@@ -470,7 +488,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
 
             // Phase 4: Accumulate inputs (cache removal deferred to Phase 6)
             let phase4_start = std::time::Instant::now();
-            let mut input_data_batch = Vec::new();
+            let mut input_data_batch = Vec::with_capacity(total_inputs);
             for (_height, block, _file_name) in chunk {
                 for tx in &block.txdata {
                     let txid = tx.txid().to_string();
@@ -540,16 +558,19 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
 
             // Phase 6: Remove spent outputs from cache (deferred from Phase 4)
             // Must happen AFTER Phase 3 (which does UTXO lookups for amounts and PERFORMS)
-            for (_height, block, _file_name) in chunk {
-                for tx in &block.txdata {
-                    if !tx.is_coinbase() {
-                        for input in &tx.input {
-                            let output_id = format!("{}:{}", input.previous_output.txid, input.previous_output.vout);
-                            self.utxo_cache.remove(&output_id);
-                        }
-                    }
-                }
-            }
+            // Use batch remove for efficiency
+            let spent_keys: Vec<UtxoKey> = chunk.iter()
+                .flat_map(|(_, block, _)| {
+                    block.txdata.iter()
+                        .filter(|tx| !tx.is_coinbase())
+                        .flat_map(|tx| {
+                            tx.input.iter().map(|input| {
+                                UtxoKey::from_outpoint(&input.previous_output)
+                            })
+                        })
+                })
+                .collect();
+            self.utxo_cache.remove_many(&spent_keys);
 
             // Update checkpoint after each batch
             if let Some((height, block, file_name)) = chunk.last() {
@@ -592,7 +613,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// same-block UTXO references. Bitcoin allows transactions to spend outputs created
     /// earlier in the SAME block.
     async fn ingest_outputs_and_cache(&self, block: &Block, _height: u32) -> Result<()> {
-        let mut all_outputs = Vec::new();
+        let total_outputs: usize = block.txdata.iter().map(|tx| tx.output.len()).sum();
+        let mut all_outputs = Vec::with_capacity(total_outputs);
 
         for tx in &block.txdata {
             let txid = tx.txid().to_string();
@@ -608,20 +630,24 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             }
         }
 
-        // Write outputs to database
-        self.writer.write_outputs(&all_outputs).await?;
-
-        // M7: Insert outputs into UTXO cache for future lookups (including same-block references!)
-        for output in &all_outputs {
-            let cached_output = CachedOutput {
-                output_id: output.output_id.clone(),
-                output_index: output.output_index,
-                amount: output.amount,
-                script_type: output.script_type.clone(),
-                address: output.address.clone(),
-            };
-            self.utxo_cache.insert(cached_output);
-        }
+        // Write outputs to Neo4j AND populate cache concurrently.
+        // Neo4j write is I/O-bound; cache population is CPU-bound.
+        let write_future = self.writer.write_outputs(&all_outputs);
+        let cache_future = async {
+            for output in &all_outputs {
+                if let Some(key) = UtxoKey::from_hex_txid(&output.txid, output.output_index) {
+                    let cached_output = CachedOutput {
+                        output_index: output.output_index,
+                        amount: output.amount,
+                        script_type: ScriptTypeTag::from_str(&output.script_type),
+                        address: output.address.as_deref().map(Arc::from),
+                    };
+                    self.utxo_cache.insert(key, cached_output);
+                }
+            }
+        };
+        let (write_result, _) = tokio::join!(write_future, cache_future);
+        write_result?;
 
         Ok(())
     }
@@ -645,7 +671,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         let block_hash = block.block_hash().to_string();
         let timestamp = block.header.time as i64;
 
-        let mut transactions: Vec<TransactionData> = Vec::new();
+        let mut transactions: Vec<TransactionData> = Vec::with_capacity(block.txdata.len());
 
         for tx in &block.txdata {
             let mut tx_data = TransactionData::from_transaction(tx, height, &block_hash, timestamp);
@@ -655,19 +681,15 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 .map(|out| out.value.to_sat())
                 .sum();
 
-            // Calculate total_input (lookup previous outputs from UTXO cache)
+            // Calculate total_input (batch lookup with Neo4j fallback for misses)
             let total_input: u64 = if tx.is_coinbase() {
                 0 // Coinbase has no inputs
             } else {
-                let mut sum = 0u64;
-                for input in &tx.input {
-                    let output_id = format!("{}:{}", input.previous_output.txid, input.previous_output.vout);
-
-                    // Lookup from UTXO cache (will fallback to Neo4j if cache miss)
-                    let cached_output = self.utxo_cache.get(&output_id).await?;
-                    sum += cached_output.amount;
-                }
-                sum
+                let keys: Vec<UtxoKey> = tx.input.iter()
+                    .map(|i| UtxoKey::from_outpoint(&i.previous_output))
+                    .collect();
+                let found = self.utxo_cache.get_many_with_fallback(&keys).await?;
+                found.values().map(|o| o.amount).sum()
             };
 
             // Calculate fee
@@ -700,7 +722,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// Coinbase inputs are created but have no SPENDS relationship (they don't
     /// spend any previous output).
     async fn ingest_inputs(&self, block: &Block, _height: u32) -> Result<()> {
-        let mut all_inputs = Vec::new();
+        let total_inputs: usize = block.txdata.iter().map(|tx| tx.input.len()).sum();
+        let mut all_inputs = Vec::with_capacity(total_inputs);
 
         for tx in &block.txdata {
             let txid = tx.txid().to_string();
@@ -724,17 +747,18 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// Must be called AFTER Phase 6 (simplified layer) because Phase 6 needs
     /// to lookup spent outputs to build PERFORMS relationships.
     ///
-    /// Removes spent outputs from cache to keep it focused on unspent outputs.
-    async fn remove_spent_outputs_from_cache(&self, block: &Block) -> Result<()> {
-        for tx in &block.txdata {
-            if !tx.is_coinbase() {
-                for input in &tx.input {
-                    let output_id = format!("{}:{}", input.previous_output.txid, input.previous_output.vout);
-                    self.utxo_cache.remove(&output_id);
-                }
-            }
-        }
-        Ok(())
+    /// Uses batch remove for efficiency — collects all spent keys then removes
+    /// them in a single pass across shards.
+    fn remove_spent_outputs_from_cache(&self, block: &Block) {
+        let spent_keys: Vec<UtxoKey> = block.txdata.iter()
+            .filter(|tx| !tx.is_coinbase())
+            .flat_map(|tx| {
+                tx.input.iter().map(|input| {
+                    UtxoKey::from_outpoint(&input.previous_output)
+                })
+            })
+            .collect();
+        self.utxo_cache.remove_many(&spent_keys);
     }
 
     /// Extract simplified layer data from a block (PERFORMS + BENEFITS_TO)
@@ -745,34 +769,29 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// # Returns
     /// Tuple of (PERFORMS data, BENEFITS_TO data) for this block
     async fn extract_simplified_layer_data(&self, block: &Block) -> Result<(Vec<PerformsData>, Vec<BenefitsToData>)> {
-        let mut performs_data: Vec<PerformsData> = Vec::new();
-        let mut benefits_to_data: Vec<BenefitsToData> = Vec::new();
+        let tx_count = block.txdata.len();
+        let mut performs_data: Vec<PerformsData> = Vec::with_capacity(tx_count);
+        let mut benefits_to_data: Vec<BenefitsToData> = Vec::with_capacity(tx_count);
 
         for tx in &block.txdata {
             let txid = tx.txid().to_string();
 
             // Build PERFORMS data (Address → Transaction via inputs)
             if !tx.is_coinbase() {
+                // Batch lookup with Neo4j fallback for all cache misses
+                let keys: Vec<UtxoKey> = tx.input.iter()
+                    .map(|i| UtxoKey::from_outpoint(&i.previous_output))
+                    .collect();
+                let found = self.utxo_cache.get_many_with_fallback(&keys).await?;
+
                 // Aggregate by (address, txid)
                 let mut performs_map: HashMap<String, (u32, u64)> = HashMap::new();
-
-                for input in &tx.input {
-                    let output_id = format!("{}:{}", input.previous_output.txid, input.previous_output.vout);
-
-                    // Lookup previous output from cache to get address and amount
-                    match self.utxo_cache.get(&output_id).await {
-                        Ok(cached_output) => {
-                            if let Some(address) = cached_output.address {
-                                let entry = performs_map.entry(address).or_insert((0, 0));
-                                entry.0 += 1; // increment input count
-                                entry.1 += cached_output.amount; // add amount
-                            }
-                        }
-                        Err(_) => {
-                            // Output might have been spent long ago (cache miss)
-                            // This is expected for old UTXOs; Neo4j fallback will handle it
-                            continue;
-                        }
+                for output in found.values() {
+                    if let Some(ref address) = output.address {
+                        let addr_str: &str = address;
+                        let entry = performs_map.entry(addr_str.to_string()).or_insert((0, 0));
+                        entry.0 += 1;
+                        entry.1 += output.amount;
                     }
                 }
 

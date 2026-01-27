@@ -196,6 +196,18 @@ impl GraphWriter for MockWriter {
         Ok(())
     }
 
+    async fn lookup_outputs_batch(&self, output_ids: &[String]) -> Result<Vec<OutputData>> {
+        let storage = self.storage.lock().unwrap();
+        let mut results = Vec::with_capacity(output_ids.len());
+        for id in output_ids {
+            if let Some(output) = storage.outputs.iter().find(|o| o.output_id == *id) {
+                results.push(output.clone());
+            }
+            // Silently skip outputs not found (matches Neo4j MATCH behavior)
+        }
+        Ok(results)
+    }
+
     async fn lookup_output(&self, output_id: &str) -> Result<OutputData> {
         let storage = self.storage.lock().unwrap();
         storage

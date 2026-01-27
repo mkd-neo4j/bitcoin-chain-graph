@@ -1,7 +1,8 @@
 //! UTXO (Unspent Transaction Output) Cache Module
 //!
-//! Provides an LRU-based cache for recent transaction outputs to dramatically
-//! improve ingestion performance by avoiding expensive Neo4j graph traversals.
+//! Provides a sharded LRU cache with compact binary keys for recent transaction
+//! outputs, dramatically improving ingestion performance by avoiding expensive
+//! Neo4j graph traversals.
 //!
 //! # Performance Impact
 //!
@@ -11,11 +12,12 @@
 //!
 //! # Cache Strategy
 //!
-//! - LRU (Least Recently Used) eviction policy
-//! - Configurable capacity (default: 100,000 entries ≈ 15MB)
+//! - 16-shard LRU with lock-free atomic statistics
+//! - Compact 36-byte binary keys (UtxoKey) — zero allocation on lookup
+//! - Configurable capacity (default: 100,000 entries ≈ 7MB)
 //! - Neo4j fallback for cache misses (dormant UTXOs)
 //! - Exploit temporal locality: most inputs spend recent outputs
 
 mod cache;
 
-pub use cache::{UtxoCache, CachedOutput, UtxoCacheStats};
+pub use cache::{UtxoCache, UtxoKey, CachedOutput, ScriptTypeTag, UtxoCacheStats};

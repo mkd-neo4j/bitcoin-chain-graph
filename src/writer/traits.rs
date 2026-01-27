@@ -173,6 +173,22 @@ pub trait GraphWriter: Send + Sync {
     /// Returns `WriterError::OutputNotFound` if output doesn't exist.
     async fn lookup_output(&self, output_id: &str) -> Result<OutputData>;
 
+    /// Batch lookup multiple outputs by ID (for UTXO cache misses)
+    ///
+    /// Queries the database for multiple output nodes in a single UNWIND query,
+    /// reducing N round-trips to 1. Used when `get_many()` returns multiple
+    /// cache misses that need Neo4j fallback.
+    ///
+    /// # Arguments
+    /// * `output_ids` - Slice of output identifiers in format "txid:index"
+    ///
+    /// # Returns
+    /// Vec of OutputData for found outputs. Outputs not found are silently skipped.
+    ///
+    /// # Errors
+    /// Returns error if query execution fails.
+    async fn lookup_outputs_batch(&self, output_ids: &[String]) -> Result<Vec<OutputData>>;
+
     /// Mark output as spent
     ///
     /// Updates an output node with spent metadata:

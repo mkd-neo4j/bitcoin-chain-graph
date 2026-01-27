@@ -113,7 +113,7 @@ utxo_cache_memory_mb = 15         # UTXO cache memory budget in MB
                                   # 15 MB ≈ 108k entries (default)
                                   # 50 MB ≈ 362k entries (recommended for batch_size=500)
                                   # 140 MB ≈ 1M entries (high performance)
-utxo_prewarm_depth = 50           # Blocks to pre-warm cache (backward loading)
+utxo_prewarm_depth = 10000        # Blocks to pre-warm cache (cache fullness is real stop condition)
 parallel_batches = 4              # Concurrent batch writes
 progress_report_interval = 100    # Progress every N blocks
 ```

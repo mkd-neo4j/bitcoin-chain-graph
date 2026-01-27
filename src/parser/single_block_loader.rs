@@ -23,15 +23,16 @@
 //! - Startup time: 2-5 min → 15 sec (12-30x faster)
 
 use bitcoin::{Block, Network, consensus::deserialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use super::block_index::{BlockIndexReader, IndexError};
-use crate::domain::utxo::{UtxoCache, CachedOutput};
+use crate::domain::utxo::{UtxoCache, UtxoKey, CachedOutput, ScriptTypeTag};
 use crate::writer::GraphWriter;
+use std::sync::Arc;
 
 /// Result type for single block loading operations
 pub type Result<T> = std::result::Result<T, LoaderError>;
@@ -432,6 +433,12 @@ impl SingleBlockLoader {
             "Pre-warming cache: loading blocks backwards"
         );
 
+        // Pre-load the entire backward range in a single index scan.
+        // Without this, the backward walk triggers overlapping forward preload_batch() calls,
+        // wasting ~10s per redundant scan.
+        let lower_bound = start_height.saturating_sub(max_blocks);
+        self.preload_full_range(lower_bound, start_height.saturating_sub(1))?;
+
         let mut loaded = 0;
         let mut current_height = start_height.saturating_sub(1);
 
@@ -471,42 +478,44 @@ impl SingleBlockLoader {
 
             // Insert all outputs from this block into cache (pre-warm mode)
             for tx in &block.txdata {
-                let txid = tx.txid().to_string();
+                let txid = tx.txid();
 
                 for (vout, output) in tx.output.iter().enumerate() {
-                    let output_id = format!("{}:{}", txid, vout);
+                    let key = UtxoKey::from_outpoint(&bitcoin::OutPoint {
+                        txid,
+                        vout: vout as u32,
+                    });
 
-                    // Parse script type and address
+                    // Parse script type
                     let script_type = if output.script_pubkey.is_p2pkh() {
-                        "P2PKH"
+                        ScriptTypeTag::P2PKH
                     } else if output.script_pubkey.is_p2sh() {
-                        "P2SH"
+                        ScriptTypeTag::P2SH
                     } else if output.script_pubkey.is_p2wpkh() {
-                        "P2WPKH"
+                        ScriptTypeTag::P2WPKH
                     } else if output.script_pubkey.is_p2wsh() {
-                        "P2WSH"
+                        ScriptTypeTag::P2WSH
                     } else if output.script_pubkey.is_op_return() {
-                        "OP_RETURN"
+                        ScriptTypeTag::NullData
                     } else {
-                        "UNKNOWN"
+                        ScriptTypeTag::Unknown
                     };
 
                     // Extract address if possible
-                    let address = bitcoin::Address::from_script(&output.script_pubkey, self.network)
+                    let address: Option<Arc<str>> = bitcoin::Address::from_script(&output.script_pubkey, self.network)
                         .ok()
-                        .map(|addr| addr.to_string());
+                        .map(|addr| Arc::from(addr.to_string().as_str()));
 
                     let cached_output = CachedOutput {
-                        output_id: output_id.clone(),
                         output_index: vout as u32,
                         amount: output.value.to_sat(),
-                        script_type: script_type.to_string(),
+                        script_type,
                         address,
                     };
 
-                    // Use insert_prewarm (stops when cache is full)
-                    if !cache.insert_prewarm(cached_output) {
-                        // Cache is full, stop pre-warming
+                    // Use insert_prewarm (stops when shard is full)
+                    if !cache.insert_prewarm(key, cached_output) {
+                        // A shard is full, stop pre-warming
                         tracing::info!(
                             current_height = current_height,
                             "Cache full during block processing"
@@ -536,6 +545,171 @@ impl SingleBlockLoader {
         );
 
         Ok(loaded)
+    }
+
+    /// Targeted pre-warming: scan upcoming blocks, then load only needed UTXOs
+    ///
+    /// More efficient than blind backward loading because it only caches outputs
+    /// that will actually be spent by upcoming blocks. Achieves near-100% cache
+    /// hit rate immediately after resume.
+    ///
+    /// Strategy:
+    /// 1. Scan the first `scan_ahead` blocks forward to collect all input outpoints
+    /// 2. Walk backwards through blocks, inserting only outputs that are in the needed set
+    /// 3. Stop when all needed UTXOs are found or `max_backward` blocks scanned
+    ///
+    /// # Arguments
+    /// * `cache` - UTXO cache to populate (must have `enable_prewarm_mode()` called first)
+    /// * `start_height` - Height to start forward scanning from
+    /// * `scan_ahead` - Number of future blocks to scan for needed inputs
+    /// * `max_backward` - Maximum blocks to walk backward searching for outputs
+    /// * `end_height` - Maximum known chain height (to cap forward scanning)
+    ///
+    /// # Returns
+    /// Tuple of (blocks_scanned_forward, blocks_loaded_backward, utxos_found)
+    pub async fn prewarm_cache_targeted<W: GraphWriter>(
+        &mut self,
+        cache: &UtxoCache<W>,
+        start_height: u32,
+        scan_ahead: u32,
+        max_backward: u32,
+        end_height: u32,
+    ) -> Result<(u32, u32, usize)> {
+        if start_height == 0 {
+            return Ok((0, 0, 0));
+        }
+
+        // Phase 1: Scan forward to collect needed UTXOs
+        tracing::info!(
+            start_height = start_height,
+            scan_ahead = scan_ahead,
+            "Targeted pre-warm: scanning upcoming blocks for needed UTXOs"
+        );
+
+        let scan_end = start_height.saturating_add(scan_ahead).min(end_height);
+        self.preload_full_range(start_height, scan_end)?;
+
+        let mut needed: HashSet<UtxoKey> = HashSet::new();
+        let mut scanned_forward = 0u32;
+
+        for height in start_height..=scan_end {
+            if let Some((_, block, _)) = self.load_block(height)? {
+                for tx in &block.txdata {
+                    if !tx.is_coinbase() {
+                        for input in &tx.input {
+                            let key = UtxoKey::from_outpoint(&input.previous_output);
+                            // Only add if not already in cache
+                            if !cache.contains(&key) {
+                                needed.insert(key);
+                            }
+                        }
+                    }
+                }
+                scanned_forward += 1;
+            }
+        }
+
+        let total_needed = needed.len();
+        tracing::info!(
+            scanned_forward = scanned_forward,
+            needed_utxos = total_needed,
+            "Forward scan complete, walking backward to find needed outputs"
+        );
+
+        if needed.is_empty() {
+            return Ok((scanned_forward, 0, 0));
+        }
+
+        // Phase 2: Walk backward to find needed outputs
+        let lower_bound = start_height.saturating_sub(max_backward);
+        self.preload_full_range(lower_bound, start_height.saturating_sub(1))?;
+
+        let mut loaded_backward = 0u32;
+        let mut found = 0usize;
+        let mut current_height = start_height.saturating_sub(1);
+
+        loop {
+            if needed.is_empty() || current_height == 0 || loaded_backward >= max_backward {
+                break;
+            }
+
+            if !cache.has_capacity() {
+                tracing::info!("Cache full during targeted pre-warm");
+                break;
+            }
+
+            let (_, block, _) = match self.load_block(current_height)? {
+                Some(data) => data,
+                None => break,
+            };
+
+            for tx in &block.txdata {
+                let txid = tx.txid();
+                for (vout, output) in tx.output.iter().enumerate() {
+                    let key = UtxoKey::from_outpoint(&bitcoin::OutPoint {
+                        txid,
+                        vout: vout as u32,
+                    });
+
+                    // Only insert if this output is needed by upcoming blocks
+                    if needed.remove(&key) {
+                        let script_type = if output.script_pubkey.is_p2pkh() {
+                            ScriptTypeTag::P2PKH
+                        } else if output.script_pubkey.is_p2sh() {
+                            ScriptTypeTag::P2SH
+                        } else if output.script_pubkey.is_p2wpkh() {
+                            ScriptTypeTag::P2WPKH
+                        } else if output.script_pubkey.is_p2wsh() {
+                            ScriptTypeTag::P2WSH
+                        } else if output.script_pubkey.is_op_return() {
+                            ScriptTypeTag::NullData
+                        } else {
+                            ScriptTypeTag::Unknown
+                        };
+
+                        let address: Option<Arc<str>> = bitcoin::Address::from_script(
+                            &output.script_pubkey,
+                            self.network,
+                        )
+                        .ok()
+                        .map(|addr| Arc::from(addr.to_string().as_str()));
+
+                        let cached_output = CachedOutput {
+                            output_index: vout as u32,
+                            amount: output.value.to_sat(),
+                            script_type,
+                            address,
+                        };
+
+                        cache.insert_prewarm(key, cached_output);
+                        found += 1;
+                    }
+                }
+            }
+
+            loaded_backward += 1;
+            current_height = current_height.saturating_sub(1);
+
+            if loaded_backward % 100 == 0 {
+                tracing::debug!(
+                    blocks_scanned = loaded_backward,
+                    found = found,
+                    remaining = needed.len(),
+                    "Targeted pre-warm progress"
+                );
+            }
+        }
+
+        tracing::info!(
+            scanned_forward = scanned_forward,
+            blocks_backward = loaded_backward,
+            found = found,
+            not_found = needed.len(),
+            fill_pct = format!("{:.1}", cache.fill_percentage() * 100.0),
+            "Targeted pre-warming complete"
+        );
+
+        Ok((scanned_forward, loaded_backward, found))
     }
 }
 

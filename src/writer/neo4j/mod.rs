@@ -235,6 +235,41 @@ impl GraphWriter for Neo4jWriter {
         Ok(())
     }
 
+    async fn lookup_outputs_batch(&self, output_ids: &[String]) -> Result<Vec<OutputData>> {
+        if output_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let ids: Vec<&str> = output_ids.iter().map(|s| s.as_str()).collect();
+        let mut result = self.graph
+            .execute(query(queries::LOOKUP_OUTPUTS_BATCH_QUERY)
+                .param("outputIds", ids))
+            .await
+            .map_err(|e| WriterError::QueryFailed(format!("lookup_outputs_batch failed: {}", e)))?;
+
+        let mut outputs = Vec::with_capacity(output_ids.len());
+        while let Some(row) = result.next().await
+            .map_err(|e| WriterError::QueryFailed(format!("Failed to fetch row: {}", e)))? {
+            let output_id: String = row.get("outputId")
+                .map_err(|e| WriterError::DatabaseError(format!("Missing outputId: {}", e)))?;
+            outputs.push(OutputData {
+                output_id: output_id.clone(),
+                output_index: row.get("outputIndex")
+                    .map_err(|e| WriterError::DatabaseError(format!("Missing outputIndex: {}", e)))?,
+                txid: output_id.split(':').next().unwrap_or("").to_string(),
+                amount: row.get("amount")
+                    .map_err(|e| WriterError::DatabaseError(format!("Missing amount: {}", e)))?,
+                script_pubkey: row.get("scriptPubKey")
+                    .map_err(|e| WriterError::DatabaseError(format!("Missing scriptPubKey: {}", e)))?,
+                script_type: row.get("scriptType")
+                    .map_err(|e| WriterError::DatabaseError(format!("Missing scriptType: {}", e)))?,
+                address: row.get("address").ok(),
+            });
+        }
+
+        Ok(outputs)
+    }
+
     async fn lookup_output(&self, output_id: &str) -> Result<OutputData> {
         let mut result = self.graph
             .execute(query(queries::LOOKUP_OUTPUT_QUERY)

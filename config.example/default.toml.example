@@ -54,7 +54,7 @@ utxo_cache_memory_mb = 15
 
 # Number of blocks to load backwards for cache pre-warming
 # Loads recent outputs into cache before forward ingestion
-utxo_prewarm_depth = 50
+utxo_prewarm_depth = 10000
 
 # Moderate parallelism for balanced throughput
 parallel_batches = 4
