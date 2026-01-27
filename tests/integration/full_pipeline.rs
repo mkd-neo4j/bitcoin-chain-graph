@@ -34,7 +34,7 @@ use bitcoin_chain_graph::config::ConfigLoader;
 use bitcoin_chain_graph::domain::IngestionOrchestrator;
 use bitcoin_chain_graph::parser::BlockFileReader;
 use bitcoin_chain_graph::writer::Neo4jWriter;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 /// Helper to get all .blk files from test_data directory
@@ -339,7 +339,7 @@ async fn test_verify_data_integrity() {
     let config = ConfigLoader::from_file("config/default.toml")
         .expect("Failed to load config");
 
-    let writer = Neo4jWriter::new(config.neo4j.clone()).await
+    let _writer = Neo4jWriter::new(config.neo4j.clone()).await
         .expect("Failed to connect to Neo4j");
 
     // We'll use the writer directly to run validation queries

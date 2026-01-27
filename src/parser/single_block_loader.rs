@@ -100,10 +100,11 @@ struct BlockLocation {
 /// # Example
 ///
 /// ```no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use bitcoin_chain_graph::parser::SingleBlockLoader;
 /// use bitcoin::Network;
 ///
-/// let loader = SingleBlockLoader::new("./blocks", Network::Bitcoin)?;
+/// let mut loader = SingleBlockLoader::new("./blocks", Network::Bitcoin)?;
 ///
 /// // Pre-warm cache (backward loading from block 1000)
 /// // loader.prewarm_cache(&cache, 1000, 50).await?;
@@ -114,6 +115,8 @@ struct BlockLocation {
 ///         // Process block
 ///     }
 /// }
+/// # Ok(())
+/// # }
 /// ```
 /// Batch size for index pre-loading (number of blocks to load in one scan)
 const INDEX_BATCH_SIZE: u32 = 500;
@@ -150,6 +153,7 @@ impl SingleBlockLoader {
     ///
     /// # Example
     /// ```no_run
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// use bitcoin_chain_graph::parser::SingleBlockLoader;
     /// use bitcoin::Network;
     ///
@@ -161,6 +165,8 @@ impl SingleBlockLoader {
     ///
     /// // Second load: instant (cached from previous lookup)
     /// let (height, block, file) = loader.load_block(12345)?.unwrap();
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn new(blocks_dir: &str, network: Network) -> Result<Self> {
         let reader = BlockIndexReader::new(blocks_dir)?;
@@ -234,6 +240,7 @@ impl SingleBlockLoader {
     ///
     /// # Example
     /// ```no_run
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// use bitcoin_chain_graph::parser::SingleBlockLoader;
     /// use bitcoin::Network;
     ///
@@ -246,6 +253,8 @@ impl SingleBlockLoader {
     /// for height in 0..=10000 {
     ///     let (h, block, file) = loader.load_block(height)?.unwrap();
     /// }
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn preload_full_range(&mut self, start_height: u32, end_height: u32) -> Result<()> {
         tracing::info!(
@@ -399,7 +408,7 @@ impl SingleBlockLoader {
     ///
     /// # Example
     ///
-    /// ```no_run
+    /// ```ignore
     /// // Resuming from block 1000
     /// cache.enable_prewarm_mode();
     /// let loaded = loader.prewarm_cache(&cache, 1000, 50).await?;

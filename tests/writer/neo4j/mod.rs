@@ -37,6 +37,7 @@ fn test_neo4j_config() -> Neo4jConfig {
         connection_timeout_secs: 10,
         fetch_size: 500,
         max_retries: 3,
+        write_batch_size: 5000,
     }
 }
 

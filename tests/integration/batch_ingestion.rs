@@ -15,7 +15,7 @@
 use bitcoin::Network;
 use bitcoin_chain_graph::config::ConfigLoader;
 use bitcoin_chain_graph::domain::IngestionOrchestrator;
-use bitcoin_chain_graph::parser::BatchedBlockLoader;
+use bitcoin_chain_graph::parser::SingleBlockLoader;
 use bitcoin_chain_graph::writer::Neo4jWriter;
 use std::time::Instant;
 
@@ -67,18 +67,27 @@ async fn test_ingest_first_4_files() {
     println!("\n📂 Loading and sorting blocks from first 4 files...");
     let load_start = Instant::now();
 
-    let mut loader = BatchedBlockLoader::new(&config.bitcoin.blocks_dir, Network::Bitcoin);
-    let blocks = match loader.load_files(&[0, 1, 2, 3]) {
-        Ok(blocks) => {
-            let load_duration = load_start.elapsed();
-            println!("   ✅ Loaded {} blocks in {:.1}s", blocks.len(), load_duration.as_secs_f64());
-            blocks
+    let mut loader = SingleBlockLoader::new(&config.bitcoin.blocks_dir, Network::Bitcoin)
+        .expect("Failed to create block loader");
+
+    // Pre-load index for the expected range
+    let max_height = 120_000; // First 4 files contain roughly this many blocks
+    loader.preload_full_range(0, max_height)
+        .expect("Failed to preload index");
+
+    let mut blocks = Vec::new();
+    for height in 0..=max_height {
+        match loader.load_block(height) {
+            Ok(Some(data)) => blocks.push(data),
+            Ok(None) => break,
+            Err(e) => {
+                println!("   ❌ Failed to load block {}: {:?}", height, e);
+                panic!("Block loading failed");
+            }
         }
-        Err(e) => {
-            println!("   ❌ Failed to load blocks: {:?}", e);
-            panic!("Block loading failed");
-        }
-    };
+    }
+    let load_duration = load_start.elapsed();
+    println!("   ✅ Loaded {} blocks in {:.1}s", blocks.len(), load_duration.as_secs_f64());
 
     // Ingest blocks in batches
     let batch_size = 1000;

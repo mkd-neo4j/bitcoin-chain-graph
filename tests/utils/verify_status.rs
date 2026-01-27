@@ -11,12 +11,12 @@ async fn verify_batch_status() {
     let config = ConfigLoader::from_file("config/default.toml")
         .expect("Failed to load config");
 
-    let writer = Neo4jWriter::new(config.neo4j.clone())
+    let _writer = Neo4jWriter::new(config.neo4j.clone())
         .await
         .expect("Failed to connect to Neo4j");
 
     // Check checkpoint
-    let checkpoint_query = "MATCH (c:IngestionCheckpoint) RETURN c.lastProcessedHeight as height, c.status as status";
+    let _checkpoint_query = "MATCH (c:IngestionCheckpoint) RETURN c.lastProcessedHeight as height, c.status as status";
 
     // We need to access the graph directly - this is a simplified check
     println!("To verify batch ingestion manually, run these queries in Neo4j Browser:");

@@ -9,7 +9,7 @@
 
 use bitcoin::Network;
 use bitcoin_chain_graph::domain::{IngestionOrchestrator, CheckpointData};
-use bitcoin_chain_graph::parser::BatchedBlockLoader;
+use bitcoin_chain_graph::parser::SingleBlockLoader;
 use bitcoin_chain_graph::writer::MockWriter;
 
 /// Test: Resume from genesis block (height 0)
@@ -146,24 +146,28 @@ async fn test_status_transitions() {
 #[tokio::test]
 async fn test_batch_ingestion_checkpoints() {
     let blocks_dir = "test_data/blocks";
-    let mut loader = BatchedBlockLoader::new(blocks_dir, Network::Bitcoin);
-
-    // Load first 100 blocks
-    let blocks = match loader.load_files(&[0]) {
-        Ok(b) => b,
+    let mut loader = match SingleBlockLoader::new(blocks_dir, Network::Bitcoin) {
+        Ok(l) => l,
         Err(_) => {
             println!("⚠️  No block index found, skipping test");
             return;
         }
     };
 
+    // Load first 100 blocks
+    let mut blocks = Vec::new();
+    for height in 0..100u32 {
+        match loader.load_block(height) {
+            Ok(Some(data)) => blocks.push(data),
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+
     if blocks.is_empty() {
         println!("⚠️  No test data found, skipping test");
         return;
     }
-
-    // Take first 100 blocks (or fewer if not available)
-    let blocks: Vec<_> = blocks.into_iter().take(100).collect();
 
     let writer = MockWriter::new();
     let orchestrator = IngestionOrchestrator::new(writer, Network::Bitcoin, 100_000);

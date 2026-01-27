@@ -200,8 +200,12 @@ impl BlockIndexReader {
     ///
     /// # Example
     /// ```no_run
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use bitcoin_chain_graph::parser::BlockIndexReader;
     /// let mut reader = BlockIndexReader::new("./blocks")?;
     /// let chain = reader.get_main_chain_up_to(10000)?; // Only load first 10K blocks
+    /// # Ok(())
+    /// # }
     /// ```
     #[instrument(skip(self), level = "info")]
     pub fn get_main_chain_up_to(&mut self, max_height: u32) -> Result<Vec<BlockIndexEntry>> {
@@ -300,11 +304,15 @@ impl BlockIndexReader {
     ///
     /// # Example
     /// ```no_run
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use bitcoin_chain_graph::parser::BlockIndexReader;
     /// let mut reader = BlockIndexReader::new("/path/to/blocks")?;
     /// // Load blocks 0-499 in one scan (~1-2 seconds)
     /// let batch = reader.load_batch_index(0, 499)?;
     /// // Now O(1) lookups
     /// let block_100 = batch.get(&100).unwrap();
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn load_batch_index(
         &mut self,

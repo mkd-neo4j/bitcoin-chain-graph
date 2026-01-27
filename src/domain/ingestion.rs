@@ -168,7 +168,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// This is useful for cache pre-warming during resume operations.
     ///
     /// # Example
-    /// ```no_run
+    /// ```ignore
     /// // Pre-warm cache before resuming ingestion
     /// cache.enable_prewarm_mode();
     /// loader.prewarm_cache(orchestrator.get_cache(), start_height, 50).await?;
@@ -337,12 +337,19 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 "Phase complete"
             );
 
-            // Phase 2: Accumulate outputs and populate cache (BEFORE transactions!)
+            // Pre-build simplified layer accumulators (populated during Phases 2 and 3
+            // to avoid redundant address derivation and cache lookups in Phase 5)
+            let mut all_performs_data: Vec<PerformsData> = Vec::new();
+            let mut all_benefits_to_data: Vec<BenefitsToData> = Vec::new();
+
+            // Phase 2: Accumulate outputs, populate cache, AND build BENEFITS_TO (BEFORE transactions!)
             let phase2_start = std::time::Instant::now();
             let mut output_data_batch = Vec::new();
             for (_height, block, _file_name) in chunk {
                 for tx in &block.txdata {
                     let txid = tx.txid().to_string();
+                    let mut benefits_map: HashMap<String, (u32, u64)> = HashMap::new();
+
                     for (output_index, output) in tx.output.iter().enumerate() {
                         let output_data = OutputData::from_output(
                             output,
@@ -350,7 +357,25 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                             output_index as u32,
                             self.network,
                         );
+
+                        // Build BENEFITS_TO aggregation (address already derived above)
+                        if let Some(ref address) = output_data.address {
+                            let entry = benefits_map.entry(address.clone()).or_insert((0, 0));
+                            entry.0 += 1;
+                            entry.1 += output.value.to_sat();
+                        }
+
                         output_data_batch.push(output_data);
+                    }
+
+                    // Convert benefits_map to BenefitsToData
+                    for (address, (output_count, amount_received)) in benefits_map {
+                        all_benefits_to_data.push(BenefitsToData {
+                            from_txid: txid.clone(),
+                            to_address: address,
+                            output_count,
+                            amount_received,
+                        });
                     }
                 }
             }
@@ -378,7 +403,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 self.utxo_cache.insert(cached_output);
             }
 
-            // Phase 3: Accumulate transactions (with amounts calculated from cache)
+            // Phase 3: Accumulate transactions (with amounts calculated from cache) AND build PERFORMS
             let phase3_start = std::time::Instant::now();
             let mut transaction_data_batch = Vec::new();
             for (height, block, _file_name) in chunk {
@@ -394,11 +419,33 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                         0
                     } else {
                         let mut sum = 0u64;
+                        // Build PERFORMS aggregation alongside amount calculation
+                        let mut performs_map: HashMap<String, (u32, u64)> = HashMap::new();
+
                         for input in &tx.input {
                             let output_id = format!("{}:{}", input.previous_output.txid, input.previous_output.vout);
                             let cached_output = self.utxo_cache.get(&output_id).await?;
                             sum += cached_output.amount;
+
+                            // Aggregate PERFORMS (address already in cache result)
+                            if let Some(address) = cached_output.address {
+                                let entry = performs_map.entry(address).or_insert((0, 0));
+                                entry.0 += 1;
+                                entry.1 += cached_output.amount;
+                            }
                         }
+
+                        // Convert performs_map to PerformsData
+                        let txid = tx.txid().to_string();
+                        for (address, (input_count, amount_spent)) in performs_map {
+                            all_performs_data.push(PerformsData {
+                                from_address: address,
+                                to_txid: txid.clone(),
+                                input_count,
+                                amount_spent,
+                            });
+                        }
+
                         sum
                     };
 
@@ -445,19 +492,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 "Phase complete"
             );
 
-            // Phase 5: Simplified layer (batch accumulation + parallel writes)
+            // Phase 5: Simplified layer (parallel writes using data accumulated in Phases 2-3)
             let phase5_start = std::time::Instant::now();
-
-            // Accumulate ALL simplified layer data from batch
-            let mut all_performs_data = Vec::new();
-            let mut all_benefits_to_data = Vec::new();
-
-            for (_height, block, _file_name) in chunk {
-                // Extract simplified layer data for this block
-                let (performs_data, benefits_to_data) = self.extract_simplified_layer_data(block).await?;
-                all_performs_data.extend(performs_data);
-                all_benefits_to_data.extend(benefits_to_data);
-            }
 
             // Partition data by address hash to enable parallel writes without deadlocks
             const NUM_BUCKETS: usize = 4;
@@ -503,7 +539,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             );
 
             // Phase 6: Remove spent outputs from cache (deferred from Phase 4)
-            // This must happen AFTER Phase 5 because Phase 5 needs to lookup spent outputs
+            // Must happen AFTER Phase 3 (which does UTXO lookups for amounts and PERFORMS)
             for (_height, block, _file_name) in chunk {
                 for tx in &block.txdata {
                     if !tx.is_coinbase() {

@@ -1,7 +1,7 @@
 use bitcoin::{Block, consensus::deserialize, Network};
 use std::fs::File;
 use memmap2::Mmap;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, instrument};
 use thiserror::Error;
 
 /// Magic bytes for different Bitcoin networks
