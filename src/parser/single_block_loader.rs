@@ -22,7 +22,7 @@
 //! - Memory usage: 12.7 GB → 52 MB (244x reduction)
 //! - Startup time: 2-5 min → 15 sec (12-30x faster)
 
-use bitcoin::{Block, Network, consensus::deserialize};
+use bitcoin::{consensus::deserialize, Block, Network};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
@@ -30,7 +30,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use super::block_index::{BlockIndexReader, IndexError};
-use crate::domain::utxo::{UtxoCache, UtxoKey, CachedOutput, ScriptTypeTag};
+use crate::domain::utxo::{CachedOutput, ScriptTypeTag, UtxoCache, UtxoKey};
 use crate::writer::GraphWriter;
 use std::sync::Arc;
 
@@ -175,7 +175,7 @@ impl SingleBlockLoader {
         Ok(Self {
             blocks_dir: PathBuf::from(blocks_dir),
             network,
-            block_index: HashMap::new(),  // Empty - will be populated on-demand
+            block_index: HashMap::new(), // Empty - will be populated on-demand
             reader,
         })
     }
@@ -207,11 +207,14 @@ impl SingleBlockLoader {
 
         let count = batch.len();
         for (height, entry) in batch {
-            self.block_index.insert(height, BlockLocation {
-                file_number: entry.file_number,
-                file_offset: entry.file_offset,
-                hash: entry.hash,
-            });
+            self.block_index.insert(
+                height,
+                BlockLocation {
+                    file_number: entry.file_number,
+                    file_offset: entry.file_offset,
+                    hash: entry.hash,
+                },
+            );
         }
 
         tracing::debug!(
@@ -270,11 +273,14 @@ impl SingleBlockLoader {
 
         let count = batch.len();
         for (height, entry) in batch {
-            self.block_index.insert(height, BlockLocation {
-                file_number: entry.file_number,
-                file_offset: entry.file_offset,
-                hash: entry.hash,
-            });
+            self.block_index.insert(
+                height,
+                BlockLocation {
+                    file_number: entry.file_number,
+                    file_offset: entry.file_offset,
+                    hash: entry.hash,
+                },
+            );
         }
 
         tracing::info!(
@@ -502,9 +508,10 @@ impl SingleBlockLoader {
                     };
 
                     // Extract address if possible
-                    let address: Option<Arc<str>> = bitcoin::Address::from_script(&output.script_pubkey, self.network)
-                        .ok()
-                        .map(|addr| Arc::from(addr.to_string().as_str()));
+                    let address: Option<Arc<str>> =
+                        bitcoin::Address::from_script(&output.script_pubkey, self.network)
+                            .ok()
+                            .map(|addr| Arc::from(addr.to_string().as_str()));
 
                     let cached_output = CachedOutput {
                         output_index: vout as u32,
@@ -667,12 +674,10 @@ impl SingleBlockLoader {
                             ScriptTypeTag::Unknown
                         };
 
-                        let address: Option<Arc<str>> = bitcoin::Address::from_script(
-                            &output.script_pubkey,
-                            self.network,
-                        )
-                        .ok()
-                        .map(|addr| Arc::from(addr.to_string().as_str()));
+                        let address: Option<Arc<str>> =
+                            bitcoin::Address::from_script(&output.script_pubkey, self.network)
+                                .ok()
+                                .map(|addr| Arc::from(addr.to_string().as_str()));
 
                         let cached_output = CachedOutput {
                             output_index: vout as u32,

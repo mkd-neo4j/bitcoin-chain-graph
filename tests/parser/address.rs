@@ -59,7 +59,10 @@ fn test_p2wpkh_address() {
     assert!(info.address.is_some());
 
     let address = info.address.unwrap();
-    assert_eq!(address.to_string(), "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+    assert_eq!(
+        address.to_string(),
+        "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+    );
 }
 
 #[test]

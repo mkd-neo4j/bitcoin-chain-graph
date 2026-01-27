@@ -4,15 +4,17 @@
 //! bulk operations, retry logic, and configuration-driven performance tuning.
 
 use async_trait::async_trait;
-use neo4rs::{Graph, ConfigBuilder, query, BoltType};
+use neo4rs::{query, BoltType, ConfigBuilder, Graph};
 use std::sync::Arc;
 
 use crate::config::Neo4jConfig;
-use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData};
-use crate::writer::{GraphWriter, WriterError, Result};
+use crate::domain::{
+    BenefitsToData, BlockData, CheckpointData, InputData, OutputData, PerformsData, TransactionData,
+};
+use crate::writer::{GraphWriter, Result, WriterError};
 
-mod queries;
 mod conversions;
+mod queries;
 mod schema;
 
 use conversions::*;
@@ -85,9 +87,7 @@ impl Neo4jWriter {
         self.graph
             .run(query("RETURN 1"))
             .await
-            .map_err(|e| WriterError::ConnectionFailed(
-                format!("Health check failed: {}", e)
-            ))?;
+            .map_err(|e| WriterError::ConnectionFailed(format!("Health check failed: {}", e)))?;
         Ok(())
     }
 
@@ -144,10 +144,17 @@ impl Neo4jWriter {
 
             let start = std::time::Instant::now();
 
-            self.run_with_retry(operation_name, || {
-                let q = query(query_str).param(param_name, bolt_data.as_slice());
-                async { self.graph.run(q).await }
-            }, batch_num, total_batches, chunk.len()).await?;
+            self.run_with_retry(
+                operation_name,
+                || {
+                    let q = query(query_str).param(param_name, bolt_data.as_slice());
+                    async { self.graph.run(q).await }
+                },
+                batch_num,
+                total_batches,
+                chunk.len(),
+            )
+            .await?;
 
             tracing::debug!(
                 operation = operation_name,
@@ -190,9 +197,8 @@ impl Neo4jWriter {
 
                     if attempt < self.max_retries && writer_err.is_retryable() {
                         attempt += 1;
-                        let delay = std::time::Duration::from_millis(
-                            200 * (2_u64.pow(attempt as u32 - 1))
-                        );
+                        let delay =
+                            std::time::Duration::from_millis(200 * (2_u64.pow(attempt as u32 - 1)));
                         tracing::warn!(
                             operation = operation_name,
                             attempt,
@@ -224,7 +230,8 @@ impl GraphWriter for Neo4jWriter {
             "blocks",
             "write_blocks",
             blocks_to_bolt_list,
-        ).await
+        )
+        .await
     }
 
     async fn write_transactions(&self, transactions: &[TransactionData]) -> Result<()> {
@@ -234,7 +241,8 @@ impl GraphWriter for Neo4jWriter {
             "transactions",
             "write_transactions",
             transactions_to_bolt_list,
-        ).await
+        )
+        .await
     }
 
     async fn write_outputs(&self, outputs: &[OutputData]) -> Result<()> {
@@ -262,11 +270,18 @@ impl GraphWriter for Neo4jWriter {
             // Query 1: Create output nodes
             let start = std::time::Instant::now();
 
-            self.run_with_retry("write_outputs", || {
-                let q = query(queries::CREATE_OUTPUTS_QUERY)
-                    .param("outputs", output_data.as_slice());
-                async { self.graph.run(q).await }
-            }, batch_num, total_batches, chunk.len()).await?;
+            self.run_with_retry(
+                "write_outputs",
+                || {
+                    let q = query(queries::CREATE_OUTPUTS_QUERY)
+                        .param("outputs", output_data.as_slice());
+                    async { self.graph.run(q).await }
+                },
+                batch_num,
+                total_batches,
+                chunk.len(),
+            )
+            .await?;
 
             tracing::debug!(
                 operation = "write_outputs",
@@ -284,11 +299,18 @@ impl GraphWriter for Neo4jWriter {
                 let addr_count = outputs_with_address.len();
                 let start = std::time::Instant::now();
 
-                self.run_with_retry("write_outputs:locked_to", || {
-                    let q = query(queries::CREATE_LOCKED_TO_QUERY)
-                        .param("outputs", address_data.as_slice());
-                    async { self.graph.run(q).await }
-                }, batch_num, total_batches, addr_count).await?;
+                self.run_with_retry(
+                    "write_outputs:locked_to",
+                    || {
+                        let q = query(queries::CREATE_LOCKED_TO_QUERY)
+                            .param("outputs", address_data.as_slice());
+                        async { self.graph.run(q).await }
+                    },
+                    batch_num,
+                    total_batches,
+                    addr_count,
+                )
+                .await?;
 
                 tracing::debug!(
                     operation = "write_outputs:locked_to",
@@ -310,7 +332,8 @@ impl GraphWriter for Neo4jWriter {
             "inputs",
             "write_inputs",
             inputs_to_bolt_list,
-        ).await
+        )
+        .await
     }
 
     async fn write_performs(&self, performs: &[PerformsData]) -> Result<()> {
@@ -320,7 +343,8 @@ impl GraphWriter for Neo4jWriter {
             "performs",
             "write_performs",
             performs_to_bolt_list,
-        ).await
+        )
+        .await
     }
 
     async fn write_benefits_to(&self, benefits_to: &[BenefitsToData]) -> Result<()> {
@@ -330,7 +354,8 @@ impl GraphWriter for Neo4jWriter {
             "benefitsTo",
             "write_benefits_to",
             benefits_to_to_bolt_list,
-        ).await
+        )
+        .await
     }
 
     async fn lookup_outputs_batch(&self, output_ids: &[String]) -> Result<Vec<OutputData>> {
@@ -339,30 +364,42 @@ impl GraphWriter for Neo4jWriter {
         }
 
         let ids: Vec<&str> = output_ids.iter().map(|s| s.as_str()).collect();
-        let mut result = self.graph
-            .execute(query(queries::LOOKUP_OUTPUTS_BATCH_QUERY)
-                .param("outputIds", ids))
+        let mut result = self
+            .graph
+            .execute(query(queries::LOOKUP_OUTPUTS_BATCH_QUERY).param("outputIds", ids))
             .await
-            .map_err(|e| WriterError::QueryFailed(
-                format!("lookup_outputs_batch failed ({} ids): {}", output_ids.len(), e)
-            ))?;
+            .map_err(|e| {
+                WriterError::QueryFailed(format!(
+                    "lookup_outputs_batch failed ({} ids): {}",
+                    output_ids.len(),
+                    e
+                ))
+            })?;
 
         let mut outputs = Vec::with_capacity(output_ids.len());
-        while let Some(row) = result.next().await
-            .map_err(|e| WriterError::QueryFailed(format!("Failed to fetch row: {}", e)))? {
-            let output_id: String = row.get("outputId")
+        while let Some(row) = result
+            .next()
+            .await
+            .map_err(|e| WriterError::QueryFailed(format!("Failed to fetch row: {}", e)))?
+        {
+            let output_id: String = row
+                .get("outputId")
                 .map_err(|e| WriterError::DatabaseError(format!("Missing outputId: {}", e)))?;
             outputs.push(OutputData {
                 output_id: output_id.clone(),
-                output_index: row.get("outputIndex")
-                    .map_err(|e| WriterError::DatabaseError(format!("Missing outputIndex: {}", e)))?,
+                output_index: row.get("outputIndex").map_err(|e| {
+                    WriterError::DatabaseError(format!("Missing outputIndex: {}", e))
+                })?,
                 txid: output_id.split(':').next().unwrap_or("").to_string(),
-                amount: row.get("amount")
+                amount: row
+                    .get("amount")
                     .map_err(|e| WriterError::DatabaseError(format!("Missing amount: {}", e)))?,
-                script_pubkey: row.get("scriptPubKey")
-                    .map_err(|e| WriterError::DatabaseError(format!("Missing scriptPubKey: {}", e)))?,
-                script_type: row.get("scriptType")
-                    .map_err(|e| WriterError::DatabaseError(format!("Missing scriptType: {}", e)))?,
+                script_pubkey: row.get("scriptPubKey").map_err(|e| {
+                    WriterError::DatabaseError(format!("Missing scriptPubKey: {}", e))
+                })?,
+                script_type: row.get("scriptType").map_err(|e| {
+                    WriterError::DatabaseError(format!("Missing scriptType: {}", e))
+                })?,
                 address: row.get("address").ok(),
             });
         }
@@ -371,29 +408,36 @@ impl GraphWriter for Neo4jWriter {
     }
 
     async fn lookup_output(&self, output_id: &str) -> Result<OutputData> {
-        let mut result = self.graph
-            .execute(query(queries::LOOKUP_OUTPUT_QUERY)
-                .param("outputId", output_id))
+        let mut result = self
+            .graph
+            .execute(query(queries::LOOKUP_OUTPUT_QUERY).param("outputId", output_id))
             .await
-            .map_err(|e| WriterError::QueryFailed(
-                format!("lookup_output failed ({}): {}", output_id, e)
-            ))?;
+            .map_err(|e| {
+                WriterError::QueryFailed(format!("lookup_output failed ({}): {}", output_id, e))
+            })?;
 
-        let row = result.next().await
+        let row = result
+            .next()
+            .await
             .map_err(|e| WriterError::QueryFailed(format!("Failed to fetch row: {}", e)))?
             .ok_or_else(|| WriterError::OutputNotFound(output_id.to_string()))?;
 
         Ok(OutputData {
-            output_id: row.get("outputId")
+            output_id: row
+                .get("outputId")
                 .map_err(|e| WriterError::DatabaseError(format!("Missing outputId: {}", e)))?,
-            output_index: row.get("outputIndex")
+            output_index: row
+                .get("outputIndex")
                 .map_err(|e| WriterError::DatabaseError(format!("Missing outputIndex: {}", e)))?,
             txid: output_id.split(':').next().unwrap_or("").to_string(),
-            amount: row.get("amount")
+            amount: row
+                .get("amount")
                 .map_err(|e| WriterError::DatabaseError(format!("Missing amount: {}", e)))?,
-            script_pubkey: row.get("scriptPubKey")
+            script_pubkey: row
+                .get("scriptPubKey")
                 .map_err(|e| WriterError::DatabaseError(format!("Missing scriptPubKey: {}", e)))?,
-            script_type: row.get("scriptType")
+            script_type: row
+                .get("scriptType")
                 .map_err(|e| WriterError::DatabaseError(format!("Missing scriptType: {}", e)))?,
             address: row.get("address").ok(),
         })
@@ -406,10 +450,12 @@ impl GraphWriter for Neo4jWriter {
         spent_at_height: u32,
     ) -> Result<()> {
         self.graph
-            .run(query(queries::MARK_OUTPUT_SPENT_QUERY)
-                .param("outputId", output_id)
-                .param("spentInTxid", spent_in_txid)
-                .param("spentAtHeight", spent_at_height))
+            .run(
+                query(queries::MARK_OUTPUT_SPENT_QUERY)
+                    .param("outputId", output_id)
+                    .param("spentInTxid", spent_in_txid)
+                    .param("spentAtHeight", spent_at_height),
+            )
             .await
             .map_err(|e| WriterError::QueryFailed(format!("mark_output_spent failed: {}", e)))?;
 
@@ -434,31 +480,40 @@ impl GraphWriter for Neo4jWriter {
 
     async fn update_checkpoint(&self, checkpoint: &CheckpointData) -> Result<()> {
         self.graph
-            .run(query(queries::UPDATE_CHECKPOINT_QUERY)
-                .param("height", checkpoint.last_processed_height)
-                .param("hash", checkpoint.last_processed_hash.clone())
-                .param("file", checkpoint.last_processed_file.clone())
-                .param("offset", checkpoint.last_processed_file_offset.unwrap_or(0) as i64)
-                .param("status", checkpoint.status.clone()))
+            .run(
+                query(queries::UPDATE_CHECKPOINT_QUERY)
+                    .param("height", checkpoint.last_processed_height)
+                    .param("hash", checkpoint.last_processed_hash.clone())
+                    .param("file", checkpoint.last_processed_file.clone())
+                    .param(
+                        "offset",
+                        checkpoint.last_processed_file_offset.unwrap_or(0) as i64,
+                    )
+                    .param("status", checkpoint.status.clone()),
+            )
             .await
-            .map_err(|e| WriterError::CheckpointError(format!("update_checkpoint failed: {}", e)))?;
+            .map_err(|e| {
+                WriterError::CheckpointError(format!("update_checkpoint failed: {}", e))
+            })?;
 
         Ok(())
     }
 
     async fn get_checkpoint(&self) -> Result<Option<CheckpointData>> {
-        let mut result = self.graph
+        let mut result = self
+            .graph
             .execute(query(queries::GET_CHECKPOINT_QUERY))
             .await
             .map_err(|e| WriterError::CheckpointError(format!("get_checkpoint failed: {}", e)))?;
 
-        if let Some(row) = result.next().await
-            .map_err(|e| WriterError::CheckpointError(format!("Failed to fetch checkpoint: {}", e)))? {
-
+        if let Some(row) = result.next().await.map_err(|e| {
+            WriterError::CheckpointError(format!("Failed to fetch checkpoint: {}", e))
+        })? {
             Ok(Some(CheckpointData {
                 last_processed_height: {
-                    let val: i64 = row.get("lastProcessedHeight")
-                        .map_err(|e| WriterError::DatabaseError(format!("Missing lastProcessedHeight: {}", e)))?;
+                    let val: i64 = row.get("lastProcessedHeight").map_err(|e| {
+                        WriterError::DatabaseError(format!("Missing lastProcessedHeight: {}", e))
+                    })?;
 
                     // Convert sentinel value back to -1 for domain layer.
                     // We store CHECKPOINT_INITIAL_HEIGHT (-999) in Neo4j to avoid a neo4rs
@@ -470,13 +525,16 @@ impl GraphWriter for Neo4jWriter {
                         val as i32
                     }
                 },
-                last_processed_hash: row.get("lastProcessedHash")
-                    .map_err(|e| WriterError::DatabaseError(format!("Missing lastProcessedHash: {}", e)))?,
-                last_processed_file: row.get("lastProcessedFile")
-                    .map_err(|e| WriterError::DatabaseError(format!("Missing lastProcessedFile: {}", e)))?,
+                last_processed_hash: row.get("lastProcessedHash").map_err(|e| {
+                    WriterError::DatabaseError(format!("Missing lastProcessedHash: {}", e))
+                })?,
+                last_processed_file: row.get("lastProcessedFile").map_err(|e| {
+                    WriterError::DatabaseError(format!("Missing lastProcessedFile: {}", e))
+                })?,
                 last_processed_file_offset: row.get("lastProcessedFileOffset").ok(),
                 timestamp: chrono::Utc::now().timestamp(),
-                status: row.get("status")
+                status: row
+                    .get("status")
                     .map_err(|e| WriterError::DatabaseError(format!("Missing status: {}", e)))?,
             }))
         } else {
@@ -488,17 +546,20 @@ impl GraphWriter for Neo4jWriter {
         self.graph
             .run(query(queries::MARK_CHECKPOINT_COMPLETE_QUERY))
             .await
-            .map_err(|e| WriterError::CheckpointError(format!("mark_checkpoint_complete failed: {}", e)))?;
+            .map_err(|e| {
+                WriterError::CheckpointError(format!("mark_checkpoint_complete failed: {}", e))
+            })?;
 
         Ok(())
     }
 
     async fn set_checkpoint_status(&self, status: &str) -> Result<()> {
         self.graph
-            .run(query(queries::SET_CHECKPOINT_STATUS_QUERY)
-                .param("status", status))
+            .run(query(queries::SET_CHECKPOINT_STATUS_QUERY).param("status", status))
             .await
-            .map_err(|e| WriterError::CheckpointError(format!("set_checkpoint_status failed: {}", e)))?;
+            .map_err(|e| {
+                WriterError::CheckpointError(format!("set_checkpoint_status failed: {}", e))
+            })?;
 
         Ok(())
     }

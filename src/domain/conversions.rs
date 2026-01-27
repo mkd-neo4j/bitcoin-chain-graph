@@ -4,9 +4,9 @@
 //! and the Domain layer (our domain models). They extract all necessary data and
 //! perform any required transformations.
 
-use bitcoin::{Block, Transaction, TxIn, TxOut, Network};
+use super::models::{BlockData, InputData, OutputData, TransactionData};
 use crate::parser::{extract_address, ScriptType};
-use super::models::{BlockData, TransactionData, OutputData, InputData};
+use bitcoin::{Block, Network, Transaction, TxIn, TxOut};
 
 impl BlockData {
     /// Convert a bitcoin::Block to BlockData
@@ -91,12 +91,7 @@ impl OutputData {
     /// # Note
     /// Uses parser::extract_address() to derive address and script type.
     /// Returns None for address if script is NULL_DATA or UNKNOWN.
-    pub fn from_output(
-        output: &TxOut,
-        txid: &str,
-        output_index: u32,
-        network: Network,
-    ) -> Self {
+    pub fn from_output(output: &TxOut, txid: &str, output_index: u32, network: Network) -> Self {
         // Extract address and script type using parser
         let addr_info = extract_address(&output.script_pubkey, network);
 
@@ -140,18 +135,9 @@ impl InputData {
     /// - previous_txid will be all zeros (0000...0000)
     /// - previous_output_index will be 0xFFFFFFFF
     /// - This is handled naturally by the bitcoin crate
-    pub fn from_input(
-        input: &TxIn,
-        txid: &str,
-        input_index: u32,
-        block_height: u32,
-    ) -> Self {
+    pub fn from_input(input: &TxIn, txid: &str, input_index: u32, block_height: u32) -> Self {
         // Convert witness data to hex strings
-        let witness: Vec<String> = input
-            .witness
-            .iter()
-            .map(hex::encode)
-            .collect();
+        let witness: Vec<String> = input.witness.iter().map(hex::encode).collect();
 
         InputData {
             input_id: format!("{}:{}", txid, input_index),
@@ -200,7 +186,10 @@ mod tests {
         // Genesis block bits: 0x1d00ffff (difficulty 1.0)
         let genesis_bits = 0x1d00ffff;
         let diff = difficulty_from_bits(genesis_bits);
-        assert!((diff - 1.0).abs() < 0.01, "Genesis difficulty should be ~1.0");
+        assert!(
+            (diff - 1.0).abs() < 0.01,
+            "Genesis difficulty should be ~1.0"
+        );
 
         // Higher difficulty example (more zeros in target)
         let high_bits = 0x1b0404cb; // Example from later blocks

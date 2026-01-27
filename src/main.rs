@@ -29,11 +29,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
-use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use bitcoin_chain_graph::config::{Config, ConfigLoader};
 use bitcoin_chain_graph::domain::IngestionOrchestrator;
-use bitcoin_chain_graph::parser::{SingleBlockLoader, RpcBlockProvider, ZmqBlockListener};
+use bitcoin_chain_graph::parser::{RpcBlockProvider, SingleBlockLoader, ZmqBlockListener};
 use bitcoin_chain_graph::writer::Neo4jWriter;
 
 /// Bitcoin Chain Graph - Blockchain ingestion into Neo4j
@@ -43,7 +43,13 @@ use bitcoin_chain_graph::writer::Neo4jWriter;
 #[command(version)]
 struct Cli {
     /// Path to configuration file
-    #[arg(short, long, global = true, value_name = "FILE", default_value = "config/default.toml")]
+    #[arg(
+        short,
+        long,
+        global = true,
+        value_name = "FILE",
+        default_value = "config/default.toml"
+    )]
     config: PathBuf,
 
     #[command(subcommand)]
@@ -88,7 +94,8 @@ async fn main() -> Result<()> {
     let config = ConfigLoader::from_file(&cli.config)
         .with_context(|| format!("Failed to load config from {:?}", cli.config))?;
 
-    config.validate()
+    config
+        .validate()
         .context("Configuration validation failed")?;
 
     // Initialize logging
@@ -106,8 +113,7 @@ async fn main() -> Result<()> {
 /// Initialize tracing subscriber for structured logging
 fn init_logging(config: &Config) {
     // Check for RUST_LOG environment variable, otherwise use config
-    let log_level = std::env::var("RUST_LOG")
-        .unwrap_or_else(|_| config.logging.level.clone());
+    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| config.logging.level.clone());
 
     // Create env filter
     let env_filter = EnvFilter::try_from_default_env()
@@ -150,7 +156,8 @@ async fn init_schema(config: &Config) -> Result<()> {
     let orchestrator = IngestionOrchestrator::new(writer, Network::Bitcoin, cache_size);
 
     println!("\n🏗️  Initializing schema (constraints + indexes)...");
-    orchestrator.init_schema()
+    orchestrator
+        .init_schema()
         .await
         .context("Failed to initialize schema")?;
     println!("   ✅ Schema initialized");
@@ -180,26 +187,35 @@ async fn ingest(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
     let orchestrator = IngestionOrchestrator::new(
         writer,
         Network::Bitcoin,
-        config.performance.cache_capacity()
+        config.performance.cache_capacity(),
     );
 
     // Check if schema is initialized
-    let checkpoint = orchestrator.get_checkpoint().await
+    let checkpoint = orchestrator
+        .get_checkpoint()
+        .await
         .context("Failed to check checkpoint")?;
 
     if checkpoint.is_none() {
         println!("\n⚠️  Warning: No checkpoint found. Initializing schema...");
-        orchestrator.init_schema().await
+        orchestrator
+            .init_schema()
+            .await
             .context("Failed to initialize schema")?;
         println!("   ✅ Schema initialized");
     }
 
     // Get resume height
-    let resume_height = orchestrator.get_resume_height().await
+    let resume_height = orchestrator
+        .get_resume_height()
+        .await
         .context("Failed to get resume height")?;
 
     if resume_height > 0 {
-        println!("\n⚠️  Warning: Existing ingestion found at block {}!", resume_height);
+        println!(
+            "\n⚠️  Warning: Existing ingestion found at block {}!",
+            resume_height
+        );
         println!("   Use 'resume' command to continue from last checkpoint");
         println!("   Or manually reset the checkpoint to start fresh");
         return Ok(());
@@ -208,15 +224,21 @@ async fn ingest(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
     // Determine max_height: CLI arg > config.bitcoin.end_height > chain tip
     let max_height = cli_max_height
         .or(config.bitcoin.end_height)
-        .unwrap_or(u32::MAX);  // Will stop when blocks run out
+        .unwrap_or(u32::MAX); // Will stop when blocks run out
 
     // Create lazy-loading block loader (instant startup)
     println!("\n📚 Initializing lazy block loader (instant startup)...");
     let loader = SingleBlockLoader::new(&config.bitcoin.blocks_dir, Network::Bitcoin)
         .context("Failed to initialize block loader")?;
 
-    println!("   Target height range: 0 to {}",
-        if max_height == u32::MAX { "chain tip".to_string() } else { max_height.to_string() });
+    println!(
+        "   Target height range: 0 to {}",
+        if max_height == u32::MAX {
+            "chain tip".to_string()
+        } else {
+            max_height.to_string()
+        }
+    );
 
     // Start streaming ingestion (no pre-warming for fresh start)
     run_streaming_ingestion(config, orchestrator, loader, 0, max_height, false).await
@@ -239,16 +261,21 @@ async fn resume(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
     let orchestrator = IngestionOrchestrator::new(
         writer,
         Network::Bitcoin,
-        config.performance.cache_capacity()
+        config.performance.cache_capacity(),
     );
 
     // Get checkpoint
-    let checkpoint = orchestrator.get_checkpoint().await
+    let checkpoint = orchestrator
+        .get_checkpoint()
+        .await
         .context("Failed to get checkpoint")?
         .context("No checkpoint found. Run 'init-schema' first.")?;
 
     println!("\n📍 Checkpoint Status:");
-    println!("   Last processed height: {}", checkpoint.last_processed_height);
+    println!(
+        "   Last processed height: {}",
+        checkpoint.last_processed_height
+    );
     println!("   Last processed hash: {}", checkpoint.last_processed_hash);
     println!("   Last processed file: {}", checkpoint.last_processed_file);
     println!("   Status: {}", checkpoint.status);
@@ -264,7 +291,9 @@ async fn resume(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
         println!("   To resume anyway, the error status will be updated to 'in_progress'");
     }
 
-    let resume_height = orchestrator.get_resume_height().await
+    let resume_height = orchestrator
+        .get_resume_height()
+        .await
         .context("Failed to calculate resume height")?;
 
     println!("\n🔄 Resume Plan:");
@@ -273,7 +302,7 @@ async fn resume(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
     // Determine max_height: CLI arg > config.bitcoin.end_height > chain tip
     let max_height = cli_max_height
         .or(config.bitcoin.end_height)
-        .unwrap_or(u32::MAX);  // Will stop when blocks run out
+        .unwrap_or(u32::MAX); // Will stop when blocks run out
 
     // Create lazy-loading block loader (instant startup)
     tracing::info!("Initializing lazy block loader");
@@ -282,7 +311,11 @@ async fn resume(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
 
     tracing::info!(
         start = resume_height,
-        end = if max_height == u32::MAX { "chain tip".to_string() } else { max_height.to_string() },
+        end = if max_height == u32::MAX {
+            "chain tip".to_string()
+        } else {
+            max_height.to_string()
+        },
         "Target height range"
     );
 
@@ -292,7 +325,15 @@ async fn resume(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
     }
 
     // Start streaming ingestion with pre-warming
-    run_streaming_ingestion(config, orchestrator, loader, resume_height, max_height, true).await
+    run_streaming_ingestion(
+        config,
+        orchestrator,
+        loader,
+        resume_height,
+        max_height,
+        true,
+    )
+    .await
 }
 
 /// Core streaming ingestion function with optional cache pre-warming
@@ -312,23 +353,29 @@ async fn run_streaming_ingestion(
         let cache = orchestrator.get_cache();
         cache.enable_prewarm_mode();
 
-        let prewarm_blocks = loader.prewarm_cache(
-            cache,
-            start_height,
-            config.performance.utxo_prewarm_depth
-        ).await
-        .context("Cache pre-warming failed")?;
+        let prewarm_blocks = loader
+            .prewarm_cache(cache, start_height, config.performance.utxo_prewarm_depth)
+            .await
+            .context("Cache pre-warming failed")?;
 
         cache.disable_prewarm_mode();
 
-        println!("   Pre-warmed {} blocks, cache at {:.1}%",
-                 prewarm_blocks, cache.fill_percentage() * 100.0);
+        println!(
+            "   Pre-warmed {} blocks, cache at {:.1}%",
+            prewarm_blocks,
+            cache.fill_percentage() * 100.0
+        );
     }
 
     // Pre-load full index range (single scan optimization)
     if max_height != u32::MAX {
-        tracing::info!("Pre-loading index for range {}-{}", start_height, max_height);
-        loader.preload_full_range(start_height, max_height)
+        tracing::info!(
+            "Pre-loading index for range {}-{}",
+            start_height,
+            max_height
+        );
+        loader
+            .preload_full_range(start_height, max_height)
             .context("Failed to preload index range")?;
     }
 
@@ -345,11 +392,7 @@ async fn run_streaming_ingestion(
         if batch.is_empty() {
             batch_start_height = height;
             let end_range = (height + batch_size as u32 - 1).min(max_height);
-            tracing::info!(
-                start = height,
-                end = end_range,
-                "Loading batch"
-            );
+            tracing::info!(start = height, end = end_range, "Loading batch");
         }
 
         // Show progress every 50 blocks during loading
@@ -388,8 +431,15 @@ async fn run_streaming_ingestion(
                 "Ingesting batch"
             );
 
-            orchestrator.ingest_blocks_batch(&batch, batch_size).await
-                .with_context(|| format!("Failed to ingest batch starting at block {}", batch_start_height))?;
+            orchestrator
+                .ingest_blocks_batch(&batch, batch_size)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to ingest batch starting at block {}",
+                        batch_start_height
+                    )
+                })?;
 
             blocks_processed += batch.len();
 
@@ -426,7 +476,10 @@ async fn run_streaming_ingestion(
         cache_size = orchestrator.cache_size(),
         cache_capacity = config.performance.cache_capacity(),
         cache_memory_mb = config.performance.utxo_cache_memory_mb,
-        cache_fill_pct = format!("{:.1}", orchestrator.cache_size() as f64 / config.performance.cache_capacity() as f64 * 100.0),
+        cache_fill_pct = format!(
+            "{:.1}",
+            orchestrator.cache_size() as f64 / config.performance.cache_capacity() as f64 * 100.0
+        ),
         hit_rate_pct = format!("{:.2}", stats.hit_rate_percent()),
         hits = stats.hits,
         misses = stats.misses,
@@ -452,7 +505,9 @@ async fn status(config: &Config) -> Result<()> {
     let orchestrator = IngestionOrchestrator::new(writer, Network::Bitcoin, cache_size);
 
     // Get checkpoint
-    let checkpoint = orchestrator.get_checkpoint().await
+    let checkpoint = orchestrator
+        .get_checkpoint()
+        .await
         .context("Failed to query checkpoint")?;
 
     match checkpoint {
@@ -503,7 +558,9 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
     // Validate RPC config exists
-    let rpc_config = config.bitcoin_rpc.as_ref()
+    let rpc_config = config
+        .bitcoin_rpc
+        .as_ref()
         .context("[bitcoin_rpc] section missing from config file. Required for live mode.")?;
 
     // Connect to Neo4j
@@ -521,23 +578,31 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
     );
 
     // Ensure schema is initialized
-    let checkpoint = orchestrator.get_checkpoint().await
+    let checkpoint = orchestrator
+        .get_checkpoint()
+        .await
         .context("Failed to check checkpoint")?;
     if checkpoint.is_none() {
         println!("\n🏗️  No checkpoint found. Initializing schema...");
-        orchestrator.init_schema().await
+        orchestrator
+            .init_schema()
+            .await
             .context("Failed to initialize schema")?;
         println!("   ✅ Schema initialized");
     }
 
     // Get resume height
-    let resume_height = orchestrator.get_resume_height().await
+    let resume_height = orchestrator
+        .get_resume_height()
+        .await
         .context("Failed to get resume height")?;
 
     // Create RPC provider and verify connectivity
-    println!("\n🔌 Connecting to Bitcoin Core RPC at {}...", rpc_config.url);
-    let provider = RpcBlockProvider::new(rpc_config)
-        .context("Failed to create RPC provider")?;
+    println!(
+        "\n🔌 Connecting to Bitcoin Core RPC at {}...",
+        rpc_config.url
+    );
+    let provider = RpcBlockProvider::new(rpc_config).context("Failed to create RPC provider")?;
 
     let tip = provider.verify_connection().await?;
     println!("   ✅ Connected to Bitcoin Core (chain tip: {})", tip);
@@ -552,7 +617,14 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
     println!("\n📊 Live Mode Configuration:");
     println!("   Resume from block: {}", resume_height);
     println!("   Chain tip: {}", tip);
-    println!("   Blocks behind: {}", if tip >= resume_height { tip - resume_height } else { 0 });
+    println!(
+        "   Blocks behind: {}",
+        if tip >= resume_height {
+            tip - resume_height
+        } else {
+            0
+        }
+    );
     println!("   RPC batch size: {}", rpc_batch_size);
     println!("   ZMQ endpoint: {}", rpc_config.zmq_endpoint);
 
@@ -577,16 +649,14 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         }
 
         // Re-check tip (it may advance during catchup)
-        let tip = provider.get_tip_height().await
+        let tip = provider
+            .get_tip_height()
+            .await
             .context("Failed to get chain tip during catchup")?;
         let target = tip.min(max_height);
 
         if current_height > target {
-            tracing::info!(
-                current_height,
-                chain_tip = tip,
-                "Caught up to chain tip"
-            );
+            tracing::info!(current_height, chain_tip = tip, "Caught up to chain tip");
             break;
         }
 
@@ -604,7 +674,9 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
 
         // Fetch blocks in parallel
         let fetch_start = Instant::now();
-        let blocks = provider.get_block_batch(current_height, fetch_count).await
+        let blocks = provider
+            .get_block_batch(current_height, fetch_count)
+            .await
             .with_context(|| format!("Failed to fetch RPC batch at height {}", current_height))?;
 
         if blocks.is_empty() {
@@ -622,7 +694,9 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         );
 
         // Ingest using existing orchestrator
-        orchestrator.ingest_blocks_batch(&blocks, config.ingestion.batch_size).await
+        orchestrator
+            .ingest_blocks_batch(&blocks, config.ingestion.batch_size)
+            .await
             .with_context(|| format!("Failed to ingest batch {}-{}", current_height, batch_end))?;
 
         blocks_processed += blocks.len() as u64;
@@ -666,7 +740,9 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
 
     // Establish persistent ZMQ connection (stays open across blocks)
     let mut zmq_listener = ZmqBlockListener::from_config(rpc_config);
-    zmq_listener.connect().await
+    zmq_listener
+        .connect()
+        .await
         .context("Failed to establish ZMQ connection")?;
 
     let max_consecutive_failures = rpc_config.zmq_max_consecutive_failures;
@@ -703,7 +779,14 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
                             )));
                         }
 
-                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        // Cancellable backoff: allow shutdown to interrupt retry sleep.
+                        tokio::select! {
+                            _ = shutdown_token.cancelled() => {
+                                tracing::info!("Shutdown signal received during ZMQ retry backoff");
+                                break;
+                            }
+                            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        }
                         continue;
                     }
                 }
@@ -717,7 +800,9 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
 
         // Fetch the new tip height and ingest any new blocks
         // (handles multi-block gaps if we somehow missed one)
-        let tip = provider.get_tip_height().await
+        let tip = provider
+            .get_tip_height()
+            .await
             .context("Failed to get chain tip after ZMQ notification")?;
 
         // Enforce max_height in real-time mode
@@ -733,11 +818,15 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
             );
 
             for height in current_height..=effective_tip {
-                let block_data = provider.get_block(height).await
+                let block_data = provider
+                    .get_block(height)
+                    .await
                     .with_context(|| format!("Failed to fetch block {} via RPC", height))?;
 
                 if let Some(block_tuple) = block_data {
-                    orchestrator.ingest_blocks_batch(&[block_tuple], 1).await
+                    orchestrator
+                        .ingest_blocks_batch(&[block_tuple], 1)
+                        .await
                         .with_context(|| format!("Failed to ingest block {}", height))?;
 
                     blocks_processed += 1;
@@ -767,7 +856,10 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
 
         // Exit if we've reached the user-specified max_height
         if max_height != u32::MAX && current_height > max_height {
-            println!("\n✅ Reached max_height {} in real-time mode. Exiting.", max_height);
+            println!(
+                "\n✅ Reached max_height {} in real-time mode. Exiting.",
+                max_height
+            );
             break;
         }
     }

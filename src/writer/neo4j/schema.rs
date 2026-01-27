@@ -2,8 +2,8 @@
 //!
 //! Creates constraints and indexes for optimal query performance.
 
-use neo4rs::{Graph, query};
-use crate::writer::{WriterError, Result};
+use crate::writer::{Result, WriterError};
+use neo4rs::{query, Graph};
 
 /// Expected number of unique constraints after schema initialization
 const EXPECTED_CONSTRAINTS: usize = 6;
@@ -32,33 +32,26 @@ async fn create_constraints(graph: &Graph) -> Result<()> {
         // Block constraints
         "CREATE CONSTRAINT block_height_unique IF NOT EXISTS
          FOR (b:Block) REQUIRE b.height IS UNIQUE",
-
         "CREATE CONSTRAINT block_hash_unique IF NOT EXISTS
          FOR (b:Block) REQUIRE b.hash IS UNIQUE",
-
         // Transaction constraints
         "CREATE CONSTRAINT transaction_unique IF NOT EXISTS
          FOR (t:Transaction) REQUIRE t.txid IS UNIQUE",
-
         // Output constraints
         "CREATE CONSTRAINT output_unique IF NOT EXISTS
          FOR (o:Output) REQUIRE o.outputId IS UNIQUE",
-
         // Input constraints
         "CREATE CONSTRAINT input_unique IF NOT EXISTS
          FOR (i:Input) REQUIRE i.inputId IS UNIQUE",
-
         // Address constraints
         "CREATE CONSTRAINT address_unique IF NOT EXISTS
          FOR (a:Address) REQUIRE a.address IS UNIQUE",
     ];
 
     for constraint_query in constraints {
-        graph.run(query(constraint_query))
-            .await
-            .map_err(|e| WriterError::DatabaseError(
-                format!("Failed to create constraint: {}", e)
-            ))?;
+        graph.run(query(constraint_query)).await.map_err(|e| {
+            WriterError::DatabaseError(format!("Failed to create constraint: {}", e))
+        })?;
     }
 
     Ok(())
@@ -70,34 +63,27 @@ async fn create_indexes(graph: &Graph) -> Result<()> {
         // Transaction indexes
         "CREATE INDEX transaction_timestamp IF NOT EXISTS
          FOR (t:Transaction) ON (t.timestamp)",
-
         "CREATE INDEX transaction_block IF NOT EXISTS
          FOR (t:Transaction) ON (t.blockHeight)",
-
         "CREATE INDEX transaction_coinbase IF NOT EXISTS
          FOR (t:Transaction) ON (t.isCoinbase)",
-
         // Output indexes
         "CREATE INDEX output_spent IF NOT EXISTS
          FOR (o:Output) ON (o.isSpent)",
-
         "CREATE INDEX output_amount IF NOT EXISTS
          FOR (o:Output) ON (o.amount)",
-
         "CREATE INDEX output_script_type IF NOT EXISTS
          FOR (o:Output) ON (o.scriptType)",
-
         // Block indexes
         "CREATE INDEX block_timestamp IF NOT EXISTS
          FOR (b:Block) ON (b.timestamp)",
     ];
 
     for index_query in indexes {
-        graph.run(query(index_query))
+        graph
+            .run(query(index_query))
             .await
-            .map_err(|e| WriterError::DatabaseError(
-                format!("Failed to create index: {}", e)
-            ))?;
+            .map_err(|e| WriterError::DatabaseError(format!("Failed to create index: {}", e)))?;
     }
 
     Ok(())
@@ -108,9 +94,7 @@ async fn create_indexes(graph: &Graph) -> Result<()> {
 /// This is informational — logs a warning if fewer constraints than expected
 /// are found, but does not fail. Useful for catching silent schema issues.
 async fn verify_schema(graph: &Graph) -> Result<()> {
-    let result = graph
-        .execute(query("SHOW CONSTRAINTS"))
-        .await;
+    let result = graph.execute(query("SHOW CONSTRAINTS")).await;
 
     match result {
         Ok(mut rows) => {
@@ -126,10 +110,7 @@ async fn verify_schema(graph: &Graph) -> Result<()> {
                     "Schema verification: fewer constraints than expected"
                 );
             } else {
-                tracing::info!(
-                    constraints = constraint_count,
-                    "Schema verification passed"
-                );
+                tracing::info!(constraints = constraint_count, "Schema verification passed");
             }
         }
         Err(e) => {

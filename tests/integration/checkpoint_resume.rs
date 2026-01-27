@@ -8,7 +8,7 @@
 //! - Status transitions work correctly
 
 use bitcoin::Network;
-use bitcoin_chain_graph::domain::{IngestionOrchestrator, CheckpointData};
+use bitcoin_chain_graph::domain::{CheckpointData, IngestionOrchestrator};
 use bitcoin_chain_graph::parser::SingleBlockLoader;
 use bitcoin_chain_graph::writer::MockWriter;
 
@@ -19,21 +19,30 @@ async fn test_resume_from_genesis() {
     let orchestrator = IngestionOrchestrator::new(writer, Network::Bitcoin, 100_000);
 
     // Initialize schema and checkpoint
-    orchestrator.init_schema().await.expect("Failed to init schema");
+    orchestrator
+        .init_schema()
+        .await
+        .expect("Failed to init schema");
 
     // Get initial checkpoint
     let checkpoint = orchestrator.get_checkpoint().await.unwrap();
     assert!(checkpoint.is_some(), "Checkpoint should exist after init");
 
     let cp = checkpoint.unwrap();
-    assert_eq!(cp.last_processed_height, 0, "Initial checkpoint should be at height 0");
+    assert_eq!(
+        cp.last_processed_height, 0,
+        "Initial checkpoint should be at height 0"
+    );
     assert_eq!(cp.status, "in_progress");
     assert_eq!(cp.last_processed_file, "blk00000.dat");
 
     // Get resume height - height 0 means block 0 was processed, so resume from block 1
     // (MockWriter initializes at 0 for simplicity; Neo4j uses -1 then converts to 0 after first block)
     let resume_height = orchestrator.get_resume_height().await.unwrap();
-    assert_eq!(resume_height, 1, "Should resume from block 1 when checkpoint is at height 0");
+    assert_eq!(
+        resume_height, 1,
+        "Should resume from block 1 when checkpoint is at height 0"
+    );
 }
 
 /// Test: Resume from mid-ingestion (height 500)
@@ -48,7 +57,8 @@ async fn test_resume_from_mid_ingestion() {
     // Simulate checkpoint at block 500
     let checkpoint = CheckpointData {
         last_processed_height: 500,
-        last_processed_hash: "0000000000000000000000000000000000000000000000000000000000000500".to_string(),
+        last_processed_hash: "0000000000000000000000000000000000000000000000000000000000000500"
+            .to_string(),
         last_processed_file: "blk00000.dat".to_string(),
         last_processed_file_offset: Some(50000),
         timestamp: chrono::Utc::now().timestamp(),
@@ -59,12 +69,18 @@ async fn test_resume_from_mid_ingestion() {
 
     // Get resume height
     let resume_height = orchestrator.get_resume_height().await.unwrap();
-    assert_eq!(resume_height, 501, "Should resume from block 501 (last + 1)");
+    assert_eq!(
+        resume_height, 501,
+        "Should resume from block 501 (last + 1)"
+    );
 
     // Get checkpoint again
     let retrieved = orchestrator.get_checkpoint().await.unwrap().unwrap();
     assert_eq!(retrieved.last_processed_height, 500);
-    assert_eq!(retrieved.last_processed_hash, "0000000000000000000000000000000000000000000000000000000000000500");
+    assert_eq!(
+        retrieved.last_processed_hash,
+        "0000000000000000000000000000000000000000000000000000000000000500"
+    );
 }
 
 /// Test: File transition tracking (blk00000.dat -> blk00001.dat)
@@ -127,7 +143,10 @@ async fn test_status_transitions() {
     assert_eq!(checkpoint.status, "error");
 
     // Resume from error (back to in_progress)
-    orchestrator.set_checkpoint_status("in_progress").await.unwrap();
+    orchestrator
+        .set_checkpoint_status("in_progress")
+        .await
+        .unwrap();
     let checkpoint = orchestrator.get_checkpoint().await.unwrap().unwrap();
     assert_eq!(checkpoint.status, "in_progress");
 
@@ -175,13 +194,17 @@ async fn test_batch_ingestion_checkpoints() {
     orchestrator.init_schema().await.unwrap();
 
     // Ingest in batches of 25
-    orchestrator.ingest_blocks_batch(&blocks, 25)
+    orchestrator
+        .ingest_blocks_batch(&blocks, 25)
         .await
         .expect("Batch ingestion failed");
 
     // Check final checkpoint
     let checkpoint = orchestrator.get_checkpoint().await.unwrap().unwrap();
-    assert_eq!(checkpoint.last_processed_height, blocks.last().unwrap().0 as i32);
+    assert_eq!(
+        checkpoint.last_processed_height,
+        blocks.last().unwrap().0 as i32
+    );
     assert_eq!(checkpoint.last_processed_file, "blk00000.dat");
     assert_eq!(checkpoint.status, "in_progress");
 
@@ -272,7 +295,10 @@ async fn test_initial_checkpoint_state() {
 
     // Before init, no checkpoint
     let checkpoint = orchestrator.get_checkpoint().await.unwrap();
-    assert!(checkpoint.is_none(), "Should have no checkpoint before init");
+    assert!(
+        checkpoint.is_none(),
+        "Should have no checkpoint before init"
+    );
 
     // After init, checkpoint at height 0 (block 0 processed in MockWriter)
     orchestrator.init_schema().await.unwrap();
@@ -307,5 +333,8 @@ async fn test_checkpoint_timestamp_updates() {
     let timestamp2 = checkpoint2.timestamp;
 
     // Timestamp should be updated
-    assert!(timestamp2 >= timestamp1, "Timestamp should increase on update");
+    assert!(
+        timestamp2 >= timestamp1,
+        "Timestamp should increase on update"
+    );
 }

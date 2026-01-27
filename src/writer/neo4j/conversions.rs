@@ -6,8 +6,10 @@
 //! M7 updates: Added conversions for PerformsData and BenefitsToData, and updated
 //! transaction_to_bolt_map to include amount fields calculated in Rust.
 
-use crate::domain::{BlockData, TransactionData, OutputData, InputData, PerformsData, BenefitsToData};
-use neo4rs::{BoltType, BoltMap};
+use crate::domain::{
+    BenefitsToData, BlockData, InputData, OutputData, PerformsData, TransactionData,
+};
+use neo4rs::{BoltMap, BoltType};
 
 #[cfg(test)]
 use neo4rs::BoltString;
@@ -32,7 +34,8 @@ pub fn block_to_bolt_map(block: &BlockData) -> BoltMap {
 
 /// Convert slice of BlockData to Vec<BoltType>
 pub fn blocks_to_bolt_list(blocks: &[BlockData]) -> Vec<BoltType> {
-    blocks.iter()
+    blocks
+        .iter()
         .map(|b| BoltType::Map(block_to_bolt_map(b)))
         .collect()
 }
@@ -76,7 +79,8 @@ pub fn transaction_to_bolt_map(tx: &TransactionData) -> BoltMap {
 
 /// Convert slice of TransactionData to Vec<BoltType>
 pub fn transactions_to_bolt_list(transactions: &[TransactionData]) -> Vec<BoltType> {
-    transactions.iter()
+    transactions
+        .iter()
         .map(|tx| BoltType::Map(transaction_to_bolt_map(tx)))
         .collect()
 }
@@ -101,7 +105,8 @@ pub fn output_to_bolt_map(output: &OutputData) -> BoltMap {
 
 /// Convert slice of OutputData to Vec<BoltType>
 pub fn outputs_to_bolt_list(outputs: &[OutputData]) -> Vec<BoltType> {
-    outputs.iter()
+    outputs
+        .iter()
         .map(|o| BoltType::Map(output_to_bolt_map(o)))
         .collect()
 }
@@ -111,7 +116,8 @@ pub fn outputs_to_bolt_list(outputs: &[OutputData]) -> Vec<BoltType> {
 /// Avoids cloning OutputData when we already have references
 /// (e.g., from filter_outputs_with_address).
 pub fn output_refs_to_bolt_list(outputs: &[&OutputData]) -> Vec<BoltType> {
-    outputs.iter()
+    outputs
+        .iter()
         .map(|o| BoltType::Map(output_to_bolt_map(o)))
         .collect()
 }
@@ -131,12 +137,17 @@ pub fn input_to_bolt_map(input: &InputData) -> BoltMap {
     map.put("inputIndex".into(), (input.input_index as i64).into());
     map.put("txid".into(), input.txid.as_str().into());
     map.put("previousTxid".into(), input.previous_txid.as_str().into());
-    map.put("previousOutputIndex".into(), (input.previous_output_index as i64).into());
+    map.put(
+        "previousOutputIndex".into(),
+        (input.previous_output_index as i64).into(),
+    );
     map.put("scriptSig".into(), input.script_sig.as_str().into());
     map.put("sequence".into(), (input.sequence as i64).into());
 
     // Convert witness Vec<String> to Vec<BoltType> for list
-    let witness_list: Vec<BoltType> = input.witness.iter()
+    let witness_list: Vec<BoltType> = input
+        .witness
+        .iter()
         .map(|w| BoltType::String(w.as_str().into()))
         .collect();
     map.put("witness".into(), BoltType::List(witness_list.into()));
@@ -147,7 +158,8 @@ pub fn input_to_bolt_map(input: &InputData) -> BoltMap {
 
 /// Convert slice of InputData to Vec<BoltType>
 pub fn inputs_to_bolt_list(inputs: &[InputData]) -> Vec<BoltType> {
-    inputs.iter()
+    inputs
+        .iter()
         .map(|input| BoltType::Map(input_to_bolt_map(input)))
         .collect()
 }
@@ -168,7 +180,8 @@ pub fn performs_to_bolt_map(p: &PerformsData) -> BoltMap {
 
 /// Convert slice of PerformsData to Vec<BoltType>
 pub fn performs_to_bolt_list(performs: &[PerformsData]) -> Vec<BoltType> {
-    performs.iter()
+    performs
+        .iter()
         .map(|p| BoltType::Map(performs_to_bolt_map(p)))
         .collect()
 }
@@ -185,7 +198,8 @@ pub fn benefits_to_to_bolt_map(b: &BenefitsToData) -> BoltMap {
 
 /// Convert slice of BenefitsToData to Vec<BoltType>
 pub fn benefits_to_to_bolt_list(benefits_to: &[BenefitsToData]) -> Vec<BoltType> {
-    benefits_to.iter()
+    benefits_to
+        .iter()
         .map(|b| BoltType::Map(benefits_to_to_bolt_map(b)))
         .collect()
 }
@@ -199,8 +213,10 @@ mod tests {
         let block = BlockData {
             height: 0,
             hash: "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string(),
-            previous_hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            merkle_root: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b".to_string(),
+            previous_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+            merkle_root: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+                .to_string(),
             timestamp: 1231006505,
             bits: "1d00ffff".to_string(),
             difficulty: 1.0,

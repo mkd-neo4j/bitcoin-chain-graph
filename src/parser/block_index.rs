@@ -17,10 +17,10 @@
 //! - file_offset (byte position in file)
 //! - undo_offset (for reorg handling)
 
-use rusty_leveldb::{DB, Options, LdbIterator};
+use rusty_leveldb::{LdbIterator, Options, DB};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use tracing::{info, debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 /// Errors that can occur when reading the block index
 #[derive(Error, Debug)]
@@ -71,7 +71,7 @@ pub struct BlockIndexEntry {
 pub struct BlockIndexReader {
     db: DB,
     #[allow(dead_code)]
-    blocks_dir: PathBuf,  // Kept for future use (e.g., reading .blk files directly)
+    blocks_dir: PathBuf, // Kept for future use (e.g., reading .blk files directly)
 }
 
 impl BlockIndexReader {
@@ -99,8 +99,8 @@ impl BlockIndexReader {
             ..Options::default()
         };
 
-        let db = DB::open(&index_path, options)
-            .map_err(|e| IndexError::Database(format!("{:?}", e)))?;
+        let db =
+            DB::open(&index_path, options).map_err(|e| IndexError::Database(format!("{:?}", e)))?;
 
         Ok(Self {
             db,
@@ -131,7 +131,9 @@ impl BlockIndexReader {
 
         use rusty_leveldb::LdbIterator;
         let mut chain = Vec::new();
-        let mut iter = self.db.new_iter()
+        let mut iter = self
+            .db
+            .new_iter()
             .map_err(|e| IndexError::Database(format!("Iterator error: {:?}", e)))?;
 
         let mut scanned_count = 0;
@@ -161,7 +163,9 @@ impl BlockIndexReader {
         }
 
         if chain.is_empty() {
-            return Err(IndexError::CorruptIndex("No blocks found in index".to_string()));
+            return Err(IndexError::CorruptIndex(
+                "No blocks found in index".to_string(),
+            ));
         }
 
         info!("Found {} blocks", chain.len());
@@ -211,11 +215,16 @@ impl BlockIndexReader {
     /// ```
     #[instrument(skip(self), level = "info")]
     pub fn get_main_chain_up_to(&mut self, max_height: u32) -> Result<Vec<BlockIndexEntry>> {
-        info!("Loading block index up to height {} (faster startup)...", max_height);
+        info!(
+            "Loading block index up to height {} (faster startup)...",
+            max_height
+        );
 
         use rusty_leveldb::LdbIterator;
         let mut chain = Vec::new();
-        let mut iter = self.db.new_iter()
+        let mut iter = self
+            .db
+            .new_iter()
             .map_err(|e| IndexError::Database(format!("Iterator error: {:?}", e)))?;
 
         let mut scanned_count = 0;
@@ -246,8 +255,10 @@ impl BlockIndexReader {
 
                     // Progress update for large scans
                     if scanned_count % progress_interval == 0 {
-                        info!("Scanned {} blocks, kept {} (up to height {})...",
-                                 scanned_count, kept_count, max_height);
+                        info!(
+                            "Scanned {} blocks, kept {} (up to height {})...",
+                            scanned_count, kept_count, max_height
+                        );
                     }
 
                     // Early exit optimization: if we've seen blocks beyond max_height
@@ -262,10 +273,16 @@ impl BlockIndexReader {
         }
 
         if chain.is_empty() {
-            return Err(IndexError::CorruptIndex("No blocks found in index".to_string()));
+            return Err(IndexError::CorruptIndex(
+                "No blocks found in index".to_string(),
+            ));
         }
 
-        info!("Loaded {} blocks (heights 0 to {})", chain.len(), max_height);
+        info!(
+            "Loaded {} blocks (heights 0 to {})",
+            chain.len(),
+            max_height
+        );
 
         // Sort by height to get genesis→max_height order
         chain.sort_by_key(|e| e.height);
@@ -326,7 +343,9 @@ impl BlockIndexReader {
         let mut batch = HashMap::new();
         let target_count = (end_height.saturating_sub(start_height) + 1) as usize;
 
-        let mut iter = self.db.new_iter()
+        let mut iter = self
+            .db
+            .new_iter()
             .map_err(|e| IndexError::Database(format!("Iterator error: {:?}", e)))?;
 
         let mut key = Vec::new();
@@ -357,7 +376,6 @@ impl BlockIndexReader {
         Ok(batch)
     }
 
-
     /// Get best block hash (chain tip) from 'R' key or by scanning for highest height
     ///
     /// NOTE: Currently unused - kept for future optimization where we might
@@ -377,7 +395,9 @@ impl BlockIndexReader {
         warn!("No 'R' key found, scanning for highest block...");
 
         use rusty_leveldb::LdbIterator;
-        let mut iter = self.db.new_iter()
+        let mut iter = self
+            .db
+            .new_iter()
             .map_err(|e| IndexError::Database(format!("Iterator error: {:?}", e)))?;
 
         let mut max_height: Option<(u32, String)> = None;
@@ -412,7 +432,9 @@ impl BlockIndexReader {
                 info!("Found highest block at height {}", height);
                 Ok(hash)
             }
-            None => Err(IndexError::CorruptIndex("No blocks found in index".to_string()))
+            None => Err(IndexError::CorruptIndex(
+                "No blocks found in index".to_string(),
+            )),
         }
     }
 
@@ -482,16 +504,18 @@ impl BlockIndexReader {
         // Read fields
         let _version = read_varint(data, &mut cursor)?;
         let height = read_varint(data, &mut cursor)? as u32;
-        let status = read_varint(data, &mut cursor)?;  // Keep as u64 for bit operations
+        let status = read_varint(data, &mut cursor)?; // Keep as u64 for bit operations
         let tx_count = read_varint(data, &mut cursor)? as u32;
 
         // File location fields (only present if BLOCK_HAVE_DATA flag set)
-        const BLOCK_HAVE_DATA: u64 = 8;   // Status flag indicating block data is stored
+        const BLOCK_HAVE_DATA: u64 = 8; // Status flag indicating block data is stored
         const BLOCK_VALID_CHAIN: u64 = 4; // Block is on the valid main chain
 
         // Check if block is on valid chain AND has data
         if (status & (BLOCK_VALID_CHAIN | BLOCK_HAVE_DATA)) == 0 {
-            return Err(IndexError::ParseError("Block not on main chain or no data".to_string()));
+            return Err(IndexError::ParseError(
+                "Block not on main chain or no data".to_string(),
+            ));
         }
 
         // Read file position (blk_index and data_offset)
@@ -536,7 +560,9 @@ fn decode_varint(data: &[u8]) -> Result<(u64, usize)> {
 
     loop {
         if bytes_read >= data.len() {
-            return Err(IndexError::ParseError("Unexpected end of varint data".to_string()));
+            return Err(IndexError::ParseError(
+                "Unexpected end of varint data".to_string(),
+            ));
         }
 
         let ch_data = data[bytes_read];

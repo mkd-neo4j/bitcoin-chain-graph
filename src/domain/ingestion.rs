@@ -32,11 +32,14 @@
 //!
 //! See [INGESTION_ARCHITECTURE.md](../../docs/INGESTION_ARCHITECTURE.md) for detailed design.
 
-use bitcoin::{Block, Network};
-use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData, UtxoCache, UtxoKey, CachedOutput};
+use crate::domain::{
+    BenefitsToData, BlockData, CachedOutput, CheckpointData, InputData, OutputData, PerformsData,
+    TransactionData, UtxoCache, UtxoKey,
+};
 use crate::writer::{GraphWriter, Result, WriterError};
-use std::sync::Arc;
+use bitcoin::{Block, Network};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Orchestrates the 6-phase ingestion process with UTXO cache
 ///
@@ -344,11 +347,13 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
 
             // Pre-count totals for capacity pre-allocation
             let total_txs: usize = chunk.iter().map(|(_, b, _)| b.txdata.len()).sum();
-            let total_outputs: usize = chunk.iter()
+            let total_outputs: usize = chunk
+                .iter()
                 .flat_map(|(_, b, _)| b.txdata.iter())
                 .map(|tx| tx.output.len())
                 .sum();
-            let total_inputs: usize = chunk.iter()
+            let total_inputs: usize = chunk
+                .iter()
                 .flat_map(|(_, b, _)| b.txdata.iter())
                 .map(|tx| tx.input.len())
                 .sum();
@@ -432,7 +437,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 let timestamp = block.header.time as i64;
 
                 for tx in &block.txdata {
-                    let mut tx_data = TransactionData::from_transaction(tx, *height, &block_hash, timestamp);
+                    let mut tx_data =
+                        TransactionData::from_transaction(tx, *height, &block_hash, timestamp);
 
                     // Calculate amounts (same logic as single-block ingestion)
                     let total_output: u64 = tx.output.iter().map(|out| out.value.to_sat()).sum();
@@ -440,7 +446,9 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                         0
                     } else {
                         // Batch lookup with Neo4j fallback for all cache misses
-                        let keys: Vec<UtxoKey> = tx.input.iter()
+                        let keys: Vec<UtxoKey> = tx
+                            .input
+                            .iter()
                             .map(|i| UtxoKey::from_outpoint(&i.previous_output))
                             .collect();
                         let found = self.utxo_cache.get_many_with_fallback(&keys).await?;
@@ -452,7 +460,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                             sum += output.amount;
                             if let Some(ref address) = output.address {
                                 let addr_str: &str = address;
-                                let entry = performs_map.entry(addr_str.to_string()).or_insert((0, 0));
+                                let entry =
+                                    performs_map.entry(addr_str.to_string()).or_insert((0, 0));
                                 entry.0 += 1;
                                 entry.1 += output.amount;
                             }
@@ -482,7 +491,9 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
 
             // Write transactions in one batch
             let write_start = std::time::Instant::now();
-            self.writer.write_transactions(&transaction_data_batch).await?;
+            self.writer
+                .write_transactions(&transaction_data_batch)
+                .await?;
             tracing::debug!(
                 phase = "3_transactions",
                 count = transaction_data_batch.len(),
@@ -498,7 +509,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 for tx in &block.txdata {
                     let txid = tx.txid().to_string();
                     for (input_index, input) in tx.input.iter().enumerate() {
-                        let input_data = InputData::from_input(input, &txid, input_index as u32, *height);
+                        let input_data =
+                            InputData::from_input(input, &txid, input_index as u32, *height);
                         input_data_batch.push(input_data);
                     }
                 }
@@ -521,8 +533,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             // Partition data by address hash to enable parallel writes without deadlocks
             const NUM_BUCKETS: usize = 4;
 
-            let performs_buckets = Self::partition_performs_by_address(&all_performs_data, NUM_BUCKETS);
-            let benefits_buckets = Self::partition_benefits_by_address(&all_benefits_to_data, NUM_BUCKETS);
+            let performs_buckets =
+                Self::partition_performs_by_address(&all_performs_data, NUM_BUCKETS);
+            let benefits_buckets =
+                Self::partition_benefits_by_address(&all_benefits_to_data, NUM_BUCKETS);
 
             // Spawn parallel tasks (one per bucket)
             let mut tasks = Vec::new();
@@ -549,8 +563,9 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
 
             // Wait for all buckets to complete
             for (idx, task) in tasks.into_iter().enumerate() {
-                task.await
-                    .map_err(|e| WriterError::QueryFailed(format!("Bucket {} task panicked: {}", idx, e)))??;
+                task.await.map_err(|e| {
+                    WriterError::QueryFailed(format!("Bucket {} task panicked: {}", idx, e))
+                })??;
             }
 
             tracing::debug!(
@@ -564,14 +579,17 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             // Phase 6: Remove spent outputs from cache (deferred from Phase 4)
             // Must happen AFTER Phase 3 (which does UTXO lookups for amounts and PERFORMS)
             // Use batch remove for efficiency
-            let spent_keys: Vec<UtxoKey> = chunk.iter()
+            let spent_keys: Vec<UtxoKey> = chunk
+                .iter()
                 .flat_map(|(_, block, _)| {
-                    block.txdata.iter()
+                    block
+                        .txdata
+                        .iter()
                         .filter(|tx| !tx.is_coinbase())
                         .flat_map(|tx| {
-                            tx.input.iter().map(|input| {
-                                UtxoKey::from_outpoint(&input.previous_output)
-                            })
+                            tx.input
+                                .iter()
+                                .map(|input| UtxoKey::from_outpoint(&input.previous_output))
                         })
                 })
                 .collect();
@@ -630,12 +648,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             let txid = tx.txid().to_string();
 
             for (output_index, output) in tx.output.iter().enumerate() {
-                let output_data = OutputData::from_output(
-                    output,
-                    &txid,
-                    output_index as u32,
-                    self.network,
-                );
+                let output_data =
+                    OutputData::from_output(output, &txid, output_index as u32, self.network);
                 all_outputs.push(output_data);
             }
         }
@@ -687,15 +701,15 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             let mut tx_data = TransactionData::from_transaction(tx, height, &block_hash, timestamp);
 
             // Calculate total_output (easy - sum current outputs)
-            let total_output: u64 = tx.output.iter()
-                .map(|out| out.value.to_sat())
-                .sum();
+            let total_output: u64 = tx.output.iter().map(|out| out.value.to_sat()).sum();
 
             // Calculate total_input (batch lookup with Neo4j fallback for misses)
             let total_input: u64 = if tx.is_coinbase() {
                 0 // Coinbase has no inputs
             } else {
-                let keys: Vec<UtxoKey> = tx.input.iter()
+                let keys: Vec<UtxoKey> = tx
+                    .input
+                    .iter()
                     .map(|i| UtxoKey::from_outpoint(&i.previous_output))
                     .collect();
                 let found = self.utxo_cache.get_many_with_fallback(&keys).await?;
@@ -739,12 +753,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             let txid = tx.txid().to_string();
 
             for (input_index, input) in tx.input.iter().enumerate() {
-                let input_data = InputData::from_input(
-                    input,
-                    &txid,
-                    input_index as u32,
-                    height,
-                );
+                let input_data = InputData::from_input(input, &txid, input_index as u32, height);
                 all_inputs.push(input_data);
             }
         }
@@ -761,12 +770,14 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// Uses batch remove for efficiency — collects all spent keys then removes
     /// them in a single pass across shards.
     fn remove_spent_outputs_from_cache(&self, block: &Block) {
-        let spent_keys: Vec<UtxoKey> = block.txdata.iter()
+        let spent_keys: Vec<UtxoKey> = block
+            .txdata
+            .iter()
             .filter(|tx| !tx.is_coinbase())
             .flat_map(|tx| {
-                tx.input.iter().map(|input| {
-                    UtxoKey::from_outpoint(&input.previous_output)
-                })
+                tx.input
+                    .iter()
+                    .map(|input| UtxoKey::from_outpoint(&input.previous_output))
             })
             .collect();
         self.utxo_cache.remove_many(&spent_keys);
@@ -779,7 +790,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     ///
     /// # Returns
     /// Tuple of (PERFORMS data, BENEFITS_TO data) for this block
-    async fn extract_simplified_layer_data(&self, block: &Block) -> Result<(Vec<PerformsData>, Vec<BenefitsToData>)> {
+    async fn extract_simplified_layer_data(
+        &self,
+        block: &Block,
+    ) -> Result<(Vec<PerformsData>, Vec<BenefitsToData>)> {
         let tx_count = block.txdata.len();
         let mut performs_data: Vec<PerformsData> = Vec::with_capacity(tx_count);
         let mut benefits_to_data: Vec<BenefitsToData> = Vec::with_capacity(tx_count);
@@ -790,7 +804,9 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             // Build PERFORMS data (Address → Transaction via inputs)
             if !tx.is_coinbase() {
                 // Batch lookup with Neo4j fallback for all cache misses
-                let keys: Vec<UtxoKey> = tx.input.iter()
+                let keys: Vec<UtxoKey> = tx
+                    .input
+                    .iter()
                     .map(|i| UtxoKey::from_outpoint(&i.previous_output))
                     .collect();
                 let found = self.utxo_cache.get_many_with_fallback(&keys).await?;
@@ -826,7 +842,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 let output_data = OutputData::from_output(
                     output,
                     &txid,
-                    tx.output.iter().position(|o| std::ptr::eq(o, output)).unwrap() as u32,
+                    tx.output
+                        .iter()
+                        .position(|o| std::ptr::eq(o, output))
+                        .unwrap() as u32,
                     self.network,
                 );
 
@@ -895,10 +914,11 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     ///
     /// Distributes data into N buckets based on from_address hash to enable
     /// parallel writes without deadlocks (different buckets = different addresses).
-    fn partition_performs_by_address(performs: &[PerformsData], num_buckets: usize) -> Vec<Vec<PerformsData>> {
-        let mut buckets: Vec<Vec<PerformsData>> = (0..num_buckets)
-            .map(|_| Vec::new())
-            .collect();
+    fn partition_performs_by_address(
+        performs: &[PerformsData],
+        num_buckets: usize,
+    ) -> Vec<Vec<PerformsData>> {
+        let mut buckets: Vec<Vec<PerformsData>> = (0..num_buckets).map(|_| Vec::new()).collect();
 
         for item in performs {
             // Hash address and map to bucket
@@ -914,10 +934,11 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     ///
     /// Distributes data into N buckets based on to_address hash to enable
     /// parallel writes without deadlocks (different buckets = different addresses).
-    fn partition_benefits_by_address(benefits: &[BenefitsToData], num_buckets: usize) -> Vec<Vec<BenefitsToData>> {
-        let mut buckets: Vec<Vec<BenefitsToData>> = (0..num_buckets)
-            .map(|_| Vec::new())
-            .collect();
+    fn partition_benefits_by_address(
+        benefits: &[BenefitsToData],
+        num_buckets: usize,
+    ) -> Vec<Vec<BenefitsToData>> {
+        let mut buckets: Vec<Vec<BenefitsToData>> = (0..num_buckets).map(|_| Vec::new()).collect();
 
         for item in benefits {
             // Hash address and map to bucket

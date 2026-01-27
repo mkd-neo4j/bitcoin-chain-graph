@@ -3,7 +3,7 @@
 //! Tests for converting bitcoin crate types to domain models
 
 use bitcoin::Network;
-use bitcoin_chain_graph::domain::{BlockData, TransactionData, OutputData, InputData};
+use bitcoin_chain_graph::domain::{BlockData, InputData, OutputData, TransactionData};
 use bitcoin_chain_graph::parser::BlockFileReader;
 
 #[test]

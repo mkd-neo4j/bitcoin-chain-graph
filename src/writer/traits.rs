@@ -9,9 +9,11 @@
 //! The trait supports the 6-phase ingestion process described in
 //! [INGESTION_ARCHITECTURE.md](../../docs/INGESTION_ARCHITECTURE.md)
 
-use async_trait::async_trait;
-use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData};
 use super::error::Result;
+use crate::domain::{
+    BenefitsToData, BlockData, CheckpointData, InputData, OutputData, PerformsData, TransactionData,
+};
+use async_trait::async_trait;
 
 /// Graph database writer interface
 ///

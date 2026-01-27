@@ -8,15 +8,15 @@ use bitcoin_chain_graph::writer::Neo4jWriter;
 async fn verify_batch_status() {
     println!("\n🔍 Checking batch ingestion status...\n");
 
-    let config = ConfigLoader::from_file("config/default.toml")
-        .expect("Failed to load config");
+    let config = ConfigLoader::from_file("config/default.toml").expect("Failed to load config");
 
     let _writer = Neo4jWriter::new(config.neo4j.clone())
         .await
         .expect("Failed to connect to Neo4j");
 
     // Check checkpoint
-    let _checkpoint_query = "MATCH (c:IngestionCheckpoint) RETURN c.lastProcessedHeight as height, c.status as status";
+    let _checkpoint_query =
+        "MATCH (c:IngestionCheckpoint) RETURN c.lastProcessedHeight as height, c.status as status";
 
     // We need to access the graph directly - this is a simplified check
     println!("To verify batch ingestion manually, run these queries in Neo4j Browser:");

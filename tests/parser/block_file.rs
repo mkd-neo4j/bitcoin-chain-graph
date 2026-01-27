@@ -3,8 +3,8 @@
 //! Tests for reading and parsing Bitcoin Core .blk files
 
 use bitcoin::Network;
-use bitcoin_chain_graph::parser::BlockFileReader;
 use bitcoin_chain_graph::parser::block_file::ParseError;
+use bitcoin_chain_graph::parser::BlockFileReader;
 
 #[test]
 fn test_parse_genesis_block() {

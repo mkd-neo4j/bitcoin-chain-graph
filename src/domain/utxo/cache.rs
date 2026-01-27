@@ -11,13 +11,13 @@
 //! - **Statistics**: Lock-free atomic counters
 //! - **Batch ops**: `get_many`/`remove_many` acquire each shard lock once
 
+use crate::writer::{GraphWriter, Result};
 use bitcoin::hashes::Hash;
 use lru::LruCache;
-use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::collections::HashMap;
-use crate::writer::{GraphWriter, Result};
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // UtxoKey: compact 36-byte binary cache key
@@ -128,7 +128,6 @@ impl std::str::FromStr for ScriptTypeTag {
 }
 
 impl ScriptTypeTag {
-
     /// Convert to the string representation used by Neo4j and `OutputData`.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -480,14 +479,15 @@ impl<W: GraphWriter> UtxoCache<W> {
     /// round-trips to 1 UNWIND query for all cache misses.
     ///
     /// Outputs not found in either cache or Neo4j are silently skipped.
-    pub async fn get_many_with_fallback(&self, keys: &[UtxoKey]) -> Result<HashMap<UtxoKey, CachedOutput>> {
+    pub async fn get_many_with_fallback(
+        &self,
+        keys: &[UtxoKey],
+    ) -> Result<HashMap<UtxoKey, CachedOutput>> {
         let (mut found, misses) = self.get_many(keys);
 
         if !misses.is_empty() {
             // Convert missed keys to output_id strings for Neo4j batch lookup
-            let output_ids: Vec<String> = misses.iter()
-                .map(|k| k.to_output_id_string())
-                .collect();
+            let output_ids: Vec<String> = misses.iter().map(|k| k.to_output_id_string()).collect();
 
             let fallback_outputs = self.writer.lookup_outputs_batch(&output_ids).await?;
 
@@ -553,9 +553,7 @@ impl<W: GraphWriter> UtxoCache<W> {
 
     /// Get total number of entries across all shards.
     pub fn len(&self) -> usize {
-        self.shards.iter()
-            .map(|s| s.lock().unwrap().len())
-            .sum()
+        self.shards.iter().map(|s| s.lock().unwrap().len()).sum()
     }
 
     /// Check if cache is empty.
@@ -565,7 +563,8 @@ impl<W: GraphWriter> UtxoCache<W> {
 
     /// Get total capacity across all shards.
     pub fn capacity(&self) -> usize {
-        self.shards.iter()
+        self.shards
+            .iter()
             .map(|s| s.lock().unwrap().cap().get())
             .sum()
     }
@@ -610,10 +609,10 @@ impl<W: GraphWriter> UtxoCache<W> {
 
     /// Get cache fill percentage (0.0 to 1.0).
     pub fn fill_percentage(&self) -> f64 {
-        let total_len: usize = self.shards.iter()
-            .map(|s| s.lock().unwrap().len())
-            .sum();
-        let total_cap: usize = self.shards.iter()
+        let total_len: usize = self.shards.iter().map(|s| s.lock().unwrap().len()).sum();
+        let total_cap: usize = self
+            .shards
+            .iter()
             .map(|s| s.lock().unwrap().cap().get())
             .sum();
         if total_cap == 0 {
@@ -736,11 +735,11 @@ mod tests {
         // Keys that hash to the same shard (same last byte, different vout)
         let key1 = test_key(0, 0);
         let key2 = test_key(0, 16); // same shard as key1 (0 ^ 0 = 0 ^ 16%16 = same)
-        // Actually let's use different last bytes that map to same shard
-        // shard = (txid[31] ^ vout) & 15
-        // key1: (0 ^ 0) & 15 = 0
-        // key2: (0 ^ 16) & 15 = 0  ← same shard!
-        // key3: (0 ^ 32) & 15 = 0  ← same shard!
+                                    // Actually let's use different last bytes that map to same shard
+                                    // shard = (txid[31] ^ vout) & 15
+                                    // key1: (0 ^ 0) & 15 = 0
+                                    // key2: (0 ^ 16) & 15 = 0  ← same shard!
+                                    // key3: (0 ^ 32) & 15 = 0  ← same shard!
         let key3 = test_key(0, 32);
 
         cache.insert(key1, test_output(100));
@@ -890,12 +889,15 @@ mod tests {
 
         // Pre-populate cache with 100 outputs
         for i in 0..100u8 {
-            cache.insert(test_key(i, 0), CachedOutput {
-                output_index: 0,
-                amount: (i as u64) * 1_000_000,
-                script_type: ScriptTypeTag::P2PKH,
-                address: Some(Arc::from(format!("addr_{}", i).as_str())),
-            });
+            cache.insert(
+                test_key(i, 0),
+                CachedOutput {
+                    output_index: 0,
+                    amount: (i as u64) * 1_000_000,
+                    script_type: ScriptTypeTag::P2PKH,
+                    address: Some(Arc::from(format!("addr_{}", i).as_str())),
+                },
+            );
         }
 
         // Spawn 10 concurrent tasks all reading from cache
@@ -1004,7 +1006,11 @@ mod tests {
         }
 
         let fill = cache.fill_percentage();
-        assert!(fill > 0.3 && fill < 0.7, "Fill should be ~50%, got {:.2}", fill);
+        assert!(
+            fill > 0.3 && fill < 0.7,
+            "Fill should be ~50%, got {:.2}",
+            fill
+        );
         assert!(cache.has_capacity());
     }
 
@@ -1107,13 +1113,23 @@ mod tests {
     #[tokio::test]
     async fn test_script_type_tag_roundtrip() {
         let cases = vec![
-            "P2PKH", "P2SH", "P2WPKH", "P2WSH", "P2TR", "P2PK", "NULL_DATA", "UNKNOWN",
+            "P2PKH",
+            "P2SH",
+            "P2WPKH",
+            "P2WSH",
+            "P2TR",
+            "P2PK",
+            "NULL_DATA",
+            "UNKNOWN",
         ];
         for s in cases {
             let tag: ScriptTypeTag = s.parse().unwrap();
             assert_eq!(tag.as_str(), s, "Round-trip failed for {}", s);
         }
         // Unknown input
-        assert_eq!("GARBAGE".parse::<ScriptTypeTag>().unwrap().as_str(), "UNKNOWN");
+        assert_eq!(
+            "GARBAGE".parse::<ScriptTypeTag>().unwrap().as_str(),
+            "UNKNOWN"
+        );
     }
 }

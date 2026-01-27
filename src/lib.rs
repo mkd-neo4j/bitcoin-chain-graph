@@ -107,6 +107,6 @@
 //! for development roadmap and progress tracking.
 
 pub mod config;
-pub mod parser;
 pub mod domain;
+pub mod parser;
 pub mod writer;

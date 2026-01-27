@@ -25,13 +25,22 @@ async fn test_utxo_cache_population() {
 
     // Read and ingest genesis block
     let mut reader = BlockFileReader::new("test_data/blk00000.dat", Network::Bitcoin).unwrap();
-    let genesis = reader.next_block().unwrap().expect("Genesis block should exist");
+    let genesis = reader
+        .next_block()
+        .unwrap()
+        .expect("Genesis block should exist");
 
-    orchestrator.ingest_block(&genesis, 0, "blk00000.dat", None).await.unwrap();
+    orchestrator
+        .ingest_block(&genesis, 0, "blk00000.dat", None)
+        .await
+        .unwrap();
 
     // Verify cache was populated with genesis output
     let cache_size = orchestrator.cache_size();
-    assert_eq!(cache_size, 1, "Cache should contain 1 output from genesis block");
+    assert_eq!(
+        cache_size, 1,
+        "Cache should contain 1 output from genesis block"
+    );
 
     println!("✅ Cache populated: {} outputs", cache_size);
 }
@@ -48,10 +57,16 @@ async fn test_phase2_amount_calculation_rust() {
     let mut reader = BlockFileReader::new("test_data/blk00000.dat", Network::Bitcoin).unwrap();
 
     let genesis = reader.next_block().unwrap().unwrap();
-    orchestrator.ingest_block(&genesis, 0, "blk00000.dat", None).await.unwrap();
+    orchestrator
+        .ingest_block(&genesis, 0, "blk00000.dat", None)
+        .await
+        .unwrap();
 
     let block1 = reader.next_block().unwrap().unwrap();
-    orchestrator.ingest_block(&block1, 1, "blk00000.dat", None).await.unwrap();
+    orchestrator
+        .ingest_block(&block1, 1, "blk00000.dat", None)
+        .await
+        .unwrap();
 
     // Get transactions from MockWriter
     let transactions = writer.get_transactions().await;
@@ -60,19 +75,28 @@ async fn test_phase2_amount_calculation_rust() {
     let genesis_tx = transactions.iter().find(|tx| tx.block_height == 0).unwrap();
     assert!(genesis_tx.is_coinbase, "Genesis tx should be coinbase");
     assert_eq!(genesis_tx.total_input, Some(0), "Coinbase has 0 input");
-    assert_eq!(genesis_tx.total_output, Some(5000000000), "Genesis output is 50 BTC");
+    assert_eq!(
+        genesis_tx.total_output,
+        Some(5000000000),
+        "Genesis output is 50 BTC"
+    );
     assert_eq!(genesis_tx.fee, Some(0), "Coinbase has 0 fee");
 
     // Verify block 1 coinbase transaction amounts
-    let block1_coinbase = transactions.iter()
+    let block1_coinbase = transactions
+        .iter()
         .find(|tx| tx.block_height == 1 && tx.is_coinbase)
         .unwrap();
     assert_eq!(block1_coinbase.total_input, Some(0), "Coinbase has 0 input");
     assert_eq!(block1_coinbase.fee, Some(0), "Coinbase has 0 fee");
-    assert!(block1_coinbase.total_output.is_some(), "Coinbase should have output amount");
+    assert!(
+        block1_coinbase.total_output.is_some(),
+        "Coinbase should have output amount"
+    );
 
     println!("✅ Phase 2 amount calculation working correctly");
-    println!("   Genesis: input={}, output={}, fee={}",
+    println!(
+        "   Genesis: input={}, output={}, fee={}",
         genesis_tx.total_input.unwrap(),
         genesis_tx.total_output.unwrap(),
         genesis_tx.fee.unwrap()
@@ -92,7 +116,10 @@ async fn test_utxo_cache_lookup_during_ingestion() {
 
     for height in 0..10 {
         let block = reader.next_block().unwrap().unwrap();
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     // Check cache statistics
@@ -105,7 +132,11 @@ async fn test_utxo_cache_lookup_during_ingestion() {
 
     // For first 10 blocks (mostly coinbase), we expect few cache hits
     // But verify cache is tracking properly
-    assert_eq!(stats.hits + stats.misses, stats.hits + stats.misses, "Stats should be consistent");
+    assert_eq!(
+        stats.hits + stats.misses,
+        stats.hits + stats.misses,
+        "Stats should be consistent"
+    );
 }
 
 /// Test that cache removal works during Phase 4 (spending outputs)
@@ -121,7 +152,10 @@ async fn test_utxo_cache_removal_when_spent() {
 
     for height in 0..50 {
         let block = reader.next_block().unwrap().unwrap();
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     let cache_size = orchestrator.cache_size();
@@ -151,7 +185,10 @@ async fn test_cache_hit_rate_sequential_blocks() {
     let num_blocks = 100;
     for height in 0..num_blocks {
         let block = reader.next_block().unwrap().unwrap();
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     let stats = orchestrator.cache_stats();
@@ -188,7 +225,10 @@ async fn test_phase6_simplified_layer_rust_aggregation() {
 
     for height in 0..50 {
         let block = reader.next_block().unwrap().unwrap();
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     // Get simplified layer data from MockWriter
@@ -202,25 +242,24 @@ async fn test_phase6_simplified_layer_rust_aggregation() {
     // Early blocks are mostly coinbase, so we should have:
     // - Few PERFORMS (coinbase has no inputs)
     // - Many BENEFITS_TO (all coinbase outputs go to addresses)
-    assert!(benefits_to_data.len() > 0, "Should have BENEFITS_TO relationships");
+    assert!(
+        benefits_to_data.len() > 0,
+        "Should have BENEFITS_TO relationships"
+    );
 
     // Verify BENEFITS_TO structure
     if let Some(benefit) = benefits_to_data.first() {
-        println!("   Sample BENEFITS_TO: tx {} -> address {}, amount={}, count={}",
-            benefit.from_txid,
-            benefit.to_address,
-            benefit.amount_received,
-            benefit.output_count
+        println!(
+            "   Sample BENEFITS_TO: tx {} -> address {}, amount={}, count={}",
+            benefit.from_txid, benefit.to_address, benefit.amount_received, benefit.output_count
         );
     }
 
     // Verify PERFORMS structure (if any exist)
     if let Some(perform) = performs_data.first() {
-        println!("   Sample PERFORMS: address {} -> tx {}, amount={}, count={}",
-            perform.from_address,
-            perform.to_txid,
-            perform.amount_spent,
-            perform.input_count
+        println!(
+            "   Sample PERFORMS: address {} -> tx {}, amount={}, count={}",
+            perform.from_address, perform.to_txid, perform.amount_spent, perform.input_count
         );
     }
 }
@@ -243,12 +282,18 @@ async fn test_m7_end_to_end_250_blocks() {
 
     for height in 0..num_blocks {
         let block = reader.next_block().unwrap().unwrap();
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
 
         if (height + 1) % 50 == 0 {
             let elapsed = start.elapsed();
             let blocks_per_sec = (height + 1) as f64 / elapsed.as_secs_f64();
-            println!("   Block {} ingested ({:.2} blocks/sec)", height, blocks_per_sec);
+            println!(
+                "   Block {} ingested ({:.2} blocks/sec)",
+                height, blocks_per_sec
+            );
         }
     }
 
@@ -277,12 +322,19 @@ async fn test_m7_end_to_end_250_blocks() {
     println!("   - BENEFITS_TO: {}", benefits_to.len());
 
     assert_eq!(blocks.len(), num_blocks as usize, "Should have all blocks");
-    assert!(transactions.len() >= num_blocks as usize, "Should have at least 1 tx per block");
+    assert!(
+        transactions.len() >= num_blocks as usize,
+        "Should have at least 1 tx per block"
+    );
 
     // Verify cache statistics
     let stats = orchestrator.cache_stats();
     println!("\n   Cache Statistics:");
-    println!("   - Cache size: {}/{}", orchestrator.cache_size(), cache_size);
+    println!(
+        "   - Cache size: {}/{}",
+        orchestrator.cache_size(),
+        cache_size
+    );
     println!("   - Hits: {}", stats.hits);
     println!("   - Misses: {}", stats.misses);
     println!("   - Hit rate: {:.2}%", stats.hit_rate_percent());
@@ -290,26 +342,46 @@ async fn test_m7_end_to_end_250_blocks() {
     println!("   - Removals: {}", stats.removals);
 
     // Verify all transactions have amounts calculated
-    let txs_with_amounts = transactions.iter()
+    let txs_with_amounts = transactions
+        .iter()
         .filter(|tx| tx.total_input.is_some() && tx.total_output.is_some() && tx.fee.is_some())
         .count();
 
     println!("\n   Amount Calculation:");
-    println!("   - Transactions with amounts: {}/{}", txs_with_amounts, transactions.len());
-    assert_eq!(txs_with_amounts, transactions.len(), "All transactions should have amounts");
+    println!(
+        "   - Transactions with amounts: {}/{}",
+        txs_with_amounts,
+        transactions.len()
+    );
+    assert_eq!(
+        txs_with_amounts,
+        transactions.len(),
+        "All transactions should have amounts"
+    );
 
     // Verify coinbase transactions have correct amounts
-    let coinbase_txs = transactions.iter()
+    let coinbase_txs = transactions
+        .iter()
         .filter(|tx| tx.is_coinbase)
         .collect::<Vec<_>>();
 
     for coinbase in &coinbase_txs {
-        assert_eq!(coinbase.total_input, Some(0), "Coinbase should have 0 input");
+        assert_eq!(
+            coinbase.total_input,
+            Some(0),
+            "Coinbase should have 0 input"
+        );
         assert_eq!(coinbase.fee, Some(0), "Coinbase should have 0 fee");
-        assert!(coinbase.total_output.unwrap() > 0, "Coinbase should have positive output");
+        assert!(
+            coinbase.total_output.unwrap() > 0,
+            "Coinbase should have positive output"
+        );
     }
 
-    println!("   - Coinbase transactions verified: {}", coinbase_txs.len());
+    println!(
+        "   - Coinbase transactions verified: {}",
+        coinbase_txs.len()
+    );
 
     println!("\n✅ All M7 features validated successfully!");
 }
@@ -319,7 +391,8 @@ async fn test_m7_end_to_end_250_blocks() {
 async fn test_cache_lru_eviction_under_load() {
     let writer = MockWriter::new();
     let small_cache_size = 1000; // Small cache to force evictions
-    let orchestrator = IngestionOrchestrator::new(writer.clone(), Network::Bitcoin, small_cache_size);
+    let orchestrator =
+        IngestionOrchestrator::new(writer.clone(), Network::Bitcoin, small_cache_size);
 
     orchestrator.init_schema().await.unwrap();
 
@@ -328,7 +401,10 @@ async fn test_cache_lru_eviction_under_load() {
 
     for height in 0..100 {
         let block = reader.next_block().unwrap().unwrap();
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     let cache_size = orchestrator.cache_size();
@@ -341,15 +417,19 @@ async fn test_cache_lru_eviction_under_load() {
     println!("   Removals (spent): {}", stats.removals);
 
     // Cache should not exceed capacity
-    assert!(cache_size <= small_cache_size,
+    assert!(
+        cache_size <= small_cache_size,
         "Cache size {} should not exceed capacity {}",
-        cache_size, small_cache_size
+        cache_size,
+        small_cache_size
     );
 
     // Verify LRU is working (inserts > capacity means some were evicted)
     if stats.inserts > small_cache_size as u64 {
-        println!("   LRU eviction working: {} inserts into {} capacity cache",
-            stats.inserts, small_cache_size);
+        println!(
+            "   LRU eviction working: {} inserts into {} capacity cache",
+            stats.inserts, small_cache_size
+        );
     }
 }
 
@@ -377,11 +457,18 @@ async fn test_checkpoint_with_cache() {
     // Ingest 10 blocks
     for height in initial_height..(initial_height + 10) {
         let block = reader.next_block().unwrap().unwrap();
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     // Verify checkpoint functionality
-    println!("   10 blocks ingested from height {} to {}", initial_height, initial_height + 9);
+    println!(
+        "   10 blocks ingested from height {} to {}",
+        initial_height,
+        initial_height + 9
+    );
     println!("   Cache size: {}", orchestrator.cache_size());
     println!("   Checkpoint API works with cache: ✓");
 
@@ -402,7 +489,10 @@ async fn test_transaction_amounts_balance() {
 
     for height in 0..50 {
         let block = reader.next_block().unwrap().unwrap();
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     let transactions = writer.get_transactions().await;
@@ -420,8 +510,10 @@ async fn test_transaction_amounts_balance() {
 
         if fee != expected_fee {
             balance_errors += 1;
-            println!("⚠️  Transaction {} fee mismatch: expected={}, actual={}",
-                tx.txid, expected_fee, fee);
+            println!(
+                "⚠️  Transaction {} fee mismatch: expected={}, actual={}",
+                tx.txid, expected_fee, fee
+            );
         } else {
             verified_count += 1;
         }
@@ -431,5 +523,8 @@ async fn test_transaction_amounts_balance() {
     println!("   Transactions verified: {}", verified_count);
     println!("   Balance errors: {}", balance_errors);
 
-    assert_eq!(balance_errors, 0, "All transactions should have balanced amounts");
+    assert_eq!(
+        balance_errors, 0,
+        "All transactions should have balanced amounts"
+    );
 }

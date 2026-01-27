@@ -22,7 +22,9 @@
 //!    ```
 
 use bitcoin_chain_graph::config::Neo4jConfig;
-use bitcoin_chain_graph::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData};
+use bitcoin_chain_graph::domain::{
+    BlockData, CheckpointData, InputData, OutputData, TransactionData,
+};
 use bitcoin_chain_graph::writer::{GraphWriter, Neo4jWriter};
 
 /// Helper to create test Neo4j configuration
@@ -117,32 +119,40 @@ async fn test_neo4j_connection() {
     let config = test_neo4j_config();
     let writer = Neo4jWriter::new(config).await;
 
-    assert!(writer.is_ok(), "Failed to connect to Neo4j: {:?}", writer.err());
+    assert!(
+        writer.is_ok(),
+        "Failed to connect to Neo4j: {:?}",
+        writer.err()
+    );
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_init_schema() {
     let config = test_neo4j_config();
-    let writer = Neo4jWriter::new(config).await.expect("Failed to create writer");
+    let writer = Neo4jWriter::new(config)
+        .await
+        .expect("Failed to create writer");
 
     let result = writer.init_schema().await;
-    assert!(result.is_ok(), "Failed to initialize schema: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to initialize schema: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_write_blocks() {
     let config = test_neo4j_config();
-    let writer = Neo4jWriter::new(config).await.expect("Failed to create writer");
+    let writer = Neo4jWriter::new(config)
+        .await
+        .expect("Failed to create writer");
 
     writer.init_schema().await.expect("Failed to init schema");
 
-    let blocks = vec![
-        test_block_data(0),
-        test_block_data(1),
-        test_block_data(2),
-    ];
+    let blocks = vec![test_block_data(0), test_block_data(1), test_block_data(2)];
 
     let result = writer.write_blocks(&blocks).await;
     assert!(result.is_ok(), "Failed to write blocks: {:?}", result.err());
@@ -152,64 +162,88 @@ async fn test_write_blocks() {
 #[ignore]
 async fn test_write_transactions() {
     let config = test_neo4j_config();
-    let writer = Neo4jWriter::new(config).await.expect("Failed to create writer");
+    let writer = Neo4jWriter::new(config)
+        .await
+        .expect("Failed to create writer");
 
     writer.init_schema().await.expect("Failed to init schema");
 
     // Create block first
     let blocks = vec![test_block_data(1)];
-    writer.write_blocks(&blocks).await.expect("Failed to write blocks");
+    writer
+        .write_blocks(&blocks)
+        .await
+        .expect("Failed to write blocks");
 
     // Create transactions
-    let transactions = vec![
-        test_transaction_data(1, 0),
-        test_transaction_data(1, 1),
-    ];
+    let transactions = vec![test_transaction_data(1, 0), test_transaction_data(1, 1)];
 
     let result = writer.write_transactions(&transactions).await;
-    assert!(result.is_ok(), "Failed to write transactions: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to write transactions: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_write_outputs() {
     let config = test_neo4j_config();
-    let writer = Neo4jWriter::new(config).await.expect("Failed to create writer");
+    let writer = Neo4jWriter::new(config)
+        .await
+        .expect("Failed to create writer");
 
     writer.init_schema().await.expect("Failed to init schema");
 
     // Create block and transaction first
     let blocks = vec![test_block_data(1)];
-    writer.write_blocks(&blocks).await.expect("Failed to write blocks");
+    writer
+        .write_blocks(&blocks)
+        .await
+        .expect("Failed to write blocks");
 
     let transactions = vec![test_transaction_data(1, 0)];
-    writer.write_transactions(&transactions).await.expect("Failed to write transactions");
+    writer
+        .write_transactions(&transactions)
+        .await
+        .expect("Failed to write transactions");
 
     // Create outputs
     let txid = "test_tx_1_0";
-    let outputs = vec![
-        test_output_data(txid, 0),
-        test_output_data(txid, 1),
-    ];
+    let outputs = vec![test_output_data(txid, 0), test_output_data(txid, 1)];
 
     let result = writer.write_outputs(&outputs).await;
-    assert!(result.is_ok(), "Failed to write outputs: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to write outputs: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_checkpoint_operations() {
     let config = test_neo4j_config();
-    let writer = Neo4jWriter::new(config).await.expect("Failed to create writer");
+    let writer = Neo4jWriter::new(config)
+        .await
+        .expect("Failed to create writer");
 
     writer.init_schema().await.expect("Failed to init schema");
 
     // Create checkpoint
     let result = writer.create_checkpoint().await;
-    assert!(result.is_ok(), "Failed to create checkpoint: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to create checkpoint: {:?}",
+        result.err()
+    );
 
     // Get checkpoint
-    let checkpoint = writer.get_checkpoint().await.expect("Failed to get checkpoint");
+    let checkpoint = writer
+        .get_checkpoint()
+        .await
+        .expect("Failed to get checkpoint");
     assert!(checkpoint.is_some(), "Checkpoint should exist");
 
     let checkpoint_data = checkpoint.unwrap();
@@ -227,10 +261,17 @@ async fn test_checkpoint_operations() {
     };
 
     let result = writer.update_checkpoint(&updated_checkpoint).await;
-    assert!(result.is_ok(), "Failed to update checkpoint: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to update checkpoint: {:?}",
+        result.err()
+    );
 
     // Verify update
-    let checkpoint = writer.get_checkpoint().await.expect("Failed to get checkpoint");
+    let checkpoint = writer
+        .get_checkpoint()
+        .await
+        .expect("Failed to get checkpoint");
     assert!(checkpoint.is_some());
 
     let checkpoint_data = checkpoint.unwrap();
@@ -239,10 +280,17 @@ async fn test_checkpoint_operations() {
 
     // Mark complete
     let result = writer.mark_checkpoint_complete().await;
-    assert!(result.is_ok(), "Failed to mark checkpoint complete: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to mark checkpoint complete: {:?}",
+        result.err()
+    );
 
     // Verify complete
-    let checkpoint = writer.get_checkpoint().await.expect("Failed to get checkpoint");
+    let checkpoint = writer
+        .get_checkpoint()
+        .await
+        .expect("Failed to get checkpoint");
     assert!(checkpoint.is_some());
     assert_eq!(checkpoint.unwrap().status, "completed");
 }
@@ -251,7 +299,9 @@ async fn test_checkpoint_operations() {
 #[ignore]
 async fn test_idempotent_operations() {
     let config = test_neo4j_config();
-    let writer = Neo4jWriter::new(config).await.expect("Failed to create writer");
+    let writer = Neo4jWriter::new(config)
+        .await
+        .expect("Failed to create writer");
 
     writer.init_schema().await.expect("Failed to init schema");
 
@@ -262,5 +312,9 @@ async fn test_idempotent_operations() {
     assert!(result1.is_ok(), "First write failed: {:?}", result1.err());
 
     let result2 = writer.write_blocks(&blocks).await;
-    assert!(result2.is_ok(), "Second write failed (not idempotent): {:?}", result2.err());
+    assert!(
+        result2.is_ok(),
+        "Second write failed (not idempotent): {:?}",
+        result2.err()
+    );
 }

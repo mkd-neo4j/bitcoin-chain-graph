@@ -8,11 +8,13 @@
 //!
 //! All operations succeed and data is stored in Vecs.
 
+use super::error::{Result, WriterError};
+use super::traits::GraphWriter;
+use crate::domain::{
+    BenefitsToData, BlockData, CheckpointData, InputData, OutputData, PerformsData, TransactionData,
+};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
-use crate::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData, PerformsData, BenefitsToData};
-use super::traits::GraphWriter;
-use super::error::{Result, WriterError};
 
 /// In-memory storage for mock writer
 #[derive(Debug, Default)]
@@ -174,7 +176,11 @@ impl GraphWriter for MockWriter {
 
             // Find and mark the spent output
             let output_id = format!("{}:{}", input.previous_txid, input.previous_output_index);
-            if let Some(_output) = storage.outputs.iter_mut().find(|o| o.output_id == output_id) {
+            if let Some(_output) = storage
+                .outputs
+                .iter_mut()
+                .find(|o| o.output_id == output_id)
+            {
                 // Note: In a full implementation, we'd update isSpent, spentInTxid, spentAtHeight
                 // These fields aren't in our current OutputData model but would be added later
                 // For now, just verify the output exists
@@ -244,7 +250,9 @@ impl GraphWriter for MockWriter {
         // This matches the Neo4jWriter behavior for consistency
         let checkpoint = CheckpointData {
             last_processed_height: 0,
-            last_processed_hash: String::from("0000000000000000000000000000000000000000000000000000000000000000"),
+            last_processed_hash: String::from(
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
             last_processed_file: String::from("blk00000.dat"),
             last_processed_file_offset: Some(0),
             timestamp: chrono::Utc::now().timestamp(),
@@ -309,22 +317,20 @@ mod tests {
     async fn test_write_and_retrieve_blocks() {
         let writer = MockWriter::new();
 
-        let blocks = vec![
-            BlockData {
-                height: 0,
-                hash: String::from("genesis"),
-                previous_hash: String::from("0000"),
-                merkle_root: String::from("merkle"),
-                timestamp: 1231006505,
-                bits: String::from("1d00ffff"),
-                difficulty: 1.0,
-                nonce: 2083236893,
-                version: 1,
-                tx_count: 1,
-                size: 285,
-                weight: 1140,
-            },
-        ];
+        let blocks = vec![BlockData {
+            height: 0,
+            hash: String::from("genesis"),
+            previous_hash: String::from("0000"),
+            merkle_root: String::from("merkle"),
+            timestamp: 1231006505,
+            bits: String::from("1d00ffff"),
+            difficulty: 1.0,
+            nonce: 2083236893,
+            version: 1,
+            tx_count: 1,
+            size: 285,
+            weight: 1140,
+        }];
 
         writer.write_blocks(&blocks).await.unwrap();
 
@@ -391,6 +397,9 @@ mod tests {
         // Lookup non-existent output
         let result = writer.lookup_output("tx2:0").await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), WriterError::OutputNotFound(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            WriterError::OutputNotFound(_)
+        ));
     }
 }

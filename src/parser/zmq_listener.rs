@@ -443,21 +443,15 @@ mod tests {
     #[test]
     fn test_parse_genesis_block_hash() {
         // Bitcoin genesis block hash in internal (little-endian) byte order
-        let internal = hex::decode(
-            "6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
-        )
-        .unwrap();
+        let internal =
+            hex::decode("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000")
+                .unwrap();
 
-        let frames = vec![
-            b"hashblock".to_vec(),
-            internal,
-            0u32.to_le_bytes().to_vec(),
-        ];
+        let frames = vec![b"hashblock".to_vec(), internal, 0u32.to_le_bytes().to_vec()];
 
         let (hash_hex, _) = parse_hashblock_message(&frames).unwrap();
         assert_eq!(
-            hash_hex,
-            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+            hash_hex, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
             "Should match genesis block hash in display order"
         );
     }

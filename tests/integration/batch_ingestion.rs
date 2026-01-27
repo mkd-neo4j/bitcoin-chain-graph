@@ -30,8 +30,7 @@ async fn test_ingest_first_4_files() {
 
     // Load configuration
     println!("📝 Loading configuration...");
-    let config = ConfigLoader::from_file("config/default.toml")
-        .expect("Failed to load config");
+    let config = ConfigLoader::from_file("config/default.toml").expect("Failed to load config");
     println!("   Neo4j: {}", config.neo4j.uri);
     println!("   Blocks dir: {}", config.bitcoin.blocks_dir);
 
@@ -44,16 +43,24 @@ async fn test_ingest_first_4_files() {
 
     // Create orchestrator
     let cache_size = config.performance.cache_capacity();
-    println!("\n🔧 Creating orchestrator (cache: {} entries)...", cache_size);
+    println!(
+        "\n🔧 Creating orchestrator (cache: {} entries)...",
+        cache_size
+    );
     let orchestrator = IngestionOrchestrator::new(writer, Network::Bitcoin, cache_size);
 
     // Initialize schema
     println!("\n🏗️  Initializing schema...");
-    orchestrator.init_schema().await.expect("Failed to init schema");
+    orchestrator
+        .init_schema()
+        .await
+        .expect("Failed to init schema");
     println!("   ✅ Schema ready");
 
     // Check resume point
-    let resume_height = orchestrator.get_resume_height().await
+    let resume_height = orchestrator
+        .get_resume_height()
+        .await
         .expect("Failed to get resume height");
     println!("\n📍 Resume from block: {}", resume_height);
 
@@ -72,7 +79,8 @@ async fn test_ingest_first_4_files() {
 
     // Pre-load index for the expected range
     let max_height = 120_000; // First 4 files contain roughly this many blocks
-    loader.preload_full_range(0, max_height)
+    loader
+        .preload_full_range(0, max_height)
         .expect("Failed to preload index");
 
     let mut blocks = Vec::new();
@@ -87,7 +95,11 @@ async fn test_ingest_first_4_files() {
         }
     }
     let load_duration = load_start.elapsed();
-    println!("   ✅ Loaded {} blocks in {:.1}s", blocks.len(), load_duration.as_secs_f64());
+    println!(
+        "   ✅ Loaded {} blocks in {:.1}s",
+        blocks.len(),
+        load_duration.as_secs_f64()
+    );
 
     // Ingest blocks in batches
     let batch_size = 1000;
@@ -111,7 +123,9 @@ async fn test_ingest_first_4_files() {
 
     // Final statistics
     let final_stats = orchestrator.cache_stats();
-    let final_height = orchestrator.get_resume_height().await
+    let final_height = orchestrator
+        .get_resume_height()
+        .await
         .expect("Failed to get final height");
     let overall_duration = load_start.elapsed();
 
@@ -119,15 +133,35 @@ async fn test_ingest_first_4_files() {
     println!("┌────────────────────────────────────────────────────────────────────┐");
     println!("│ Total blocks ingested: {:44} │", blocks.len());
     println!("│ Final height: {:54} │", final_height);
-    println!("│ Overall time (load + ingest): {:33.1} seconds │", overall_duration.as_secs_f64());
-    println!("│ Ingestion speed: {:43.1} blocks/sec │",
-        blocks.len() as f64 / ingest_start.elapsed().as_secs_f64());
+    println!(
+        "│ Overall time (load + ingest): {:33.1} seconds │",
+        overall_duration.as_secs_f64()
+    );
+    println!(
+        "│ Ingestion speed: {:43.1} blocks/sec │",
+        blocks.len() as f64 / ingest_start.elapsed().as_secs_f64()
+    );
     println!("├────────────────────────────────────────────────────────────────────┤");
     println!("│ UTXO Cache Statistics:                                             │");
-    println!("│   Total lookups: {:49} │", final_stats.hits + final_stats.misses);
-    println!("│   Cache hits: {:46} ({:.1}%) │", final_stats.hits, final_stats.hit_rate_percent());
-    println!("│   Cache misses: {:44} ({:.1}%) │", final_stats.misses, 100.0 - final_stats.hit_rate_percent());
-    println!("│   Cache size: {:43} / {:6} │", orchestrator.cache_size(), cache_size);
+    println!(
+        "│   Total lookups: {:49} │",
+        final_stats.hits + final_stats.misses
+    );
+    println!(
+        "│   Cache hits: {:46} ({:.1}%) │",
+        final_stats.hits,
+        final_stats.hit_rate_percent()
+    );
+    println!(
+        "│   Cache misses: {:44} ({:.1}%) │",
+        final_stats.misses,
+        100.0 - final_stats.hit_rate_percent()
+    );
+    println!(
+        "│   Cache size: {:43} / {:6} │",
+        orchestrator.cache_size(),
+        cache_size
+    );
     println!("└────────────────────────────────────────────────────────────────────┘");
 
     println!("\n✅ Test completed successfully!");

@@ -20,4 +20,4 @@
 
 mod cache;
 
-pub use cache::{UtxoCache, UtxoKey, CachedOutput, ScriptTypeTag, UtxoCacheStats};
+pub use cache::{CachedOutput, ScriptTypeTag, UtxoCache, UtxoCacheStats, UtxoKey};

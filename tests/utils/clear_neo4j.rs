@@ -3,14 +3,13 @@
 //! Run with: cargo test --test clear_neo4j -- --ignored --nocapture
 
 use bitcoin_chain_graph::config::ConfigLoader;
-use neo4rs::{Graph, ConfigBuilder};
+use neo4rs::{ConfigBuilder, Graph};
 
 #[tokio::test]
 #[ignore]
 async fn clear_database() {
     println!("Loading configuration...");
-    let config = ConfigLoader::from_file("config/default.toml")
-        .expect("Failed to load config");
+    let config = ConfigLoader::from_file("config/default.toml").expect("Failed to load config");
 
     println!("Connecting to Neo4j at {}...", config.neo4j.uri);
 
@@ -46,7 +45,7 @@ async fn clear_database() {
                     println!("   Verified: {} nodes remaining", count);
                 }
             }
-        },
+        }
         Err(e) => {
             eprintln!("❌ Failed to clear database: {}", e);
         }

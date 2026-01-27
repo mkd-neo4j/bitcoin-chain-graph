@@ -90,7 +90,8 @@ async fn test_full_ingestion_all_files() {
     // Create orchestrator with UTXO cache
     let cache_size = config.performance.cache_capacity();
     println!("\n🔧 Creating ingestion orchestrator...");
-    println!("   UTXO cache size: {} entries (~{:.1} MB)",
+    println!(
+        "   UTXO cache size: {} entries (~{:.1} MB)",
         cache_size,
         (cache_size as f64 * 138.0) / 1_000_000.0
     );
@@ -99,21 +100,33 @@ async fn test_full_ingestion_all_files() {
 
     // Initialize schema
     println!("\n🏗️  Initializing Neo4j schema...");
-    orchestrator.init_schema().await.expect("Failed to initialize schema");
+    orchestrator
+        .init_schema()
+        .await
+        .expect("Failed to initialize schema");
     println!("   ✅ Schema initialized (constraints + indexes created)");
 
     // Get resume height from checkpoint
-    let resume_height = orchestrator.get_resume_height().await
+    let resume_height = orchestrator
+        .get_resume_height()
+        .await
         .expect("Failed to get resume height");
     println!("\n📍 Checkpoint status:");
     println!("   Resume from block height: {}", resume_height);
 
     // Get all .blk files
     let blk_files = get_blk_files(&config.bitcoin.blocks_dir);
-    println!("\n📂 Found {} .blk files in {}", blk_files.len(), config.bitcoin.blocks_dir);
+    println!(
+        "\n📂 Found {} .blk files in {}",
+        blk_files.len(),
+        config.bitcoin.blocks_dir
+    );
 
     if blk_files.is_empty() {
-        panic!("No .blk files found in {}! Make sure test data exists.", config.bitcoin.blocks_dir);
+        panic!(
+            "No .blk files found in {}! Make sure test data exists.",
+            config.bitcoin.blocks_dir
+        );
     }
 
     // Start ingestion
@@ -127,7 +140,8 @@ async fn test_full_ingestion_all_files() {
     let mut current_height = resume_height;
 
     for (file_idx, blk_file) in blk_files.iter().enumerate() {
-        let file_name = blk_file.file_name()
+        let file_name = blk_file
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
 
@@ -152,7 +166,10 @@ async fn test_full_ingestion_all_files() {
             }
 
             // Ingest block
-            match orchestrator.ingest_block(&block, current_height, file_name, None).await {
+            match orchestrator
+                .ingest_block(&block, current_height, file_name, None)
+                .await
+            {
                 Ok(_) => {
                     blocks_in_file += 1;
                     current_height += 1;
@@ -180,7 +197,8 @@ async fn test_full_ingestion_all_files() {
             "N/A".to_string()
         };
 
-        println!("│ {:11} │ {:16} │ {:>7.1} b/s │ {:>11} │ {:>7.2}s │",
+        println!(
+            "│ {:11} │ {:16} │ {:>7.1} b/s │ {:>11} │ {:>7.2}s │",
             file_name,
             blocks_in_file,
             blocks_per_sec,
@@ -192,15 +210,20 @@ async fn test_full_ingestion_all_files() {
         if (file_idx + 1) % 10 == 0 {
             let elapsed = overall_start.elapsed();
             let overall_bps = total_blocks as f64 / elapsed.as_secs_f64();
-            println!("├─────────────┴──────────────────┴─────────────┴──────────────┴─────────────┤");
-            println!("│ Progress: {}/{} files ({:.1}%) - Total blocks: {} - Avg: {:.1} b/s │",
+            println!(
+                "├─────────────┴──────────────────┴─────────────┴──────────────┴─────────────┤"
+            );
+            println!(
+                "│ Progress: {}/{} files ({:.1}%) - Total blocks: {} - Avg: {:.1} b/s │",
                 file_idx + 1,
                 blk_files.len(),
                 ((file_idx + 1) as f64 / blk_files.len() as f64) * 100.0,
                 total_blocks,
                 overall_bps
             );
-            println!("├─────────────┬──────────────────┬─────────────┬──────────────┬─────────────┤");
+            println!(
+                "├─────────────┬──────────────────┬─────────────┬──────────────┬─────────────┤"
+            );
         }
     }
 
@@ -214,14 +237,18 @@ async fn test_full_ingestion_all_files() {
     println!("╚════════════════════════════════════════════════════════════════╝");
     println!("\n📊 Final Statistics:");
     println!("   Total blocks ingested: {}", total_blocks);
-    println!("   Total duration: {:.2} seconds", total_duration.as_secs_f64());
+    println!(
+        "   Total duration: {:.2} seconds",
+        total_duration.as_secs_f64()
+    );
     println!("   Average speed: {:.2} blocks/sec", overall_blocks_per_sec);
     println!("   Files processed: {}", blk_files.len());
 
     // Cache statistics
     let final_cache_stats = orchestrator.cache_stats();
     println!("\n💾 UTXO Cache Statistics:");
-    println!("   Current size: {}/{} ({:.1}%)",
+    println!(
+        "   Current size: {}/{} ({:.1}%)",
         orchestrator.cache_size(),
         cache_size,
         (orchestrator.cache_size() as f64 / cache_size as f64) * 100.0
@@ -234,7 +261,10 @@ async fn test_full_ingestion_all_files() {
 
     // Mark ingestion as complete
     println!("\n✅ Marking ingestion as complete...");
-    orchestrator.mark_complete().await.expect("Failed to mark complete");
+    orchestrator
+        .mark_complete()
+        .await
+        .expect("Failed to mark complete");
 
     println!("\n🎉 SUCCESS! All data ingested into Neo4j!");
     println!("\n📍 You can now query the data in Neo4j:");
@@ -256,18 +286,21 @@ async fn test_quick_1000_blocks() {
     println!("║  Quick Integration Test (First 1000 blocks)                    ║");
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
-    let config = ConfigLoader::from_file("config/default.toml")
-        .expect("Failed to load config");
+    let config = ConfigLoader::from_file("config/default.toml").expect("Failed to load config");
 
     println!("🔌 Connecting to Neo4j at {}...", config.neo4j.uri);
-    let writer = Neo4jWriter::new(config.neo4j.clone()).await
+    let writer = Neo4jWriter::new(config.neo4j.clone())
+        .await
         .expect("Failed to connect to Neo4j");
 
     let cache_size = 100_000;
     let orchestrator = IngestionOrchestrator::new(writer, Network::Bitcoin, cache_size);
 
     println!("🏗️  Initializing schema...");
-    orchestrator.init_schema().await.expect("Failed to initialize schema");
+    orchestrator
+        .init_schema()
+        .await
+        .expect("Failed to initialize schema");
 
     let resume_height = orchestrator.get_resume_height().await.unwrap();
     println!("📍 Resume from height: {}", resume_height);
@@ -275,8 +308,8 @@ async fn test_quick_1000_blocks() {
     println!("\n🚀 Starting ingestion of first 1000 blocks...\n");
 
     let block_path = format!("{}/blk00000.dat", config.bitcoin.blocks_dir);
-    let mut reader = BlockFileReader::new(&block_path, Network::Bitcoin)
-        .expect("Failed to open blk00000.dat");
+    let mut reader =
+        BlockFileReader::new(&block_path, Network::Bitcoin).expect("Failed to open blk00000.dat");
 
     let start = Instant::now();
     let target_blocks = 1000;
@@ -290,14 +323,17 @@ async fn test_quick_1000_blocks() {
 
     for height in resume_height..target_blocks {
         if let Some(block) = reader.next_block().unwrap() {
-            orchestrator.ingest_block(&block, height, "blk00000.dat", None).await
+            orchestrator
+                .ingest_block(&block, height, "blk00000.dat", None)
+                .await
                 .expect(&format!("Failed to ingest block {}", height));
 
             if (height + 1) % 100 == 0 {
                 let elapsed = start.elapsed();
                 let bps = (height - resume_height + 1) as f64 / elapsed.as_secs_f64();
                 let cache_stats = orchestrator.cache_stats();
-                println!("   Block {:4} | {:.1} b/s | Cache: {} hits, {} misses ({:.1}%)",
+                println!(
+                    "   Block {:4} | {:.1} b/s | Cache: {} hits, {} misses ({:.1}%)",
                     height,
                     bps,
                     cache_stats.hits,
@@ -336,10 +372,10 @@ async fn test_verify_data_integrity() {
     println!("║  Data Integrity Verification                                   ║");
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
-    let config = ConfigLoader::from_file("config/default.toml")
-        .expect("Failed to load config");
+    let config = ConfigLoader::from_file("config/default.toml").expect("Failed to load config");
 
-    let _writer = Neo4jWriter::new(config.neo4j.clone()).await
+    let _writer = Neo4jWriter::new(config.neo4j.clone())
+        .await
         .expect("Failed to connect to Neo4j");
 
     // We'll use the writer directly to run validation queries

@@ -22,11 +22,11 @@
 //! ```
 
 mod error;
-mod traits;
 pub mod mock;
 pub mod neo4j;
+mod traits;
 
-pub use error::{WriterError, Result};
-pub use traits::GraphWriter;
+pub use error::{Result, WriterError};
 pub use mock::MockWriter;
 pub use neo4j::Neo4jWriter;
+pub use traits::GraphWriter;

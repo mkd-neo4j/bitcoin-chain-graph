@@ -4,7 +4,9 @@
 
 mod mock_writer_tests {
     use bitcoin::Network;
-    use bitcoin_chain_graph::domain::{BlockData, TransactionData, OutputData, InputData, CheckpointData};
+    use bitcoin_chain_graph::domain::{
+        BlockData, CheckpointData, InputData, OutputData, TransactionData,
+    };
     use bitcoin_chain_graph::parser::BlockFileReader;
     use bitcoin_chain_graph::writer::{GraphWriter, MockWriter};
 
@@ -39,9 +41,15 @@ mod mock_writer_tests {
         let blocks = vec![
             BlockData {
                 height: 0,
-                hash: String::from("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"),
-                previous_hash: String::from("0000000000000000000000000000000000000000000000000000000000000000"),
-                merkle_root: String::from("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"),
+                hash: String::from(
+                    "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+                ),
+                previous_hash: String::from(
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+                merkle_root: String::from(
+                    "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
+                ),
                 timestamp: 1231006505,
                 bits: String::from("1d00ffff"),
                 difficulty: 1.0,
@@ -53,9 +61,15 @@ mod mock_writer_tests {
             },
             BlockData {
                 height: 1,
-                hash: String::from("00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048"),
-                previous_hash: String::from("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"),
-                merkle_root: String::from("0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098"),
+                hash: String::from(
+                    "00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048",
+                ),
+                previous_hash: String::from(
+                    "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+                ),
+                merkle_root: String::from(
+                    "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098",
+                ),
                 timestamp: 1231469665,
                 bits: String::from("1d00ffff"),
                 difficulty: 1.0,
@@ -74,38 +88,47 @@ mod mock_writer_tests {
         let stored = writer.get_blocks().await;
         assert_eq!(stored.len(), 2);
         assert_eq!(stored[0].height, 0);
-        assert_eq!(stored[0].hash, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
+        assert_eq!(
+            stored[0].hash,
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+        );
         assert_eq!(stored[1].height, 1);
-        assert_eq!(stored[1].hash, "00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048");
+        assert_eq!(
+            stored[1].hash,
+            "00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048"
+        );
     }
 
     #[tokio::test]
     async fn test_write_and_retrieve_transactions() {
         let writer = MockWriter::new();
 
-        let transactions = vec![
-            TransactionData {
-                txid: String::from("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"),
-                block_height: 0,
-                block_hash: String::from("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"),
-                timestamp: 1231006505,
-                version: 1,
-                locktime: 0,
-                size: 204,
-                vsize: 204,
-                weight: 816,
-                is_coinbase: true,
-                total_input: Some(0),
-                total_output: Some(5000000000),
-                fee: Some(0),
-            },
-        ];
+        let transactions = vec![TransactionData {
+            txid: String::from("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"),
+            block_height: 0,
+            block_hash: String::from(
+                "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+            ),
+            timestamp: 1231006505,
+            version: 1,
+            locktime: 0,
+            size: 204,
+            vsize: 204,
+            weight: 816,
+            is_coinbase: true,
+            total_input: Some(0),
+            total_output: Some(5000000000),
+            fee: Some(0),
+        }];
 
         writer.write_transactions(&transactions).await.unwrap();
 
         let stored = writer.get_transactions().await;
         assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].txid, "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b");
+        assert_eq!(
+            stored[0].txid,
+            "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+        );
         assert!(stored[0].is_coinbase);
     }
 
@@ -129,7 +152,10 @@ mod mock_writer_tests {
 
         let stored = writer.get_outputs().await;
         assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].output_id, "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b:0");
+        assert_eq!(
+            stored[0].output_id,
+            "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b:0"
+        );
         assert_eq!(stored[0].amount, 5000000000);
         assert_eq!(stored[0].script_type, "P2PK");
     }
@@ -138,26 +164,34 @@ mod mock_writer_tests {
     async fn test_write_and_retrieve_inputs() {
         let writer = MockWriter::new();
 
-        let inputs = vec![
-            InputData {
-                input_id: String::from("0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098:0"),
-                input_index: 0,
-                txid: String::from("0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098"),
-                previous_txid: String::from("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"),
-                previous_output_index: 0,
-                script_sig: String::from("4730440220..."),
-                sequence: 0xFFFFFFFF,
-                witness: vec![],
-                block_height: 1,
-            },
-        ];
+        let inputs = vec![InputData {
+            input_id: String::from(
+                "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098:0",
+            ),
+            input_index: 0,
+            txid: String::from("0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098"),
+            previous_txid: String::from(
+                "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
+            ),
+            previous_output_index: 0,
+            script_sig: String::from("4730440220..."),
+            sequence: 0xFFFFFFFF,
+            witness: vec![],
+            block_height: 1,
+        }];
 
         writer.write_inputs(&inputs).await.unwrap();
 
         let stored = writer.get_inputs().await;
         assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].input_id, "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098:0");
-        assert_eq!(stored[0].previous_txid, "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b");
+        assert_eq!(
+            stored[0].input_id,
+            "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098:0"
+        );
+        assert_eq!(
+            stored[0].previous_txid,
+            "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+        );
     }
 
     #[tokio::test]
@@ -264,22 +298,20 @@ mod mock_writer_tests {
         let writer = MockWriter::new();
 
         // Add some data
-        let blocks = vec![
-            BlockData {
-                height: 0,
-                hash: String::from("genesis"),
-                previous_hash: String::from("0000"),
-                merkle_root: String::from("merkle"),
-                timestamp: 1231006505,
-                bits: String::from("1d00ffff"),
-                difficulty: 1.0,
-                nonce: 2083236893,
-                version: 1,
-                tx_count: 1,
-                size: 285,
-                weight: 1140,
-            },
-        ];
+        let blocks = vec![BlockData {
+            height: 0,
+            hash: String::from("genesis"),
+            previous_hash: String::from("0000"),
+            merkle_root: String::from("merkle"),
+            timestamp: 1231006505,
+            bits: String::from("1d00ffff"),
+            difficulty: 1.0,
+            nonce: 2083236893,
+            version: 1,
+            tx_count: 1,
+            size: 285,
+            weight: 1140,
+        }];
 
         writer.write_blocks(&blocks).await.unwrap();
         writer.create_checkpoint().await.unwrap();
@@ -334,12 +366,8 @@ mod mock_writer_tests {
         writer.write_transactions(&[tx_data]).await.unwrap();
 
         // Convert and write output
-        let output_data = OutputData::from_output(
-            &tx.output[0],
-            &tx.txid().to_string(),
-            0,
-            Network::Bitcoin,
-        );
+        let output_data =
+            OutputData::from_output(&tx.output[0], &tx.txid().to_string(), 0, Network::Bitcoin);
 
         writer.write_outputs(&[output_data]).await.unwrap();
 
@@ -362,7 +390,10 @@ mod mock_writer_tests {
         // Verify block data
         let stored_block = &writer.get_blocks().await[0];
         assert_eq!(stored_block.height, 0);
-        assert_eq!(stored_block.hash, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
+        assert_eq!(
+            stored_block.hash,
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+        );
 
         // Verify transaction data
         let stored_tx = &writer.get_transactions().await[0];
@@ -371,6 +402,9 @@ mod mock_writer_tests {
         // Verify output data
         let stored_output = &writer.get_outputs().await[0];
         assert_eq!(stored_output.amount, 5000000000);
-        assert_eq!(stored_output.address.as_ref().unwrap(), "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa");
+        assert_eq!(
+            stored_output.address.as_ref().unwrap(),
+            "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+        );
     }
 }

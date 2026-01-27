@@ -10,7 +10,7 @@
 //! - Reuses existing `bitcoin::consensus::deserialize` for parsing
 
 use anyhow::{Context, Result};
-use bitcoin::{Block, consensus::deserialize};
+use bitcoin::{consensus::deserialize, Block};
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_json::Value;
@@ -102,7 +102,8 @@ impl RpcBlockProvider {
 
     /// Execute a single RPC request (no retry)
     async fn execute_rpc(&self, body: &Value) -> Result<Value> {
-        let response = self.client
+        let response = self
+            .client
             .post(&self.url)
             .basic_auth(&self.user, Some(&self.password))
             .json(body)
@@ -116,12 +117,16 @@ impl RpcBlockProvider {
             anyhow::bail!(
                 "RPC HTTP error {} for {}: {}",
                 status,
-                body.get("method").and_then(|m| m.as_str()).unwrap_or("unknown"),
+                body.get("method")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown"),
                 text
             );
         }
 
-        let result: Value = response.json().await
+        let result: Value = response
+            .json()
+            .await
             .context("Failed to parse RPC response JSON")?;
 
         // Check for JSON-RPC error
@@ -129,7 +134,9 @@ impl RpcBlockProvider {
             if !error.is_null() {
                 anyhow::bail!(
                     "RPC error for {}: {}",
-                    body.get("method").and_then(|m| m.as_str()).unwrap_or("unknown"),
+                    body.get("method")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("unknown"),
                     error
                 );
             }
@@ -142,10 +149,13 @@ impl RpcBlockProvider {
     ///
     /// Calls `getblockcount` RPC method.
     pub async fn get_tip_height(&self) -> Result<u32> {
-        let result = self.rpc_call("getblockcount", &[]).await
+        let result = self
+            .rpc_call("getblockcount", &[])
+            .await
             .context("getblockcount failed")?;
 
-        result.as_u64()
+        result
+            .as_u64()
             .map(|h| h as u32)
             .context("Invalid block count from RPC")
     }
@@ -154,10 +164,13 @@ impl RpcBlockProvider {
     ///
     /// Calls `getblockhash <height>` RPC method.
     pub async fn get_block_hash(&self, height: u32) -> Result<String> {
-        let result = self.rpc_call("getblockhash", &[Value::from(height)]).await
+        let result = self
+            .rpc_call("getblockhash", &[Value::from(height)])
+            .await
             .with_context(|| format!("getblockhash failed for height {}", height))?;
 
-        result.as_str()
+        result
+            .as_str()
             .map(|s| s.to_string())
             .with_context(|| format!("Invalid block hash from RPC for height {}", height))
     }
@@ -169,13 +182,13 @@ impl RpcBlockProvider {
     /// - bitcoind skips JSON serialization (~2.5x smaller payload)
     /// - We reuse the existing binary block parser
     async fn get_block_hex(&self, hash: &str) -> Result<String> {
-        let result = self.rpc_call(
-            "getblock",
-            &[Value::from(hash), Value::from(0)],
-        ).await
+        let result = self
+            .rpc_call("getblock", &[Value::from(hash), Value::from(0)])
+            .await
             .with_context(|| format!("getblock (hex) failed for hash {}", hash))?;
 
-        result.as_str()
+        result
+            .as_str()
             .map(|s| s.to_string())
             .with_context(|| format!("Invalid block hex from RPC for hash {}", hash))
     }

@@ -1,17 +1,17 @@
-use bitcoin::{Address, Network, ScriptBuf, PublicKey};
 use bitcoin::script::Instruction;
+use bitcoin::{Address, Network, PublicKey, ScriptBuf};
 
 /// Types of Bitcoin script patterns
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptType {
-    P2PKH,      // Pay to Public Key Hash
-    P2SH,       // Pay to Script Hash
-    P2WPKH,     // Pay to Witness Public Key Hash (SegWit v0)
-    P2WSH,      // Pay to Witness Script Hash (SegWit v0)
-    P2TR,       // Pay to Taproot (SegWit v1)
-    P2PK,       // Pay to Public Key (obsolete)
-    NullData,   // OP_RETURN (unspendable)
-    Unknown,    // Non-standard or future script types
+    P2PKH,    // Pay to Public Key Hash
+    P2SH,     // Pay to Script Hash
+    P2WPKH,   // Pay to Witness Public Key Hash (SegWit v0)
+    P2WSH,    // Pay to Witness Script Hash (SegWit v0)
+    P2TR,     // Pay to Taproot (SegWit v1)
+    P2PK,     // Pay to Public Key (obsolete)
+    NullData, // OP_RETURN (unspendable)
+    Unknown,  // Non-standard or future script types
 }
 
 /// Result of address derivation from a scriptPubKey
@@ -87,8 +87,8 @@ pub fn extract_address(script: &ScriptBuf, network: Network) -> AddressInfo {
                     // SegWit v0: P2WPKH (22 bytes total) or P2WSH (34 bytes total)
                     // Script is: <version> <program>
                     let script_type = match script.len() {
-                        22 => ScriptType::P2WPKH,  // OP_0 + 20 byte program
-                        34 => ScriptType::P2WSH,   // OP_0 + 32 byte program
+                        22 => ScriptType::P2WPKH, // OP_0 + 20 byte program
+                        34 => ScriptType::P2WSH,  // OP_0 + 32 byte program
                         _ => ScriptType::Unknown,
                     };
 
@@ -196,30 +196,55 @@ mod tests {
         let info = extract_address(&script, Network::Bitcoin);
 
         assert_eq!(info.script_type, ScriptType::P2PK);
-        assert_eq!(info.address.unwrap().to_string(), "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa");
+        assert_eq!(
+            info.address.unwrap().to_string(),
+            "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+        );
     }
 
     #[test]
     fn test_all_script_types() {
         // P2PKH
-        let script = ScriptBuf::from(hex::decode("76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac").unwrap());
-        assert_eq!(extract_address(&script, Network::Bitcoin).script_type, ScriptType::P2PKH);
+        let script = ScriptBuf::from(
+            hex::decode("76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac").unwrap(),
+        );
+        assert_eq!(
+            extract_address(&script, Network::Bitcoin).script_type,
+            ScriptType::P2PKH
+        );
 
         // P2SH
-        let script = ScriptBuf::from(hex::decode("a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba87").unwrap());
-        assert_eq!(extract_address(&script, Network::Bitcoin).script_type, ScriptType::P2SH);
+        let script =
+            ScriptBuf::from(hex::decode("a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba87").unwrap());
+        assert_eq!(
+            extract_address(&script, Network::Bitcoin).script_type,
+            ScriptType::P2SH
+        );
 
         // P2WPKH
-        let script = ScriptBuf::from(hex::decode("0014751e76e8199196d454941c45d1b3a323f1433bd6").unwrap());
-        assert_eq!(extract_address(&script, Network::Bitcoin).script_type, ScriptType::P2WPKH);
+        let script =
+            ScriptBuf::from(hex::decode("0014751e76e8199196d454941c45d1b3a323f1433bd6").unwrap());
+        assert_eq!(
+            extract_address(&script, Network::Bitcoin).script_type,
+            ScriptType::P2WPKH
+        );
 
         // P2TR
-        let script = ScriptBuf::from(hex::decode("512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798").unwrap());
-        assert_eq!(extract_address(&script, Network::Bitcoin).script_type, ScriptType::P2TR);
+        let script = ScriptBuf::from(
+            hex::decode("512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+                .unwrap(),
+        );
+        assert_eq!(
+            extract_address(&script, Network::Bitcoin).script_type,
+            ScriptType::P2TR
+        );
 
         // NULL_DATA
         let script = ScriptBuf::from(hex::decode("6a0548656c6c6f").unwrap());
-        assert_eq!(extract_address(&script, Network::Bitcoin).script_type, ScriptType::NullData);
+        assert_eq!(
+            extract_address(&script, Network::Bitcoin).script_type,
+            ScriptType::NullData
+        );
         assert!(extract_address(&script, Network::Bitcoin).address.is_none());
     }
 }

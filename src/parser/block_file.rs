@@ -1,15 +1,13 @@
-use bitcoin::{Block, consensus::deserialize, Network};
-use std::fs::File;
+use bitcoin::{consensus::deserialize, Block, Network};
 use memmap2::Mmap;
-use tracing::{debug, instrument};
+use std::fs::File;
 use thiserror::Error;
+use tracing::{debug, instrument};
 
 /// Magic bytes for different Bitcoin networks
 const MAGIC_MAINNET: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
 const MAGIC_TESTNET: [u8; 4] = [0x0B, 0x11, 0x09, 0x07];
 const MAGIC_REGTEST: [u8; 4] = [0xFA, 0xBF, 0xB5, 0xDA];
-
-
 
 /// Errors that can occur during block file parsing
 #[derive(Error, Debug)]
@@ -89,7 +87,11 @@ impl BlockFileReader {
     /// # Deprecated
     /// This method is deprecated as the implementation now uses mmap.
     /// It effectively calls `new()` and ignores the buffer size.
-    pub fn with_buffer_size(path: &str, network: Network, _buffer_size: usize) -> Result<Self, ParseError> {
+    pub fn with_buffer_size(
+        path: &str,
+        network: Network,
+        _buffer_size: usize,
+    ) -> Result<Self, ParseError> {
         Self::new(path, network)
     }
 
@@ -117,7 +119,7 @@ impl BlockFileReader {
 
         // Read magic bytes (4 bytes)
         let magic_slice = &self.mmap[self.cursor..self.cursor + 4];
-        
+
         // Verify magic bytes
         if magic_slice != *self.magic_bytes {
             // Check for zero-padding at end of file (common in blk files)
@@ -152,7 +154,7 @@ impl BlockFileReader {
 
         // Read block data
         let block_data = &self.mmap[self.cursor..self.cursor + block_size];
-        
+
         // Deserialize block using bitcoin crate (zero-copy from mmap slice)
         let block: Block = deserialize(block_data)?;
 
@@ -186,7 +188,7 @@ impl BlockFileReader {
     /// - `Err(ParseError)` - Parse error
     pub fn read_block_at(&mut self, offset: u64) -> Result<Option<Block>, ParseError> {
         let offset = offset as usize;
-        
+
         if offset >= self.mmap.len() {
             return Ok(None);
         }
@@ -199,9 +201,9 @@ impl BlockFileReader {
         // Read magic bytes
         let magic_slice = &self.mmap[offset..offset + 4];
         if magic_slice != *self.magic_bytes {
-             let expected = u32::from_le_bytes(*self.magic_bytes);
-             let got = u32::from_le_bytes(magic_slice.try_into().unwrap());
-             return Err(ParseError::InvalidMagic { expected, got });
+            let expected = u32::from_le_bytes(*self.magic_bytes);
+            let got = u32::from_le_bytes(magic_slice.try_into().unwrap());
+            return Err(ParseError::InvalidMagic { expected, got });
         }
 
         // Read size
@@ -213,7 +215,7 @@ impl BlockFileReader {
         }
 
         if offset + 8 + block_size > self.mmap.len() {
-             return Err(ParseError::Io(std::io::Error::new(
+            return Err(ParseError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "File ended before block data complete",
             )));

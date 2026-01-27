@@ -32,18 +32,23 @@ async fn test_ingest_genesis_block_all_phases() {
 
     // Read genesis block
     let mut reader = BlockFileReader::new("test_data/blk00000.dat", Network::Bitcoin).unwrap();
-    let genesis = reader.next_block().unwrap().expect("Genesis block should exist");
+    let genesis = reader
+        .next_block()
+        .unwrap()
+        .expect("Genesis block should exist");
 
     // Ingest genesis block
-    orchestrator.ingest_block(&genesis, 0, "blk00000.dat", None).await.unwrap();
+    orchestrator
+        .ingest_block(&genesis, 0, "blk00000.dat", None)
+        .await
+        .unwrap();
 
     // Verify Phase 1: Block node
     let blocks = writer.get_blocks().await;
     assert_eq!(blocks.len(), 1, "Should have 1 block");
     assert_eq!(blocks[0].height, 0, "Should be genesis block");
     assert_eq!(
-        blocks[0].hash,
-        "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+        blocks[0].hash, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
         "Should have correct genesis hash"
     );
     assert_eq!(blocks[0].version, 1);
@@ -54,7 +59,10 @@ async fn test_ingest_genesis_block_all_phases() {
     // Verify Phase 2: Transaction node
     let transactions = writer.get_transactions().await;
     assert_eq!(transactions.len(), 1, "Should have 1 transaction");
-    assert!(transactions[0].is_coinbase, "Should be coinbase transaction");
+    assert!(
+        transactions[0].is_coinbase,
+        "Should be coinbase transaction"
+    );
     assert_eq!(transactions[0].block_height, 0);
     assert_eq!(transactions[0].version, 1);
 
@@ -62,7 +70,10 @@ async fn test_ingest_genesis_block_all_phases() {
     let outputs = writer.get_outputs().await;
     assert_eq!(outputs.len(), 1, "Should have 1 output");
     assert_eq!(outputs[0].output_index, 0);
-    assert_eq!(outputs[0].amount, 5000000000, "Should be 50 BTC in satoshis");
+    assert_eq!(
+        outputs[0].amount, 5000000000,
+        "Should be 50 BTC in satoshis"
+    );
     assert_eq!(outputs[0].script_type, "P2PK", "Genesis output is P2PK");
     assert_eq!(
         outputs[0].address.as_ref().unwrap(),
@@ -74,7 +85,10 @@ async fn test_ingest_genesis_block_all_phases() {
     let inputs = writer.get_inputs().await;
     assert_eq!(inputs.len(), 1, "Should have 1 input");
     assert_eq!(inputs[0].input_index, 0);
-    assert_eq!(inputs[0].previous_output_index, 0xFFFFFFFF, "Coinbase marker");
+    assert_eq!(
+        inputs[0].previous_output_index, 0xFFFFFFFF,
+        "Coinbase marker"
+    );
 
     // Phases 5 and 6 are verified by the fact that no errors occurred
     // (MockWriter has no-op implementations for these phases)
@@ -93,7 +107,10 @@ async fn test_ingest_first_10_blocks() {
 
     for height in 0..10 {
         let block = reader.next_block().unwrap().expect("Block should exist");
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     // Verify all blocks were written
@@ -139,7 +156,10 @@ async fn test_block_ordering() {
     // Ingest blocks 0, 1, 2
     for height in 0..3 {
         let block = reader.next_block().unwrap().expect("Block should exist");
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     let blocks = writer.get_blocks().await;
@@ -166,16 +186,29 @@ async fn test_all_phases_complete_successfully() {
     orchestrator.init_schema().await.unwrap();
 
     let mut reader = BlockFileReader::new("test_data/blk00000.dat", Network::Bitcoin).unwrap();
-    let genesis = reader.next_block().unwrap().expect("Genesis block should exist");
+    let genesis = reader
+        .next_block()
+        .unwrap()
+        .expect("Genesis block should exist");
 
     // This should complete all 6 phases without error
-    let result = orchestrator.ingest_block(&genesis, 0, "blk00000.dat", None).await;
+    let result = orchestrator
+        .ingest_block(&genesis, 0, "blk00000.dat", None)
+        .await;
     assert!(result.is_ok(), "All 6 phases should complete successfully");
 
     // Verify data was written by each phase
     assert_eq!(writer.get_blocks().await.len(), 1, "Phase 1: Block written");
-    assert_eq!(writer.get_transactions().await.len(), 1, "Phase 2: Transaction written");
-    assert_eq!(writer.get_outputs().await.len(), 1, "Phase 3: Output written");
+    assert_eq!(
+        writer.get_transactions().await.len(),
+        1,
+        "Phase 2: Transaction written"
+    );
+    assert_eq!(
+        writer.get_outputs().await.len(),
+        1,
+        "Phase 3: Output written"
+    );
     assert_eq!(writer.get_inputs().await.len(), 1, "Phase 4: Input written");
     // Phase 5 (calculate amounts) and Phase 6 (simplified layer) are no-ops in MockWriter
     // but they should not error
@@ -195,7 +228,10 @@ async fn test_ingest_100_blocks_performance() {
 
     for height in 0..100 {
         let block = reader.next_block().unwrap().expect("Block should exist");
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     let duration = start.elapsed();
@@ -207,7 +243,10 @@ async fn test_ingest_100_blocks_performance() {
     assert_eq!(writer.get_inputs().await.len(), 100);
 
     // Performance check: Should complete in <1 second with MockWriter
-    assert!(duration.as_secs() < 1, "100 blocks should ingest in <1s with MockWriter");
+    assert!(
+        duration.as_secs() < 1,
+        "100 blocks should ingest in <1s with MockWriter"
+    );
     println!("Ingested 100 blocks in {:?}", duration);
 }
 
@@ -224,7 +263,10 @@ async fn test_phase3_address_derivation() {
     // Ingest first 5 blocks
     for height in 0..5 {
         let block = reader.next_block().unwrap().expect("Block should exist");
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     let outputs = writer.get_outputs().await;
@@ -260,7 +302,10 @@ async fn test_phase4_coinbase_inputs() {
     // Ingest first 10 blocks (all coinbase)
     for height in 0..10 {
         let block = reader.next_block().unwrap().expect("Block should exist");
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
     }
 
     let inputs = writer.get_inputs().await;
@@ -268,13 +313,16 @@ async fn test_phase4_coinbase_inputs() {
     // All inputs should be coinbase inputs
     for input in &inputs {
         assert_eq!(
-            input.previous_output_index,
-            0xFFFFFFFF,
+            input.previous_output_index, 0xFFFFFFFF,
             "Input {} should be coinbase",
             input.input_id
         );
         // Coinbase inputs reference a null txid (all zeros)
-        assert_eq!(input.previous_txid.len(), 64, "Should have 64-char hex txid");
+        assert_eq!(
+            input.previous_txid.len(),
+            64,
+            "Should have 64-char hex txid"
+        );
     }
 }
 
@@ -296,11 +344,15 @@ async fn test_concurrent_orchestrators() {
 
     // Ingest different blocks concurrently
     let handle1 = tokio::spawn(async move {
-        orchestrator1.ingest_block(&genesis, 0, "blk00000.dat", None).await
+        orchestrator1
+            .ingest_block(&genesis, 0, "blk00000.dat", None)
+            .await
     });
 
     let handle2 = tokio::spawn(async move {
-        orchestrator2.ingest_block(&block1, 1, "blk00000.dat", None).await
+        orchestrator2
+            .ingest_block(&block1, 1, "blk00000.dat", None)
+            .await
     });
 
     // Both should succeed
@@ -328,7 +380,10 @@ async fn test_multi_block_cache_usage() {
     // Ingest first 10 blocks
     for height in 0..10 {
         let block = reader.next_block().unwrap().expect("Block should exist");
-        orchestrator.ingest_block(&block, height, "blk00000.dat", None).await.unwrap();
+        orchestrator
+            .ingest_block(&block, height, "blk00000.dat", None)
+            .await
+            .unwrap();
 
         // Print cache stats after each block
         let stats = orchestrator.cache_stats();
@@ -374,14 +429,23 @@ async fn test_coinbase_transactions_skip_cache() {
     orchestrator.init_schema().await.unwrap();
 
     let mut reader = BlockFileReader::new("test_data/blk00000.dat", Network::Bitcoin).unwrap();
-    let genesis = reader.next_block().unwrap().expect("Genesis block should exist");
+    let genesis = reader
+        .next_block()
+        .unwrap()
+        .expect("Genesis block should exist");
 
     // Genesis block contains only coinbase transaction
     assert_eq!(genesis.txdata.len(), 1, "Genesis should have 1 transaction");
-    assert!(genesis.txdata[0].is_coinbase(), "Genesis tx should be coinbase");
+    assert!(
+        genesis.txdata[0].is_coinbase(),
+        "Genesis tx should be coinbase"
+    );
 
     // Ingest genesis block
-    orchestrator.ingest_block(&genesis, 0, "blk00000.dat", None).await.unwrap();
+    orchestrator
+        .ingest_block(&genesis, 0, "blk00000.dat", None)
+        .await
+        .unwrap();
 
     // Verify cache stats: coinbase transactions should not trigger cache lookups
     let stats = orchestrator.cache_stats();
@@ -391,8 +455,16 @@ async fn test_coinbase_transactions_skip_cache() {
     // Verify transaction was still written with correct amounts
     let transactions = writer.get_transactions().await;
     assert_eq!(transactions.len(), 1);
-    assert_eq!(transactions[0].total_input, Some(0), "Coinbase should have 0 input");
-    assert_eq!(transactions[0].total_output, Some(5000000000), "Coinbase should have 50 BTC output");
+    assert_eq!(
+        transactions[0].total_input,
+        Some(0),
+        "Coinbase should have 0 input"
+    );
+    assert_eq!(
+        transactions[0].total_output,
+        Some(5000000000),
+        "Coinbase should have 50 BTC output"
+    );
     assert_eq!(transactions[0].fee, Some(0), "Coinbase should have 0 fee");
 }
 
@@ -413,10 +485,16 @@ async fn test_phase6_performs_benefits_to() {
     // Ingest genesis first (to populate cache with outputs for block 1 to spend)
     let mut reader2 = BlockFileReader::new("test_data/blk00000.dat", Network::Bitcoin).unwrap();
     let genesis = reader2.next_block().unwrap().unwrap();
-    orchestrator.ingest_block(&genesis, 0, "blk00000.dat", None).await.unwrap();
+    orchestrator
+        .ingest_block(&genesis, 0, "blk00000.dat", None)
+        .await
+        .unwrap();
 
     // Now ingest block 1
-    orchestrator.ingest_block(&block1, 1, "blk00000.dat", None).await.unwrap();
+    orchestrator
+        .ingest_block(&block1, 1, "blk00000.dat", None)
+        .await
+        .unwrap();
 
     // Verify PERFORMS relationships were created
     let performs = writer.get_performs().await;
@@ -444,18 +522,29 @@ async fn test_phase6_performs_benefits_to() {
     // Note: Exact counts depend on the block structure
 
     // Basic assertions to verify Phase 6 executed
-    assert!(!performs.is_empty() || !benefits_to.is_empty(),
-        "Phase 6 should create PERFORMS or BENEFITS_TO relationships");
+    assert!(
+        !performs.is_empty() || !benefits_to.is_empty(),
+        "Phase 6 should create PERFORMS or BENEFITS_TO relationships"
+    );
 
     // Verify aggregation data is present
     if !performs.is_empty() {
         assert!(performs[0].input_count > 0, "Should aggregate input count");
-        assert!(performs[0].amount_spent > 0, "Should aggregate amount spent");
+        assert!(
+            performs[0].amount_spent > 0,
+            "Should aggregate amount spent"
+        );
     }
 
     if !benefits_to.is_empty() {
-        assert!(benefits_to[0].output_count > 0, "Should aggregate output count");
-        assert!(benefits_to[0].amount_received > 0, "Should aggregate amount received");
+        assert!(
+            benefits_to[0].output_count > 0,
+            "Should aggregate output count"
+        );
+        assert!(
+            benefits_to[0].amount_received > 0,
+            "Should aggregate amount received"
+        );
     }
 }
 
@@ -485,7 +574,10 @@ async fn test_real_bitcoin_blocks_with_multi_input_txs() {
 
     let mut reader = BlockFileReader::new(block_file, Network::Bitcoin).unwrap();
 
-    println!("\n📊 Testing with real Bitcoin blockchain data from {}", block_file);
+    println!(
+        "\n📊 Testing with real Bitcoin blockchain data from {}",
+        block_file
+    );
     println!("   Cache size: {}", cache_size);
     println!("   Processing sequential blocks to demonstrate cache effectiveness...");
 
@@ -499,7 +591,6 @@ async fn test_real_bitcoin_blocks_with_multi_input_txs() {
     for height in 0..200 {
         match reader.next_block() {
             Ok(Some(block)) => {
-
                 // Count transactions and inputs for stats
                 total_transactions += block.txdata.len();
                 for tx in &block.txdata {
@@ -507,7 +598,8 @@ async fn test_real_bitcoin_blocks_with_multi_input_txs() {
                     total_outputs += tx.output.len();
                 }
 
-                orchestrator.ingest_block(&block, height, "blk00000.dat", None)
+                orchestrator
+                    .ingest_block(&block, height, "blk00000.dat", None)
                     .await
                     .unwrap();
 
@@ -516,12 +608,14 @@ async fn test_real_bitcoin_blocks_with_multi_input_txs() {
                 // Print cache stats every 50 blocks
                 if blocks_processed % 50 == 0 {
                     let stats = orchestrator.cache_stats();
-                    println!("   Block {}: hits={}, misses={}, hit_rate={:.1}%, cache_size={}",
-                             blocks_processed,
-                             stats.hits,
-                             stats.misses,
-                             stats.hit_rate_percent(),
-                             orchestrator.cache_size());
+                    println!(
+                        "   Block {}: hits={}, misses={}, hit_rate={:.1}%, cache_size={}",
+                        blocks_processed,
+                        stats.hits,
+                        stats.misses,
+                        stats.hit_rate_percent(),
+                        orchestrator.cache_size()
+                    );
                 }
             }
             Ok(None) => break, // End of file
@@ -544,11 +638,18 @@ async fn test_real_bitcoin_blocks_with_multi_input_txs() {
     println!("   Cache hits: {}", final_stats.hits);
     println!("   Cache misses: {}", final_stats.misses);
     println!("   Hit rate: {:.2}%", final_stats.hit_rate_percent());
-    println!("   Final cache size: {} / {}", orchestrator.cache_size(), cache_size);
+    println!(
+        "   Final cache size: {} / {}",
+        orchestrator.cache_size(),
+        cache_size
+    );
 
     // Assertions for real Bitcoin data
     assert!(blocks_processed > 0, "Should process at least some blocks");
-    assert!(total_inputs > blocks_processed, "Should have more inputs than blocks (multi-input txs)");
+    assert!(
+        total_inputs > blocks_processed,
+        "Should have more inputs than blocks (multi-input txs)"
+    );
 
     // With real sequential Bitcoin blocks and reasonable cache size,
     // we expect high cache hit rate (most inputs spend recent outputs)
@@ -558,8 +659,10 @@ async fn test_real_bitcoin_blocks_with_multi_input_txs() {
         // Real Bitcoin blocks should show cache benefit
         // (Sequential blocks spend recently created outputs)
         if final_stats.hits > 0 {
-            println!("   Cache is providing benefit (hit rate: {:.1}%)",
-                     final_stats.hit_rate_percent());
+            println!(
+                "   Cache is providing benefit (hit rate: {:.1}%)",
+                final_stats.hit_rate_percent()
+            );
         }
     }
 
