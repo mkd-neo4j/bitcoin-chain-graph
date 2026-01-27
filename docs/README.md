@@ -17,6 +17,12 @@ This project provides a high-performance system for loading Bitcoin blockchain d
 
 ---
 
+## Getting Started
+
+For installation, configuration, CLI reference, and first run instructions, see the **[Getting Started Guide](../GETTING_STARTED.md)**.
+
+---
+
 ## Documentation Structure
 
 ### General Documentation (Language-Agnostic)
@@ -142,44 +148,7 @@ Implementation-specific guides for high-performance Rust ingestion:
 
 ## Quick Start
 
-### Prerequisites
-
-1. **Rust** (1.70+)
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
-
-2. **Neo4j** (5.x)
-   ```bash
-   # Docker
-   docker run -p 7687:7687 -p 7474:7474 \
-     -e NEO4J_AUTH=neo4j/password \
-     neo4j:5
-   ```
-
-3. **Bitcoin Core Block Files**
-   - Location: `~/.bitcoin/blocks/`
-   - Requires synced Bitcoin Core node
-
-### Build and Run
-
-```bash
-# Clone repository
-git clone https://github.com/yourusername/bitcoin-chain-graph.git
-cd bitcoin-chain-graph
-
-# Build release binary
-cargo build --release
-
-# Initialize Neo4j schema
-./target/release/bitcoin-chain-graph init-schema
-
-# Ingest blocks
-./target/release/bitcoin-chain-graph ingest --start-height 0 --end-height 1000
-
-# Validate ingested data
-./target/release/bitcoin-chain-graph validate
-```
+See the **[Getting Started Guide](../GETTING_STARTED.md)** for prerequisites, installation, configuration, and a step-by-step first run walkthrough.
 
 ---
 
@@ -187,10 +156,11 @@ cargo build --release
 
 ### For First-Time Users
 
-1. Start with [DATA_MODEL.md](neo4j/DATA_MODEL.md) to understand the graph structure
-2. Read [INGESTION_ARCHITECTURE.md](architecture/INGESTION_ARCHITECTURE.md) for the ingestion process
-3. Review [SPECIAL_CASES.md](bitcoin/SPECIAL_CASES.md) for edge cases
-4. Skim [CYPHER_EXAMPLES.md](neo4j/CYPHER_EXAMPLES.md) for query patterns
+1. Follow the [Getting Started Guide](../GETTING_STARTED.md) to install and run your first ingestion
+2. Read [DATA_MODEL.md](neo4j/DATA_MODEL.md) to understand the graph structure
+3. Read [INGESTION_ARCHITECTURE.md](architecture/INGESTION_ARCHITECTURE.md) for the ingestion process
+4. Review [SPECIAL_CASES.md](bitcoin/SPECIAL_CASES.md) for edge cases
+5. Skim [CYPHER_EXAMPLES.md](neo4j/CYPHER_EXAMPLES.md) for query patterns
 
 ### For Rust Developers
 
@@ -210,26 +180,7 @@ cargo build --release
 
 ## System Requirements
 
-### Minimum (Testing)
-- **CPU**: 2 cores
-- **Memory**: 4GB RAM
-- **Storage**: 50GB SSD
-- **Network**: Local Neo4j instance
-- **Use case**: First 100k blocks
-
-### Recommended (Full Chain)
-- **CPU**: 8+ cores
-- **Memory**: 16GB RAM (8GB for Neo4j, 2GB for ingestion, 6GB OS)
-- **Storage**: 1TB NVMe SSD (500GB for Bitcoin blocks, 500GB for Neo4j)
-- **Network**: Local Neo4j instance or low-latency connection
-- **Use case**: Full blockchain (850k+ blocks)
-
-### High Performance
-- **CPU**: 16+ cores (Ryzen 9 / Threadripper / Xeon)
-- **Memory**: 32GB+ RAM
-- **Storage**: 2TB+ NVMe SSD (RAID 0 for Neo4j)
-- **Network**: 10Gbps local connection
-- **Use case**: Research, high-throughput analysis
+See [Getting Started — System Requirements](../GETTING_STARTED.md#system-requirements) for hardware tiers.
 
 ---
 
@@ -310,16 +261,16 @@ Contributions are welcome! Areas for improvement:
 
 ## License
 
-[Add your license here]
+Apache-2.0
 
 ---
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/bitcoin-chain-graph/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/bitcoin-chain-graph/discussions)
+- **Issues**: [GitHub Issues](https://github.com/mkd-neo4j/bitcoin-chain-graph/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/mkd-neo4j/bitcoin-chain-graph/discussions)
 - **Documentation**: This repository
 
 ---
 
-Last updated: January 2025
+Last updated: January 2026

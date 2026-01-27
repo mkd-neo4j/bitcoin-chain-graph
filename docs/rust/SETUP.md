@@ -48,10 +48,9 @@ bitcoin-chain-graph/
 ├── Cargo.lock              # Dependency lock file
 ├── .cargo/
 │   └── config.toml         # Build configuration
-├── config/
-│   ├── standard.toml       # 2-4GB RAM configuration
-│   ├── high-performance.toml
-│   └── ultra-performance.toml  # 40GB+ RAM configuration
+├── config.example/
+│   ├── config.toml.example # Configuration template with inline tuning guide
+│   └── README.md
 ├── src/
 │   ├── main.rs             # CLI entry point (wires layers together)
 │   ├── lib.rs              # Public API
@@ -406,18 +405,15 @@ cargo run --release -- validate --check balance
 
 ## Configuration Options
 
-### Choosing Configuration Profile
+### Configuration
 
-Select configuration based on available system resources:
+Copy the example config and adjust for your hardware:
 
-| Profile | RAM Available | CPU Cores | Use Case | Config File |
-|---------|--------------|-----------|----------|-------------|
-| **Constrained** | 1-2GB | 2-4 | Raspberry Pi, low-end VPS | `config/constrained.toml` |
-| **Standard** | 2-4GB | 4-8 | Desktop, standard VPS | `config/standard.toml` |
-| **High Performance** | 4-8GB | 8-16 | Workstation, dedicated server | `config/high-performance.toml` |
-| **Ultra Performance** | 40GB+ | 8+ | High-memory server (like yours!) | `config/ultra-performance.toml` |
+```bash
+cp config.example/config.toml.example config/default.toml
+```
 
-**Your server specs (i7-7700, 40GB RAM, 8 cores)**: Use **Ultra Performance** profile
+The defaults are tuned for 4-8 cores / 16-32GB RAM. See inline comments in the example for scaling guidance, or see [`config.example/README.md`](../../config.example/README.md) for a full scaling table.
 
 ### Command-Line Interface
 
@@ -477,45 +473,24 @@ enum Commands {
 }
 ```
 
-### Configuration File Examples
+### Configuration File Example
 
-**Standard configuration (`config/standard.toml`):**
+See [`config.example/config.toml.example`](../../config.example/config.toml.example) for the full template with inline tuning comments. Example high-performance overrides:
 
 ```toml
+# High-performance tuning (16+ cores, 64GB+ RAM)
 [neo4j]
-uri = "bolt://localhost:7687"
-user = "neo4j"
-password = "password"
-database = "neo4j"
-max_connections = 10
+max_connections = 50
+write_batch_size = 10000
 
-[bitcoin]
-blocks_dir = "/home/user/.bitcoin/blocks"
-network = "mainnet"
+[ingestion]
+batch_size = 5000
+max_batch_memory_mb = 2048
 
-[memory]
-utxo_cache_size = 200000
-batch_max_blocks = 50
-batch_max_memory_mb = 256
-parser_buffer_mb = 8
-
-[parallelism]
-num_worker_threads = 4
-max_concurrent_blocks = 8
-
-[logging]
-level = "info"
+[performance]
+utxo_cache_memory_mb = 500
+parallel_batches = 16
 ```
-
-**Ultra Performance configuration (`config/ultra-performance.toml`):**
-
-See [config/ultra-performance.toml](../../config/ultra-performance.toml) for complete configuration optimized for 40GB RAM servers.
-
-Key settings:
-- UTXO cache: 10M entries (~1.5GB)
-- Batch size: 500 blocks (~4GB buffer)
-- Worker threads: 8 (matching CPU cores)
-- Neo4j connections: 100 (aggressive pooling)
 
 ---
 
