@@ -256,18 +256,34 @@ pub const MARK_OUTPUT_SPENT_QUERY: &str = r#"
 // CHECKPOINT MANAGEMENT
 // =============================================================================
 
+/// Delete all existing checkpoints (used before creating a fresh one)
+pub const DELETE_CHECKPOINT_QUERY: &str = r#"
+    MATCH (c:IngestionCheckpoint) DELETE c
+"#;
+
 /// Create initial ingestion checkpoint
-/// Note: This query is currently unused - checkpoint creation is handled inline in Neo4jWriter
-#[allow(dead_code)]
+///
+/// Uses sentinel height -999 to represent "not yet started" state.
+/// This avoids a neo4rs driver bug that misreads -1 as 255.
 pub const CREATE_CHECKPOINT_QUERY: &str = r#"
     CREATE (c:IngestionCheckpoint {
-        lastProcessedHeight: -1,
+        lastProcessedHeight: -999,
         lastProcessedHash: '0000000000000000000000000000000000000000000000000000000000000000',
         lastProcessedFile: 'blk00000.dat',
         lastProcessedFileOffset: 0,
         timestamp: datetime(),
         status: 'in_progress'
     })
+"#;
+
+/// Set checkpoint status
+///
+/// Parameters:
+/// - $status: New status ("in_progress", "completed", "paused", "error")
+pub const SET_CHECKPOINT_STATUS_QUERY: &str = r#"
+    MATCH (c:IngestionCheckpoint)
+    SET c.status = $status,
+        c.timestamp = datetime()
 "#;
 
 /// Update checkpoint after successful block ingestion

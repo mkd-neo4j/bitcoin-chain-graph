@@ -127,7 +127,7 @@ fn test_input_conversion_coinbase() {
     let input = &coinbase.input[0];
 
     // Convert to domain model
-    let input_data = InputData::from_input(input, &txid, 0);
+    let input_data = InputData::from_input(input, &txid, 0, 0);
 
     // Verify properties
     assert_eq!(input_data.input_id, format!("{}:0", txid));
@@ -183,6 +183,7 @@ fn test_all_model_types_implement_clone_debug() {
         &genesis.txdata[0].input[0],
         &genesis.txdata[0].txid().to_string(),
         0,
+        0, // block height (genesis)
     );
     let _cloned = input_data.clone();
     let _debug = format!("{:?}", input_data);

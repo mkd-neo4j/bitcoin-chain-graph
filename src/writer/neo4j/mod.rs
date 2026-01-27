@@ -1,10 +1,10 @@
 //! Neo4j implementation of GraphWriter trait
 //!
 //! Provides Neo4j-backed blockchain ingestion with connection pooling,
-//! bulk operations, and configuration-driven performance tuning.
+//! bulk operations, retry logic, and configuration-driven performance tuning.
 
 use async_trait::async_trait;
-use neo4rs::{Graph, ConfigBuilder, query};
+use neo4rs::{Graph, ConfigBuilder, query, BoltType};
 use std::sync::Arc;
 
 use crate::config::Neo4jConfig;
@@ -17,30 +17,47 @@ mod schema;
 
 use conversions::*;
 
+/// Sentinel height value for initial checkpoint state ("not yet started").
+///
+/// Uses -999 instead of -1 to avoid collision with the neo4rs driver bug
+/// that misreads -1 as 255 (which is a valid block height).
+const CHECKPOINT_INITIAL_HEIGHT: i64 = -999;
+
 /// Neo4j implementation of GraphWriter
 ///
 /// Connects to Neo4j database and implements all blockchain ingestion operations
-/// with bulk writes, connection pooling, and configurable performance settings.
+/// with bulk writes, connection pooling, retry with exponential backoff, and
+/// configurable performance settings.
 pub struct Neo4jWriter {
     graph: Arc<Graph>,
     batch_size: usize,
+    max_retries: usize,
 }
 
 impl Neo4jWriter {
     /// Create a new Neo4jWriter with configuration
     ///
+    /// Establishes a connection to Neo4j and verifies connectivity with a
+    /// health check query.
+    ///
     /// # Arguments
     /// * `config` - Neo4j connection and pool configuration
     ///
     /// # Errors
-    /// Returns error if connection to Neo4j fails
+    /// Returns error if connection to Neo4j fails or health check fails
     pub async fn new(config: Neo4jConfig) -> Result<Self> {
         let graph = Self::connect(&config).await?;
 
-        Ok(Self {
+        let writer = Self {
             graph: Arc::new(graph),
             batch_size: config.write_batch_size,
-        })
+            max_retries: config.max_retries,
+        };
+
+        // Verify the connection is alive
+        writer.health_check().await?;
+
+        Ok(writer)
     }
 
     /// Establish connection to Neo4j with configured connection pool
@@ -60,9 +77,137 @@ impl Neo4jWriter {
             .map_err(|e| WriterError::ConnectionFailed(format!("Connection error: {}", e)))
     }
 
+    /// Verify the Neo4j connection is alive
+    ///
+    /// Executes a trivial query to check connectivity. Called at startup
+    /// and can be used for monitoring.
+    pub async fn health_check(&self) -> Result<()> {
+        self.graph
+            .run(query("RETURN 1"))
+            .await
+            .map_err(|e| WriterError::ConnectionFailed(
+                format!("Health check failed: {}", e)
+            ))?;
+        Ok(())
+    }
+
     /// Get reference to underlying graph
     pub fn graph(&self) -> &Graph {
         &self.graph
+    }
+
+    /// Execute a query in batched chunks with retry, timing, and structured logging.
+    ///
+    /// Generic helper that eliminates repeated boilerplate across write methods.
+    /// Each chunk is converted to bolt format, timed, and executed with automatic
+    /// retry on transient failures.
+    ///
+    /// # Type Parameters
+    /// * `T` - Domain type (BlockData, TransactionData, etc.)
+    ///
+    /// # Arguments
+    /// * `items` - Full slice of domain objects to write
+    /// * `query_str` - The Cypher query constant to execute
+    /// * `param_name` - The UNWIND parameter name ("blocks", "transactions", etc.)
+    /// * `operation_name` - Human-readable name for logging ("write_blocks", etc.)
+    /// * `convert` - Closure that converts a chunk &[T] into Vec<BoltType>
+    async fn execute_batched<T, F>(
+        &self,
+        items: &[T],
+        query_str: &str,
+        param_name: &str,
+        operation_name: &str,
+        convert: F,
+    ) -> Result<()>
+    where
+        F: Fn(&[T]) -> Vec<BoltType>,
+    {
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        let total_batches = (items.len() + self.batch_size - 1) / self.batch_size;
+
+        for (i, chunk) in items.chunks(self.batch_size).enumerate() {
+            let bolt_data = convert(chunk);
+            let batch_num = i + 1;
+
+            if i > 0 {
+                tracing::debug!(
+                    operation = operation_name,
+                    batch = batch_num,
+                    total_batches,
+                    records = chunk.len(),
+                    "Writing batch"
+                );
+            }
+
+            let start = std::time::Instant::now();
+
+            self.run_with_retry(operation_name, || {
+                let q = query(query_str).param(param_name, bolt_data.as_slice());
+                async { self.graph.run(q).await }
+            }, batch_num, total_batches, chunk.len()).await?;
+
+            tracing::debug!(
+                operation = operation_name,
+                batch = batch_num,
+                total_batches,
+                records = chunk.len(),
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "Batch write complete"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Execute an async Neo4j operation with exponential backoff retry.
+    ///
+    /// Retries on transient errors (QueryFailed, ConnectionFailed) up to
+    /// `max_retries` times with exponential backoff (200ms, 400ms, 800ms, ...).
+    async fn run_with_retry<F, Fut>(
+        &self,
+        operation_name: &str,
+        f: F,
+        batch_num: usize,
+        total_batches: usize,
+        record_count: usize,
+    ) -> Result<()>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = std::result::Result<(), neo4rs::Error>>,
+    {
+        let mut attempt = 0;
+        loop {
+            match f().await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let writer_err = WriterError::QueryFailed(format!(
+                        "{} failed (batch {}/{}, {} records): {}",
+                        operation_name, batch_num, total_batches, record_count, e
+                    ));
+
+                    if attempt < self.max_retries && writer_err.is_retryable() {
+                        attempt += 1;
+                        let delay = std::time::Duration::from_millis(
+                            200 * (2_u64.pow(attempt as u32 - 1))
+                        );
+                        tracing::warn!(
+                            operation = operation_name,
+                            attempt,
+                            max_retries = self.max_retries,
+                            delay_ms = delay.as_millis() as u64,
+                            error = %e,
+                            "Retrying after transient failure"
+                        );
+                        tokio::time::sleep(delay).await;
+                    } else {
+                        return Err(writer_err);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -73,49 +218,23 @@ impl GraphWriter for Neo4jWriter {
     }
 
     async fn write_blocks(&self, blocks: &[BlockData]) -> Result<()> {
-        if blocks.is_empty() {
-            return Ok(());
-        }
-
-        // Process in chunks to avoid massive queries
-        for (i, chunk) in blocks.chunks(self.batch_size).enumerate() {
-            let blocks_data = blocks_to_bolt_list(chunk)?;
-
-            if i > 0 {
-                tracing::debug!("Writing blocks batch {}/{}", i + 1, (blocks.len() + self.batch_size - 1) / self.batch_size);
-            }
-
-            self.graph
-                .run(query(queries::CREATE_BLOCKS_QUERY)
-                    .param("blocks", blocks_data.as_slice()))
-                .await
-                .map_err(|e| WriterError::QueryFailed(format!("write_blocks failed (batch {}): {}", i, e)))?;
-        }
-
-        Ok(())
+        self.execute_batched(
+            blocks,
+            queries::CREATE_BLOCKS_QUERY,
+            "blocks",
+            "write_blocks",
+            |chunk| blocks_to_bolt_list(chunk),
+        ).await
     }
 
     async fn write_transactions(&self, transactions: &[TransactionData]) -> Result<()> {
-        if transactions.is_empty() {
-            return Ok(());
-        }
-
-        // Process in chunks to avoid massive queries
-        for (i, chunk) in transactions.chunks(self.batch_size).enumerate() {
-            let tx_data = transactions_to_bolt_list(chunk)?;
-
-            if i > 0 {
-                tracing::debug!("Writing transactions batch {}/{}", i + 1, (transactions.len() + self.batch_size - 1) / self.batch_size);
-            }
-
-            self.graph
-                .run(query(queries::CREATE_TRANSACTIONS_QUERY)
-                    .param("transactions", tx_data.as_slice()))
-                .await
-                .map_err(|e| WriterError::QueryFailed(format!("write_transactions failed (batch {}): {}", i, e)))?;
-        }
-
-        Ok(())
+        self.execute_batched(
+            transactions,
+            queries::CREATE_TRANSACTIONS_QUERY,
+            "transactions",
+            "write_transactions",
+            |chunk| transactions_to_bolt_list(chunk),
+        ).await
     }
 
     async fn write_outputs(&self, outputs: &[OutputData]) -> Result<()> {
@@ -123,33 +242,61 @@ impl GraphWriter for Neo4jWriter {
             return Ok(());
         }
 
-        // Process in chunks to avoid massive queries
+        let total_batches = (outputs.len() + self.batch_size - 1) / self.batch_size;
+
+        // write_outputs needs special handling: two queries per chunk (outputs + LOCKED_TO)
         for (i, chunk) in outputs.chunks(self.batch_size).enumerate() {
-            // Create output nodes
-            let output_data = outputs_to_bolt_list(chunk)?;
+            let output_data = outputs_to_bolt_list(chunk);
+            let batch_num = i + 1;
 
             if i > 0 {
-                tracing::debug!("Writing outputs batch {}/{}", i + 1, (outputs.len() + self.batch_size - 1) / self.batch_size);
+                tracing::debug!(
+                    operation = "write_outputs",
+                    batch = batch_num,
+                    total_batches,
+                    records = chunk.len(),
+                    "Writing batch"
+                );
             }
 
-            self.graph
-                .run(query(queries::CREATE_OUTPUTS_QUERY)
-                    .param("outputs", output_data.as_slice()))
-                .await
-                .map_err(|e| WriterError::QueryFailed(format!("write_outputs failed (batch {}): {}", i, e)))?;
+            // Query 1: Create output nodes
+            let start = std::time::Instant::now();
 
-            // Create LOCKED_TO relationships for outputs with addresses
+            self.run_with_retry("write_outputs", || {
+                let q = query(queries::CREATE_OUTPUTS_QUERY)
+                    .param("outputs", output_data.as_slice());
+                async { self.graph.run(q).await }
+            }, batch_num, total_batches, chunk.len()).await?;
+
+            tracing::debug!(
+                operation = "write_outputs",
+                batch = batch_num,
+                records = chunk.len(),
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "Output nodes written"
+            );
+
+            // Query 2: Create LOCKED_TO relationships for outputs with addresses
             let outputs_with_address = filter_outputs_with_address(chunk);
 
             if !outputs_with_address.is_empty() {
-                let owned_outputs: Vec<OutputData> = outputs_with_address.into_iter().cloned().collect();
-                let address_data = outputs_to_bolt_list(&owned_outputs)?;
+                let address_data = output_refs_to_bolt_list(&outputs_with_address);
+                let addr_count = outputs_with_address.len();
+                let start = std::time::Instant::now();
 
-                self.graph
-                    .run(query(queries::CREATE_LOCKED_TO_QUERY)
-                        .param("outputs", address_data.as_slice()))
-                    .await
-                    .map_err(|e| WriterError::QueryFailed(format!("CREATE_LOCKED_TO failed (batch {}): {}", i, e)))?;
+                self.run_with_retry("write_outputs:locked_to", || {
+                    let q = query(queries::CREATE_LOCKED_TO_QUERY)
+                        .param("outputs", address_data.as_slice());
+                    async { self.graph.run(q).await }
+                }, batch_num, total_batches, addr_count).await?;
+
+                tracing::debug!(
+                    operation = "write_outputs:locked_to",
+                    batch = batch_num,
+                    records = addr_count,
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    "LOCKED_TO relationships written"
+                );
             }
         }
 
@@ -157,82 +304,33 @@ impl GraphWriter for Neo4jWriter {
     }
 
     async fn write_inputs(&self, inputs: &[InputData]) -> Result<()> {
-        if inputs.is_empty() {
-            return Ok(());
-        }
-
-        // Infer block height from first input (all inputs in batch are from same block)
-        // This logic is preserved but might be cleaner if we passed block height explicitly.
-        // For inputs, we probably want to respect the batch size as well.
-        
-        let block_height = 0; // Keeping the TODO placeholder as in original code
-
-        // Process in chunks to avoid massive queries
-        for (i, chunk) in inputs.chunks(self.batch_size).enumerate() {
-            let input_data = inputs_to_bolt_list(chunk, block_height)?;
-
-            if i > 0 {
-                tracing::debug!("Writing inputs batch {}/{}", i + 1, (inputs.len() + self.batch_size - 1) / self.batch_size);
-            }
-
-            self.graph
-                .run(query(queries::CREATE_INPUTS_QUERY)
-                    .param("inputs", input_data.as_slice()))
-                .await
-                .map_err(|e| WriterError::QueryFailed(format!("write_inputs failed (batch {}): {}", i, e)))?;
-        }
-
-        Ok(())
+        self.execute_batched(
+            inputs,
+            queries::CREATE_INPUTS_QUERY,
+            "inputs",
+            "write_inputs",
+            |chunk| inputs_to_bolt_list(chunk),
+        ).await
     }
 
     async fn write_performs(&self, performs: &[PerformsData]) -> Result<()> {
-        use crate::writer::neo4j::conversions;
-
-        if performs.is_empty() {
-            return Ok(());
-        }
-
-        // Process in chunks
-        for (i, chunk) in performs.chunks(self.batch_size).enumerate() {
-            let performs_list = conversions::performs_to_bolt_list(chunk)?;
-
-            if i > 0 {
-                tracing::debug!("Writing performs batch {}/{}", i + 1, (performs.len() + self.batch_size - 1) / self.batch_size);
-            }
-
-            self.graph
-                .run(query(queries::CREATE_PERFORMS_BULK_QUERY)
-                    .param("performs", performs_list))
-                .await
-                .map_err(|e| WriterError::QueryFailed(format!("write_performs failed (batch {}): {}", i, e)))?;
-        }
-
-        Ok(())
+        self.execute_batched(
+            performs,
+            queries::CREATE_PERFORMS_BULK_QUERY,
+            "performs",
+            "write_performs",
+            |chunk| performs_to_bolt_list(chunk),
+        ).await
     }
 
     async fn write_benefits_to(&self, benefits_to: &[BenefitsToData]) -> Result<()> {
-        use crate::writer::neo4j::conversions;
-
-        if benefits_to.is_empty() {
-            return Ok(());
-        }
-
-        // Process in chunks
-        for (i, chunk) in benefits_to.chunks(self.batch_size).enumerate() {
-            let benefits_list = conversions::benefits_to_to_bolt_list(chunk)?;
-
-            if i > 0 {
-                tracing::debug!("Writing benefits_to batch {}/{}", i + 1, (benefits_to.len() + self.batch_size - 1) / self.batch_size);
-            }
-
-            self.graph
-                .run(query(queries::CREATE_BENEFITS_TO_BULK_QUERY)
-                    .param("benefitsTo", benefits_list))
-                .await
-                .map_err(|e| WriterError::QueryFailed(format!("write_benefits_to failed (batch {}): {}", i, e)))?;
-        }
-
-        Ok(())
+        self.execute_batched(
+            benefits_to,
+            queries::CREATE_BENEFITS_TO_BULK_QUERY,
+            "benefitsTo",
+            "write_benefits_to",
+            |chunk| benefits_to_to_bolt_list(chunk),
+        ).await
     }
 
     async fn lookup_outputs_batch(&self, output_ids: &[String]) -> Result<Vec<OutputData>> {
@@ -245,7 +343,9 @@ impl GraphWriter for Neo4jWriter {
             .execute(query(queries::LOOKUP_OUTPUTS_BATCH_QUERY)
                 .param("outputIds", ids))
             .await
-            .map_err(|e| WriterError::QueryFailed(format!("lookup_outputs_batch failed: {}", e)))?;
+            .map_err(|e| WriterError::QueryFailed(
+                format!("lookup_outputs_batch failed ({} ids): {}", output_ids.len(), e)
+            ))?;
 
         let mut outputs = Vec::with_capacity(output_ids.len());
         while let Some(row) = result.next().await
@@ -275,7 +375,9 @@ impl GraphWriter for Neo4jWriter {
             .execute(query(queries::LOOKUP_OUTPUT_QUERY)
                 .param("outputId", output_id))
             .await
-            .map_err(|e| WriterError::QueryFailed(format!("lookup_output failed: {}", e)))?;
+            .map_err(|e| WriterError::QueryFailed(
+                format!("lookup_output failed ({}): {}", output_id, e)
+            ))?;
 
         let row = result.next().await
             .map_err(|e| WriterError::QueryFailed(format!("Failed to fetch row: {}", e)))?
@@ -317,16 +419,13 @@ impl GraphWriter for Neo4jWriter {
     async fn create_checkpoint(&self) -> Result<()> {
         // Step 1: Delete any existing checkpoints
         self.graph
-            .run(query("MATCH (c:IngestionCheckpoint) DELETE c"))
+            .run(query(queries::DELETE_CHECKPOINT_QUERY))
             .await
             .map_err(|e| WriterError::CheckpointError(format!("delete failed: {}", e)))?;
 
-        // Step 2: Create new checkpoint at height -1 (initial state, "not yet started")
-        // NOTE: neo4rs driver has a bug where it reads -1 as 255 (i64 to i32 conversion issue)
-        // We handle this on READ by detecting 255 and converting back to -1
-        // Using -1 correctly represents "no blocks processed yet" vs 0 which means "block 0 processed"
+        // Step 2: Create new checkpoint at sentinel height (initial state, "not yet started")
         self.graph
-            .run(query("CREATE (c:IngestionCheckpoint { lastProcessedHeight: -1, lastProcessedHash: '0000000000000000000000000000000000000000000000000000000000000000', lastProcessedFile: 'blk00000.dat', lastProcessedFileOffset: 0, timestamp: datetime(), status: 'in_progress' })"))
+            .run(query(queries::CREATE_CHECKPOINT_QUERY))
             .await
             .map_err(|e| WriterError::CheckpointError(format!("create failed: {}", e)))?;
 
@@ -361,9 +460,11 @@ impl GraphWriter for Neo4jWriter {
                     let val: i64 = row.get("lastProcessedHeight")
                         .map_err(|e| WriterError::DatabaseError(format!("Missing lastProcessedHeight: {}", e)))?;
 
-                    // WORKAROUND: neo4rs driver bug converts -1 to 255 when reading
-                    // Detect 255 and convert back to -1 to represent "not yet started" state
-                    if val == 255 {
+                    // Convert sentinel value back to -1 for domain layer.
+                    // We store CHECKPOINT_INITIAL_HEIGHT (-999) in Neo4j to avoid a neo4rs
+                    // driver bug that misreads -1 as 255. Also handle legacy -1/255 values
+                    // for databases created before this fix.
+                    if val == CHECKPOINT_INITIAL_HEIGHT || val == 255 || val == -1 {
                         -1
                     } else {
                         val as i32
@@ -394,7 +495,7 @@ impl GraphWriter for Neo4jWriter {
 
     async fn set_checkpoint_status(&self, status: &str) -> Result<()> {
         self.graph
-            .run(query("MATCH (c:IngestionCheckpoint) SET c.status = $status, c.timestamp = datetime()")
+            .run(query(queries::SET_CHECKPOINT_STATUS_QUERY)
                 .param("status", status))
             .await
             .map_err(|e| WriterError::CheckpointError(format!("set_checkpoint_status failed: {}", e)))?;

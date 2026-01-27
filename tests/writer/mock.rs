@@ -148,6 +148,7 @@ mod mock_writer_tests {
                 script_sig: String::from("4730440220..."),
                 sequence: 0xFFFFFFFF,
                 witness: vec![],
+                block_height: 1,
             },
         ];
 
@@ -347,6 +348,7 @@ mod mock_writer_tests {
             &tx.input[0],
             &tx.txid().to_string(),
             0,
+            0, // block height (genesis)
         );
 
         writer.write_inputs(&[input_data]).await.unwrap();

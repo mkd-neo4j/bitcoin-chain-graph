@@ -107,6 +107,7 @@ fn test_input_data(txid: &str, index: u32, prev_txid: &str, prev_index: u32) -> 
         script_sig: "".to_string(),
         sequence: 0xffffffff,
         witness: vec![],
+        block_height: 0,
     }
 }
 

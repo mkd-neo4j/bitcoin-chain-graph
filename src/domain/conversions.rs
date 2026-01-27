@@ -130,6 +130,7 @@ impl InputData {
     /// * `input` - The transaction input from bitcoin crate
     /// * `txid` - Transaction ID this input belongs to
     /// * `input_index` - Position in transaction inputs (0, 1, 2...)
+    /// * `block_height` - Block height where this input appears
     ///
     /// # Returns
     /// InputData with all properties extracted
@@ -143,6 +144,7 @@ impl InputData {
         input: &TxIn,
         txid: &str,
         input_index: u32,
+        block_height: u32,
     ) -> Self {
         // Convert witness data to hex strings
         let witness: Vec<String> = input
@@ -160,6 +162,7 @@ impl InputData {
             script_sig: input.script_sig.to_hex_string(),
             sequence: input.sequence.0,
             witness,
+            block_height,
         }
     }
 }

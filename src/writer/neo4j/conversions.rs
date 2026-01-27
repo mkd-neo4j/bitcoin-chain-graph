@@ -7,7 +7,6 @@
 //! transaction_to_bolt_map to include amount fields calculated in Rust.
 
 use crate::domain::{BlockData, TransactionData, OutputData, InputData, PerformsData, BenefitsToData};
-use crate::writer::WriterError;
 use neo4rs::{BoltType, BoltMap};
 
 #[cfg(test)]
@@ -32,10 +31,10 @@ pub fn block_to_bolt_map(block: &BlockData) -> BoltMap {
 }
 
 /// Convert slice of BlockData to Vec<BoltType>
-pub fn blocks_to_bolt_list(blocks: &[BlockData]) -> Result<Vec<BoltType>, WriterError> {
-    Ok(blocks.iter()
+pub fn blocks_to_bolt_list(blocks: &[BlockData]) -> Vec<BoltType> {
+    blocks.iter()
         .map(|b| BoltType::Map(block_to_bolt_map(b)))
-        .collect())
+        .collect()
 }
 
 /// Convert TransactionData to BoltMap for Neo4j (M7 - with amounts)
@@ -76,10 +75,10 @@ pub fn transaction_to_bolt_map(tx: &TransactionData) -> BoltMap {
 }
 
 /// Convert slice of TransactionData to Vec<BoltType>
-pub fn transactions_to_bolt_list(transactions: &[TransactionData]) -> Result<Vec<BoltType>, WriterError> {
-    Ok(transactions.iter()
+pub fn transactions_to_bolt_list(transactions: &[TransactionData]) -> Vec<BoltType> {
+    transactions.iter()
         .map(|tx| BoltType::Map(transaction_to_bolt_map(tx)))
-        .collect())
+        .collect()
 }
 
 /// Convert OutputData to BoltMap for Neo4j
@@ -101,10 +100,20 @@ pub fn output_to_bolt_map(output: &OutputData) -> BoltMap {
 }
 
 /// Convert slice of OutputData to Vec<BoltType>
-pub fn outputs_to_bolt_list(outputs: &[OutputData]) -> Result<Vec<BoltType>, WriterError> {
-    Ok(outputs.iter()
+pub fn outputs_to_bolt_list(outputs: &[OutputData]) -> Vec<BoltType> {
+    outputs.iter()
         .map(|o| BoltType::Map(output_to_bolt_map(o)))
-        .collect())
+        .collect()
+}
+
+/// Convert slice of OutputData references to Vec<BoltType>
+///
+/// Avoids cloning OutputData when we already have references
+/// (e.g., from filter_outputs_with_address).
+pub fn output_refs_to_bolt_list(outputs: &[&OutputData]) -> Vec<BoltType> {
+    outputs.iter()
+        .map(|o| BoltType::Map(output_to_bolt_map(o)))
+        .collect()
 }
 
 /// Filter outputs that have addresses (for LOCKED_TO relationships)
@@ -113,7 +122,10 @@ pub fn filter_outputs_with_address(outputs: &[OutputData]) -> Vec<&OutputData> {
 }
 
 /// Convert InputData to BoltMap for Neo4j
-pub fn input_to_bolt_map(input: &InputData, block_height: u32) -> BoltMap {
+///
+/// Block height is read from `input.block_height` to correctly set
+/// `spentAtHeight` on spent outputs in the Cypher query.
+pub fn input_to_bolt_map(input: &InputData) -> BoltMap {
     let mut map = BoltMap::new();
     map.put("inputId".into(), input.input_id.as_str().into());
     map.put("inputIndex".into(), (input.input_index as i64).into());
@@ -129,15 +141,15 @@ pub fn input_to_bolt_map(input: &InputData, block_height: u32) -> BoltMap {
         .collect();
     map.put("witness".into(), BoltType::List(witness_list.into()));
 
-    map.put("blockHeight".into(), (block_height as i64).into());
+    map.put("blockHeight".into(), (input.block_height as i64).into());
     map
 }
 
-/// Convert slice of InputData to Vec<BoltType> with block height
-pub fn inputs_to_bolt_list(inputs: &[InputData], block_height: u32) -> Result<Vec<BoltType>, WriterError> {
-    Ok(inputs.iter()
-        .map(|input| BoltType::Map(input_to_bolt_map(input, block_height)))
-        .collect())
+/// Convert slice of InputData to Vec<BoltType>
+pub fn inputs_to_bolt_list(inputs: &[InputData]) -> Vec<BoltType> {
+    inputs.iter()
+        .map(|input| BoltType::Map(input_to_bolt_map(input)))
+        .collect()
 }
 
 // =============================================================================
@@ -155,10 +167,10 @@ pub fn performs_to_bolt_map(p: &PerformsData) -> BoltMap {
 }
 
 /// Convert slice of PerformsData to Vec<BoltType>
-pub fn performs_to_bolt_list(performs: &[PerformsData]) -> Result<Vec<BoltType>, WriterError> {
-    Ok(performs.iter()
+pub fn performs_to_bolt_list(performs: &[PerformsData]) -> Vec<BoltType> {
+    performs.iter()
         .map(|p| BoltType::Map(performs_to_bolt_map(p)))
-        .collect())
+        .collect()
 }
 
 /// Convert BenefitsToData to BoltMap for Neo4j (M7)
@@ -172,10 +184,10 @@ pub fn benefits_to_to_bolt_map(b: &BenefitsToData) -> BoltMap {
 }
 
 /// Convert slice of BenefitsToData to Vec<BoltType>
-pub fn benefits_to_to_bolt_list(benefits_to: &[BenefitsToData]) -> Result<Vec<BoltType>, WriterError> {
-    Ok(benefits_to.iter()
+pub fn benefits_to_to_bolt_list(benefits_to: &[BenefitsToData]) -> Vec<BoltType> {
+    benefits_to.iter()
         .map(|b| BoltType::Map(benefits_to_to_bolt_map(b)))
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]

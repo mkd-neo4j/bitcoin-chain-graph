@@ -5,16 +5,23 @@
 use neo4rs::{Graph, query};
 use crate::writer::{WriterError, Result};
 
+/// Expected number of unique constraints after schema initialization
+const EXPECTED_CONSTRAINTS: usize = 6;
+
 /// Initialize Neo4j schema with constraints and indexes
 ///
 /// Creates all required constraints for unique node properties and indexes
 /// for query performance. This operation is idempotent - safe to run multiple times.
+/// After creation, verifies that the expected number of constraints exist.
 pub async fn init_schema(graph: &Graph) -> Result<()> {
     // Create constraints (also create indexes automatically)
     create_constraints(graph).await?;
 
     // Create additional performance indexes
     create_indexes(graph).await?;
+
+    // Verify schema was applied correctly
+    verify_schema(graph).await?;
 
     Ok(())
 }
@@ -91,6 +98,40 @@ async fn create_indexes(graph: &Graph) -> Result<()> {
             .map_err(|e| WriterError::DatabaseError(
                 format!("Failed to create index: {}", e)
             ))?;
+    }
+
+    Ok(())
+}
+
+/// Verify that expected constraints exist after schema initialization.
+///
+/// This is informational — logs a warning if fewer constraints than expected
+/// are found, but does not fail. Useful for catching silent schema issues.
+async fn verify_schema(graph: &Graph) -> Result<()> {
+    let mut result = graph
+        .execute(query("SHOW CONSTRAINTS"))
+        .await
+        .map_err(|e| WriterError::DatabaseError(
+            format!("Failed to verify constraints: {}", e)
+        ))?;
+
+    let mut constraint_count = 0;
+    while let Some(_row) = result.next().await
+        .map_err(|e| WriterError::DatabaseError(format!("Failed to read constraint: {}", e)))? {
+        constraint_count += 1;
+    }
+
+    if constraint_count < EXPECTED_CONSTRAINTS {
+        tracing::warn!(
+            expected = EXPECTED_CONSTRAINTS,
+            found = constraint_count,
+            "Schema verification: fewer constraints than expected"
+        );
+    } else {
+        tracing::info!(
+            constraints = constraint_count,
+            "Schema verification passed"
+        );
     }
 
     Ok(())

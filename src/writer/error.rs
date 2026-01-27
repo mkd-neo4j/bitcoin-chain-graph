@@ -26,5 +26,23 @@ pub enum WriterError {
     DatabaseError(String),
 }
 
+impl WriterError {
+    /// Whether this error is transient and safe to retry.
+    ///
+    /// Returns true for connection and query execution failures, which may be
+    /// caused by transient issues like Neo4j cluster leader switches, network
+    /// blips, or temporary resource exhaustion.
+    ///
+    /// Returns false for logic errors (OutputNotFound, SerializationError),
+    /// schema errors (DatabaseError), and checkpoint errors, which are not
+    /// expected to resolve by retrying.
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            WriterError::QueryFailed(_) | WriterError::ConnectionFailed(_)
+        )
+    }
+}
+
 /// Result type alias for writer operations
 pub type Result<T> = std::result::Result<T, WriterError>;

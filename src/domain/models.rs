@@ -121,6 +121,8 @@ pub struct InputData {
     pub sequence: u32,
     /// Witness data array (SegWit transactions, hex encoded items)
     pub witness: Vec<String>,
+    /// Block height where this input appears (used for spentAtHeight on spent outputs)
+    pub block_height: u32,
 }
 
 /// Checkpoint data for resumable ingestion

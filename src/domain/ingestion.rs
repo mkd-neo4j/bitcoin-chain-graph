@@ -309,15 +309,20 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         batch_size: usize,
     ) -> Result<()> {
         let total_blocks = blocks.len();
-        println!("\n🚀 Starting batch ingestion of {} blocks (batch size: {})...", total_blocks, batch_size);
+        tracing::info!(total_blocks, batch_size, "Starting batch ingestion");
 
         for (batch_idx, chunk) in blocks.chunks(batch_size).enumerate() {
             let start_height = chunk.first().map(|(h, _, _)| *h).unwrap_or(0);
             let end_height = chunk.last().map(|(h, _, _)| *h).unwrap_or(0);
             let blocks_in_batch = chunk.len();
 
-            println!("\n📦 Batch {} | Heights {}-{} | {} blocks",
-                batch_idx + 1, start_height, end_height, blocks_in_batch);
+            tracing::info!(
+                batch = batch_idx + 1,
+                start_height,
+                end_height,
+                blocks_in_batch,
+                "Processing batch"
+            );
 
             // Phase 1: Accumulate all block data
             let phase1_start = std::time::Instant::now();
@@ -489,11 +494,11 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             // Phase 4: Accumulate inputs (cache removal deferred to Phase 6)
             let phase4_start = std::time::Instant::now();
             let mut input_data_batch = Vec::with_capacity(total_inputs);
-            for (_height, block, _file_name) in chunk {
+            for (height, block, _file_name) in chunk {
                 for tx in &block.txdata {
                     let txid = tx.txid().to_string();
                     for (input_index, input) in tx.input.iter().enumerate() {
-                        let input_data = InputData::from_input(input, &txid, input_index as u32);
+                        let input_data = InputData::from_input(input, &txid, input_index as u32, *height);
                         input_data_batch.push(input_data);
                     }
                 }
@@ -585,10 +590,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 self.writer.update_checkpoint(&checkpoint).await?;
             }
 
-            println!("   ✅ Batch {} complete", batch_idx + 1);
+            tracing::info!(batch = batch_idx + 1, "Batch complete");
         }
 
-        println!("\n✅ Batch ingestion complete! Processed {} blocks", total_blocks);
+        tracing::info!(total_blocks, "Batch ingestion complete");
         Ok(())
     }
 
@@ -721,7 +726,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     ///
     /// Coinbase inputs are created but have no SPENDS relationship (they don't
     /// spend any previous output).
-    async fn ingest_inputs(&self, block: &Block, _height: u32) -> Result<()> {
+    async fn ingest_inputs(&self, block: &Block, height: u32) -> Result<()> {
         let total_inputs: usize = block.txdata.iter().map(|tx| tx.input.len()).sum();
         let mut all_inputs = Vec::with_capacity(total_inputs);
 
@@ -733,6 +738,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                     input,
                     &txid,
                     input_index as u32,
+                    height,
                 );
                 all_inputs.push(input_data);
             }
