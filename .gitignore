@@ -18,7 +18,7 @@ test_data/*
 Thumbs.db
 
 # Configuration files (may contain secrets)
-config/
+/config/
 config.toml
 *.toml
 
