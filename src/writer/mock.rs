@@ -300,6 +300,47 @@ impl GraphWriter for MockWriter {
 
         Ok(())
     }
+
+    async fn lookup_block_hash(&self, height: u32) -> Result<Option<String>> {
+        let storage = self.storage.lock().unwrap();
+        Ok(storage
+            .blocks
+            .iter()
+            .find(|b| b.height == height)
+            .map(|b| b.hash.clone()))
+    }
+
+    async fn rollback_block(&self, height: u32) -> Result<()> {
+        let mut storage = self.storage.lock().unwrap();
+
+        // Find txids of transactions in this block
+        let txids: Vec<String> = storage
+            .transactions
+            .iter()
+            .filter(|t| t.block_height == height)
+            .map(|t| t.txid.clone())
+            .collect();
+
+        // Remove performs and benefits_to for these transactions
+        storage.performs.retain(|p| !txids.contains(&p.to_txid));
+        storage
+            .benefits_to
+            .retain(|b| !txids.contains(&b.from_txid));
+
+        // Remove inputs for these transactions
+        storage.inputs.retain(|i| !txids.contains(&i.txid));
+
+        // Remove outputs for these transactions
+        storage.outputs.retain(|o| !txids.contains(&o.txid));
+
+        // Remove transactions
+        storage.transactions.retain(|t| t.block_height != height);
+
+        // Remove block
+        storage.blocks.retain(|b| b.height != height);
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

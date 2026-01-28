@@ -42,6 +42,15 @@ use bitcoin::{Block, Network};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Known BIP30 duplicate transaction block heights.
+///
+/// Blocks 91842 and 91880 each contain a coinbase transaction with a txid identical
+/// to an earlier block's coinbase. This was possible before BIP30 enforcement.
+/// MERGE handles this correctly (last-write-wins), but we log a warning for awareness.
+///
+/// See: https://github.com/bitcoin/bips/blob/master/bip-0030.mediawiki
+const BIP30_DUPLICATE_HEIGHTS: [u32; 2] = [91842, 91880];
+
 /// Orchestrates the 6-phase ingestion process with UTXO cache
 ///
 /// Generic over `W: GraphWriter` to support both testing (MockWriter) and
@@ -223,6 +232,131 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         self.writer.update_checkpoint(checkpoint).await
     }
 
+    /// Validate that a block's previous hash matches the stored block
+    ///
+    /// Compares the block's `previousHash` field with the hash of the block
+    /// stored at `height - 1`. If they don't match, a chain reorganization has
+    /// occurred and `WriterError::ReorgDetected` is returned.
+    ///
+    /// # Arguments
+    /// * `block` - The block to validate
+    /// * `height` - The height this block is being ingested at
+    ///
+    /// # Returns
+    /// Ok(()) if the parent hash matches or this is the genesis block.
+    ///
+    /// # Errors
+    /// - `WriterError::ReorgDetected` if the parent hash doesn't match
+    /// - Other errors if the database query fails
+    pub async fn validate_parent_hash(&self, block: &Block, height: u32) -> Result<()> {
+        if height == 0 {
+            return Ok(()); // Genesis block has no parent to validate
+        }
+
+        let stored_hash = self.writer.lookup_block_hash(height - 1).await?;
+        let expected_hash = block.header.prev_blockhash.to_string();
+
+        match stored_hash {
+            Some(ref hash) if *hash == expected_hash => Ok(()),
+            Some(hash) => {
+                tracing::error!(
+                    height,
+                    expected = %expected_hash,
+                    stored = %hash,
+                    "Parent hash mismatch — chain reorganization detected"
+                );
+                Err(WriterError::ReorgDetected {
+                    height,
+                    expected: expected_hash,
+                    actual: hash,
+                })
+            }
+            None => {
+                // No block at height-1 in database. This can happen during
+                // initial ingestion when blocks are processed sequentially.
+                // Skip validation since the parent hasn't been stored yet.
+                Ok(())
+            }
+        }
+    }
+
+    /// Roll back the block at the given height
+    ///
+    /// Delegates to the writer's rollback_block method, which deletes
+    /// all data associated with the block (nodes, relationships, and
+    /// reverts spent output status).
+    ///
+    /// # Arguments
+    /// * `height` - Block height to roll back (must be current chain tip)
+    ///
+    /// # Errors
+    /// Returns error if rollback fails
+    pub async fn rollback_block(&self, height: u32) -> Result<()> {
+        tracing::warn!(height, "Orchestrator: rolling back block");
+        self.writer.rollback_block(height).await
+    }
+
+    /// Roll back blocks from the current tip down to (but not including) the target height
+    ///
+    /// Used during chain reorganization to remove blocks from the orphaned chain.
+    /// Rolls back one block at a time from the tip downward.
+    ///
+    /// # Arguments
+    /// * `current_tip` - The current highest block in our database
+    /// * `fork_point` - The height to roll back to (this block is NOT rolled back)
+    ///
+    /// # Returns
+    /// The number of blocks rolled back
+    ///
+    /// # Errors
+    /// Returns error if any rollback step fails
+    pub async fn rollback_to_height(&self, current_tip: u32, fork_point: u32) -> Result<u32> {
+        if fork_point >= current_tip {
+            return Ok(0);
+        }
+
+        let blocks_to_rollback = current_tip - fork_point;
+        tracing::warn!(
+            current_tip,
+            fork_point,
+            blocks_to_rollback,
+            "Rolling back chain to fork point"
+        );
+
+        // Roll back from tip to fork_point + 1 (in reverse order)
+        for height in (fork_point + 1..=current_tip).rev() {
+            self.rollback_block(height).await?;
+        }
+
+        // Update checkpoint to reflect the new tip
+        if let Some(hash) = self.writer.lookup_block_hash(fork_point).await? {
+            let checkpoint = CheckpointData {
+                last_processed_height: fork_point as i32,
+                last_processed_hash: hash,
+                last_processed_file: "rpc".to_string(),
+                last_processed_file_offset: None,
+                timestamp: chrono::Utc::now().timestamp(),
+                status: "in_progress".to_string(),
+            };
+            self.writer.update_checkpoint(&checkpoint).await?;
+        }
+
+        tracing::warn!(
+            blocks_rolled_back = blocks_to_rollback,
+            new_tip = fork_point,
+            "Chain rollback complete"
+        );
+
+        Ok(blocks_to_rollback)
+    }
+
+    /// Look up a block's hash by height
+    ///
+    /// Delegates to the writer for database lookup.
+    pub async fn lookup_block_hash(&self, height: u32) -> Result<Option<String>> {
+        self.writer.lookup_block_hash(height).await
+    }
+
     /// Ingest a single block through all 6 phases (M7 version with UTXO cache)
     ///
     /// Processes one block completely before moving to the next. This ensures
@@ -250,6 +384,9 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         file_name: &str,
         file_offset: Option<u64>,
     ) -> Result<()> {
+        // Validate parent hash (reorg detection)
+        self.validate_parent_hash(block, height).await?;
+
         // Phase 1: Create Block node
         self.ingest_block_node(block, height).await?;
 
@@ -319,6 +456,11 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     ) -> Result<()> {
         let total_blocks = blocks.len();
         tracing::info!(total_blocks, batch_size, "Starting batch ingestion");
+
+        // Validate first block's parent hash (reorg detection)
+        if let Some((height, block, _)) = blocks.first() {
+            self.validate_parent_hash(block, *height).await?;
+        }
 
         for (batch_idx, chunk) in blocks.chunks(batch_size).enumerate() {
             let start_height = chunk.first().map(|(h, _, _)| *h).unwrap_or(0);
@@ -441,6 +583,16 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             for (height, block, _file_name) in chunk {
                 let block_hash = block.block_hash().to_string();
                 let timestamp = block.header.time as i64;
+
+                // BIP30: Warn about known duplicate-txid blocks
+                if BIP30_DUPLICATE_HEIGHTS.contains(height) {
+                    tracing::warn!(
+                        height,
+                        block_hash = %block_hash,
+                        "BIP30 duplicate txid block — coinbase txid in this block duplicates an earlier block's coinbase. \
+                         MERGE handles this correctly (last-write-wins)."
+                    );
+                }
 
                 for tx in &block.txdata {
                     let mut tx_data =
@@ -729,6 +881,16 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     ) -> Result<Vec<PerformsData>> {
         let block_hash = block.block_hash().to_string();
         let timestamp = block.header.time as i64;
+
+        // BIP30: Warn about known duplicate-txid blocks
+        if BIP30_DUPLICATE_HEIGHTS.contains(&height) {
+            tracing::warn!(
+                height,
+                block_hash = %block_hash,
+                "BIP30 duplicate txid block — coinbase txid in this block duplicates an earlier block's coinbase. \
+                 MERGE handles this correctly (last-write-wins)."
+            );
+        }
 
         let mut transactions: Vec<TransactionData> = Vec::with_capacity(block.txdata.len());
         let mut all_performs_data: Vec<PerformsData> = Vec::with_capacity(block.txdata.len());

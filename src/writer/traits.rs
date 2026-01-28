@@ -285,4 +285,41 @@ pub trait GraphWriter: Send + Sync {
     /// # Errors
     /// Returns error if status update fails.
     async fn set_checkpoint_status(&self, status: &str) -> Result<()>;
+
+    // Block Lookup (for reorg detection)
+
+    /// Look up a block's hash by height
+    ///
+    /// Queries the database for the hash of the block at the given height.
+    /// Used for parent hash validation before ingesting a new block to
+    /// detect chain reorganizations.
+    ///
+    /// # Arguments
+    /// * `height` - Block height to look up
+    ///
+    /// # Returns
+    /// Some(hash) if a block exists at that height, None otherwise
+    ///
+    /// # Errors
+    /// Returns error if query fails.
+    async fn lookup_block_hash(&self, height: u32) -> Result<Option<String>>;
+
+    // Rollback (for chain reorganization handling)
+
+    /// Roll back all data associated with a block at the given height
+    ///
+    /// Deletes the block node, all its transactions, inputs, outputs,
+    /// and relationships. Also reverts the spent status of outputs from
+    /// earlier blocks that were marked as spent by this block's transactions.
+    ///
+    /// **IMPORTANT**: Must only be called on the current chain tip.
+    /// Rolling back from the middle would leave orphaned data.
+    /// Always roll back from tip to fork point in reverse height order.
+    ///
+    /// # Arguments
+    /// * `height` - Block height to roll back
+    ///
+    /// # Errors
+    /// Returns error if any rollback step fails.
+    async fn rollback_block(&self, height: u32) -> Result<()>;
 }

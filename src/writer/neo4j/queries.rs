@@ -341,3 +341,94 @@ pub const MARK_CHECKPOINT_COMPLETE_QUERY: &str = r#"
     SET c.status = 'completed',
         c.timestamp = datetime()
 "#;
+
+// =============================================================================
+// BLOCK LOOKUP (for reorg detection)
+// =============================================================================
+
+/// Look up a block hash by height
+///
+/// Used for parent hash validation before ingesting a new block.
+/// Returns the hash of the block at the given height, or no rows if
+/// no block exists at that height.
+///
+/// Parameters:
+/// - $height: Block height to look up
+pub const LOOKUP_BLOCK_HASH_QUERY: &str = r#"
+    MATCH (b:Block {height: $height})
+    RETURN b.hash AS hash
+"#;
+
+// =============================================================================
+// ROLLBACK (for chain reorganization handling)
+// =============================================================================
+//
+// Rollback deletes all data associated with a block at a given height.
+// Must be called in order: revert spent → delete inputs → delete outputs →
+// delete transactions → delete block.
+//
+// IMPORTANT: Only call on the current chain tip. Rolling back from the middle
+// would leave orphaned data from later blocks.
+
+/// Step 1: Revert spent status on outputs that were spent by this block's transactions
+///
+/// These outputs belong to EARLIER blocks and were marked as spent during
+/// ingestion of the block being rolled back. Resetting them to unspent
+/// restores their correct state.
+///
+/// Parameters:
+/// - $height: Block height to roll back
+pub const ROLLBACK_REVERT_SPENT_QUERY: &str = r#"
+    MATCH (:Block {height: $height})<-[:INCLUDED_IN]-(:Transaction)-[:HAS_INPUT]->(:Input)-[:SPENDS]->(o:Output)
+    SET o.isSpent = false, o.spentInTxid = null, o.spentAtHeight = null
+"#;
+
+/// Step 2: Delete all Input nodes created by this block's transactions
+///
+/// DETACH DELETE removes the Input node and all its relationships
+/// (HAS_INPUT from Transaction, SPENDS to Output).
+///
+/// Parameters:
+/// - $height: Block height to roll back
+pub const ROLLBACK_DELETE_INPUTS_QUERY: &str = r#"
+    MATCH (:Block {height: $height})<-[:INCLUDED_IN]-(:Transaction)-[:HAS_INPUT]->(i:Input)
+    DETACH DELETE i
+"#;
+
+/// Step 3: Delete all Output nodes created by this block's transactions
+///
+/// DETACH DELETE removes the Output node and all its relationships
+/// (HAS_OUTPUT from Transaction, LOCKED_TO to Address).
+/// Address nodes are intentionally preserved (they may be referenced
+/// by outputs in other blocks).
+///
+/// Parameters:
+/// - $height: Block height to roll back
+pub const ROLLBACK_DELETE_OUTPUTS_QUERY: &str = r#"
+    MATCH (:Block {height: $height})<-[:INCLUDED_IN]-(:Transaction)-[:HAS_OUTPUT]->(o:Output)
+    DETACH DELETE o
+"#;
+
+/// Step 4: Delete all Transaction nodes in this block
+///
+/// DETACH DELETE removes Transaction nodes and all remaining relationships
+/// (INCLUDED_IN to Block, PERFORMS from Address, BENEFITS_TO to Address).
+///
+/// Parameters:
+/// - $height: Block height to roll back
+pub const ROLLBACK_DELETE_TRANSACTIONS_QUERY: &str = r#"
+    MATCH (:Block {height: $height})<-[:INCLUDED_IN]-(t:Transaction)
+    DETACH DELETE t
+"#;
+
+/// Step 5: Delete the Block node itself
+///
+/// DETACH DELETE removes the Block node and its NEXT_BLOCK relationships
+/// (both incoming from the previous block and outgoing to the next block).
+///
+/// Parameters:
+/// - $height: Block height to roll back
+pub const ROLLBACK_DELETE_BLOCK_QUERY: &str = r#"
+    MATCH (b:Block {height: $height})
+    DETACH DELETE b
+"#;

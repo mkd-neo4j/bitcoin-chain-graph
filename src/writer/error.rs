@@ -24,6 +24,13 @@ pub enum WriterError {
 
     #[error("Database error: {0}")]
     DatabaseError(String),
+
+    #[error("Chain reorganization detected at height {height}: expected parent {expected}, got {actual}")]
+    ReorgDetected {
+        height: u32,
+        expected: String,
+        actual: String,
+    },
 }
 
 impl WriterError {

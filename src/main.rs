@@ -34,7 +34,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 use bitcoin_chain_graph::config::{Config, ConfigLoader};
 use bitcoin_chain_graph::domain::IngestionOrchestrator;
 use bitcoin_chain_graph::parser::{RpcBlockProvider, SingleBlockLoader, ZmqBlockListener};
-use bitcoin_chain_graph::writer::Neo4jWriter;
+use bitcoin_chain_graph::writer::{Neo4jWriter, WriterError};
 
 /// Bitcoin Chain Graph - Blockchain ingestion into Neo4j
 #[derive(Parser)]
@@ -842,28 +842,85 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
                 "Ingesting new blocks"
             );
 
-            for height in current_height..=effective_tip {
+            let mut height = current_height;
+            while height <= effective_tip {
                 let block_data = provider
                     .get_block(height)
                     .await
                     .with_context(|| format!("Failed to fetch block {} via RPC", height))?;
 
                 if let Some(block_tuple) = block_data {
-                    orchestrator
-                        .ingest_blocks_batch(&[block_tuple], 1)
-                        .await
-                        .with_context(|| format!("Failed to ingest block {}", height))?;
+                    match orchestrator.ingest_blocks_batch(&[block_tuple], 1).await {
+                        Ok(()) => {
+                            blocks_processed += 1;
+                            tracing::info!(
+                                height,
+                                total_blocks = blocks_processed,
+                                "Block ingested (real-time)"
+                            );
+                            height += 1;
+                        }
+                        Err(WriterError::ReorgDetected {
+                            height: reorg_height,
+                            expected,
+                            actual,
+                        }) => {
+                            tracing::warn!(
+                                reorg_height,
+                                expected = %expected,
+                                actual = %actual,
+                                "Chain reorganization detected — initiating rollback"
+                            );
 
-                    blocks_processed += 1;
-                    tracing::info!(
-                        height,
-                        total_blocks = blocks_processed,
-                        "Block ingested (real-time)"
-                    );
+                            // Find fork point by walking back
+                            let fork_point = find_fork_point(
+                                &orchestrator,
+                                &provider,
+                                reorg_height.saturating_sub(1),
+                            )
+                            .await
+                            .context("Failed to find fork point during reorg")?;
+
+                            tracing::warn!(
+                                fork_point,
+                                blocks_to_rollback = reorg_height.saturating_sub(1) - fork_point,
+                                "Fork point found, rolling back"
+                            );
+
+                            // Roll back from current tip to fork point
+                            let rolled_back = orchestrator
+                                .rollback_to_height(reorg_height.saturating_sub(1), fork_point)
+                                .await
+                                .context("Rollback failed during reorg handling")?;
+
+                            tracing::warn!(
+                                rolled_back,
+                                new_tip = fork_point,
+                                "Rollback complete, re-ingesting canonical chain"
+                            );
+
+                            // Resume from fork point + 1
+                            // The outer ZMQ loop will re-fetch the tip on next iteration
+                            height = fork_point + 1;
+                            // Update effective_tip for the while loop bound
+                            // (we break and let the outer loop re-fetch)
+                            current_height = height;
+                            break;
+                        }
+                        Err(e) => {
+                            return Err(e)
+                                .with_context(|| format!("Failed to ingest block {}", height));
+                        }
+                    }
+                } else {
+                    height += 1;
                 }
             }
 
-            current_height = effective_tip + 1;
+            if height > effective_tip {
+                // Normal completion (no reorg)
+                current_height = effective_tip + 1;
+            }
         }
 
         // Periodic ZMQ health stats
@@ -904,4 +961,50 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
     );
 
     Ok(())
+}
+
+/// Find the fork point between our stored chain and Bitcoin Core's canonical chain
+///
+/// Walks backwards from `start_height`, comparing our stored block hashes
+/// with the canonical hashes from Bitcoin Core via RPC. Returns the height
+/// of the last block where both chains agree.
+///
+/// Used during chain reorganization handling to determine how far back
+/// to roll back before re-ingesting the canonical chain.
+async fn find_fork_point(
+    orchestrator: &IngestionOrchestrator<Neo4jWriter>,
+    provider: &RpcBlockProvider,
+    start_height: u32,
+) -> Result<u32> {
+    for height in (0..=start_height).rev() {
+        let our_hash = orchestrator
+            .lookup_block_hash(height)
+            .await
+            .with_context(|| format!("Failed to lookup stored block hash at height {}", height))?;
+
+        let canonical_hash = provider
+            .get_block_hash(height)
+            .await
+            .with_context(|| format!("Failed to get canonical block hash at height {}", height))?;
+
+        if our_hash.as_deref() == Some(&canonical_hash) {
+            tracing::info!(
+                height,
+                hash = %canonical_hash,
+                "Fork point found — chains agree at this height"
+            );
+            return Ok(height);
+        }
+
+        tracing::debug!(
+            height,
+            our_hash = ?our_hash,
+            canonical_hash = %canonical_hash,
+            "Chain mismatch, checking lower height"
+        );
+    }
+
+    // Should never reach here in practice — genesis block should always match
+    tracing::error!("Fork point not found — chains diverge from genesis");
+    Ok(0)
 }
