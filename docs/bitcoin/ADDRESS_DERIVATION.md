@@ -16,6 +16,23 @@ During ingestion, we must:
 
 ---
 
+## Our Implementation
+
+Address derivation is implemented in `src/parser/address.rs`:
+
+- **`extract_address(script: &ScriptBuf, network: Network) -> AddressInfo`** -- Main entry point. Detects script type and derives address using the `bitcoin` crate's built-in helpers.
+- **`ScriptType`** -- Enum with 8 variants: `P2PKH`, `P2SH`, `P2WPKH`, `P2WSH`, `P2TR`, `P2PK`, `NullData`, `Unknown`
+- **`AddressInfo`** -- Struct with `address: Option<Address>` and `script_type: ScriptType`
+- **`extract_p2pk_address(script, network)`** -- Helper for P2PK scripts using instruction-based parsing
+
+**Detection order in code:** NULL_DATA (OP_RETURN) is checked first, then P2PKH, P2SH, witness programs (v0: P2WPKH/P2WSH, v1: P2TR, v2+: Unknown), P2PK, and finally Unknown as fallback.
+
+**Error handling:** On any derivation failure (invalid public key, encoding error, etc.), the function returns `ScriptType::Unknown` with `address: None` rather than propagating errors.
+
+**Dependency:** The code uses only the `bitcoin` crate (`rust-bitcoin`) for all address derivation -- script parsing, public key handling, hash computation, and address encoding (Base58, Bech32, Bech32m) are all handled internally by this single crate.
+
+---
+
 ## Script Types and Detection
 
 ### Detection Strategy
@@ -178,10 +195,13 @@ Where `<pubKey>` is either:
 - 65 bytes (uncompressed): `04 <x-coordinate 32 bytes> <y-coordinate 32 bytes>`
 - 33 bytes (compressed): `02|03 <x-coordinate 32 bytes>`
 
-**Extraction:**
-1. Extract the public key
-2. Compute HASH160 of public key: `RIPEMD160(SHA256(pubKey))`
-3. Encode as P2PKH address (version `0x00` + hash + checksum in Base58)
+**Extraction (as implemented in `extract_p2pk_address()`):**
+1. Parse script instructions -- expect exactly 2: `PushBytes(pubkey)` + `OP_CHECKSIG`
+2. Extract the public key bytes from the push instruction
+3. Parse as `PublicKey` using `PublicKey::from_slice()`
+4. Derive P2PKH address using `Address::p2pkh(pubkey, network)`
+
+> The code uses instruction-based detection rather than raw byte-length checks. This handles both compressed (33-byte) and uncompressed (65-byte) public keys uniformly. The `bitcoin` crate internally computes HASH160 and Base58Check encoding.
 
 **Note:** P2PK was used in early Bitcoin blocks (including genesis and early coinbase outputs). Satoshi's mining outputs used P2PK.
 
@@ -208,77 +228,67 @@ Any script that doesn't match known patterns:
 ## Implementation Pseudocode
 
 ```python
-def extract_address_from_scriptPubKey(scriptPubKey_hex: str) -> tuple[str, str]:
+def extract_address_from_scriptPubKey(script, network) -> (address, script_type):
     """
     Returns (address, script_type)
     Returns (None, script_type) if no address can be derived
+
+    NOTE: This pseudocode mirrors the detection order in src/parser/address.rs.
+    The actual implementation uses the `bitcoin` crate's built-in helpers
+    (e.g., script.is_p2pkh(), script.is_witness_program()) rather than
+    manual byte parsing shown here for clarity.
     """
-    script_bytes = bytes.fromhex(scriptPubKey_hex)
 
-    # Check P2PKH pattern
-    if (len(script_bytes) == 25 and
-        script_bytes[0] == 0x76 and  # OP_DUP
-        script_bytes[1] == 0xa9 and  # OP_HASH160
-        script_bytes[2] == 0x14 and  # Push 20 bytes
-        script_bytes[23] == 0x88 and # OP_EQUALVERIFY
-        script_bytes[24] == 0xac):   # OP_CHECKSIG
-
-        pubkey_hash = script_bytes[3:23]
-        address = base58_encode_with_checksum(b'\x00' + pubkey_hash)
-        return (address, 'P2PKH')
-
-    # Check P2SH pattern
-    if (len(script_bytes) == 23 and
-        script_bytes[0] == 0xa9 and  # OP_HASH160
-        script_bytes[1] == 0x14 and  # Push 20 bytes
-        script_bytes[22] == 0x87):   # OP_EQUAL
-
-        script_hash = script_bytes[2:22]
-        address = base58_encode_with_checksum(b'\x05' + script_hash)
-        return (address, 'P2SH')
-
-    # Check P2WPKH pattern (SegWit v0, 20 bytes)
-    if (len(script_bytes) == 22 and
-        script_bytes[0] == 0x00 and  # OP_0
-        script_bytes[1] == 0x14):    # Push 20 bytes
-
-        pubkey_hash = script_bytes[2:22]
-        address = bech32_encode('bc', 0, pubkey_hash)  # 'bc' for mainnet
-        return (address, 'P2WPKH')
-
-    # Check P2WSH pattern (SegWit v0, 32 bytes)
-    if (len(script_bytes) == 34 and
-        script_bytes[0] == 0x00 and  # OP_0
-        script_bytes[1] == 0x20):    # Push 32 bytes
-
-        script_hash = script_bytes[2:34]
-        address = bech32_encode('bc', 0, script_hash)
-        return (address, 'P2WSH')
-
-    # Check P2TR pattern (SegWit v1, 32 bytes)
-    if (len(script_bytes) == 34 and
-        script_bytes[0] == 0x51 and  # OP_1
-        script_bytes[1] == 0x20):    # Push 32 bytes
-
-        tweaked_pubkey = script_bytes[2:34]
-        address = bech32m_encode('bc', 1, tweaked_pubkey)  # Note: bech32m not bech32
-        return (address, 'P2TR')
-
-    # Check OP_RETURN pattern
-    if len(script_bytes) > 0 and script_bytes[0] == 0x6a:  # OP_RETURN
+    # 1. Check OP_RETURN first (checked first in code)
+    if script.is_op_return():
         return (None, 'NULL_DATA')
 
-    # Check P2PK pattern (obsolete but exists in early blocks)
-    if len(script_bytes) in [67, 35]:  # 65-byte or 33-byte pubkey + OP_CHECKSIG
-        if script_bytes[-1] == 0xac:  # OP_CHECKSIG
-            pubkey = script_bytes[1:-1] if script_bytes[0] in [0x41, 0x21] else script_bytes[:-1]
-            pubkey_hash = hash160(pubkey)  # RIPEMD160(SHA256(pubkey))
-            address = base58_encode_with_checksum(b'\x00' + pubkey_hash)
+    # 2. Check P2PKH
+    if script.is_p2pkh():
+        pubkey_hash = script.extract_p2pkh_hash()
+        address = Address.p2pkh(pubkey_hash, network)
+        return (address, 'P2PKH')
+
+    # 3. Check P2SH
+    if script.is_p2sh():
+        script_hash = script.extract_p2sh_hash()
+        address = Address.p2sh(script_hash, network)
+        return (address, 'P2SH')
+
+    # 4. Check witness programs (P2WPKH, P2WSH, P2TR)
+    if script.is_witness_program():
+        witness_version, witness_program = script.witness_program()
+
+        if witness_version == 0:
+            if len(witness_program) == 20:
+                address = Address.p2wpkh(witness_program, network)
+                return (address, 'P2WPKH')
+            elif len(witness_program) == 32:
+                address = Address.p2wsh(witness_program, network)
+                return (address, 'P2WSH')
+
+        elif witness_version == 1:
+            if len(witness_program) == 32:
+                address = Address.p2tr(witness_program, network)  # Uses Bech32m
+                return (address, 'P2TR')
+
+        else:
+            # Future witness versions (v2-v16) - not yet defined
+            return (None, 'UNKNOWN')
+
+    # 5. Check P2PK (instruction-based detection)
+    instructions = list(script.instructions())
+    if len(instructions) == 2:
+        if instructions[0] is PushBytes and instructions[1] is OP_CHECKSIG:
+            pubkey = PublicKey.from_slice(instructions[0].bytes)
+            address = Address.p2pkh(pubkey, network)
             return (address, 'P2PK')
 
-    # Unknown/non-standard script
+    # 6. Unknown/non-standard script (fallback)
     return (None, 'UNKNOWN')
 ```
+
+> **Caveat:** This pseudocode shows the logical flow. The actual Rust implementation in `src/parser/address.rs` uses the `bitcoin` crate's methods like `script.is_p2pkh()`, `script.is_witness_program()`, and instruction iteration. It does not do manual byte-level parsing. On any error (invalid public key, malformed script), it returns `(None, 'UNKNOWN')` rather than propagating errors.
 
 ---
 
@@ -377,8 +387,8 @@ def extract_address_from_scriptPubKey(scriptPubKey_hex: str) -> tuple[str, str]:
 
 ### 3. Multisig Scripts
 - Bare multisig (not wrapped in P2SH) has no single address
-- Treat as UNKNOWN or extract multiple pubkeys and store separately
-- Most modern multisig uses P2SH or P2WSH wrappers
+- Our implementation maps bare multisig to `scriptType = 'UNKNOWN'` (no `Multisig` variant in `ScriptType` enum)
+- Most modern multisig uses P2SH or P2WSH wrappers (which do have single addresses)
 
 ### 4. Null Data Length
 - OP_RETURN outputs can carry up to 80 bytes of data (consensus limit)
@@ -394,40 +404,36 @@ def extract_address_from_scriptPubKey(scriptPubKey_hex: str) -> tuple[str, str]:
 
 ## Implementation Checklist
 
-- [ ] Implement Base58Check encoding/decoding
-- [ ] Implement Bech32 encoding (for SegWit v0)
-- [ ] Implement Bech32m encoding (for SegWit v1 Taproot)
-- [ ] Detect and parse P2PKH scripts
-- [ ] Detect and parse P2SH scripts
-- [ ] Detect and parse P2WPKH scripts
-- [ ] Detect and parse P2WSH scripts
-- [ ] Detect and parse P2TR scripts
-- [ ] Handle P2PK (obsolete but present in early blocks)
-- [ ] Handle OP_RETURN (NULL_DATA) - no address
-- [ ] Handle unknown/non-standard scripts - no address
-- [ ] Test with genesis block and early blocks (P2PK)
-- [ ] Test with modern blocks (SegWit, Taproot)
-- [ ] Use correct network parameters (mainnet vs testnet)
+- [x] Implement Base58Check encoding/decoding (via `bitcoin` crate)
+- [x] Implement Bech32 encoding for SegWit v0 (via `bitcoin` crate)
+- [x] Implement Bech32m encoding for SegWit v1 Taproot (via `bitcoin` crate)
+- [x] Detect and parse P2PKH scripts (`script.is_p2pkh()`)
+- [x] Detect and parse P2SH scripts (`script.is_p2sh()`)
+- [x] Detect and parse P2WPKH scripts (`script.is_witness_program()` + v0/20-byte)
+- [x] Detect and parse P2WSH scripts (`script.is_witness_program()` + v0/32-byte)
+- [x] Detect and parse P2TR scripts (`script.is_witness_program()` + v1/32-byte)
+- [x] Handle P2PK via instruction parsing (`extract_p2pk_address()`)
+- [x] Handle OP_RETURN (NULL_DATA) - no address (`script.is_op_return()`)
+- [x] Handle unknown/non-standard scripts - no address (fallback to `Unknown`)
+- [x] Test with genesis block P2PK output (verified: `1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa`)
+- [x] Test with modern blocks (SegWit, Taproot)
+- [x] Use correct network parameters (configurable via `Network` parameter)
+
+> **Error handling:** On any derivation failure (invalid public key, malformed script, encoding error), the function returns `ScriptType::Unknown` with `address: None`. Errors are logged via `tracing::debug!` but do not propagate. See `src/parser/address.rs`.
 
 ---
 
 ## Recommended Libraries
 
+### Rust (this project)
+- **`bitcoin`** (rust-bitcoin): The only dependency used for address derivation in this project. Handles script parsing, public key handling, hash computation, Base58Check encoding, Bech32/Bech32m encoding -- all internally. No separate `bs58` or `bech32` crate is needed.
+
 ### Python
 - **bitcoinlib**: Comprehensive Bitcoin library with address encoding
 - **python-bitcoinlib**: Low-level Bitcoin protocol implementation
-- **base58**: Base58Check encoding
-- **bech32**: Bech32/Bech32m encoding
 
 ### JavaScript/TypeScript
 - **bitcoinjs-lib**: Full Bitcoin library with address utilities
-- **bs58**: Base58 encoding
-- **bech32**: Bech32/Bech32m encoding
-
-### Rust
-- **rust-bitcoin**: Bitcoin library with full address support
-- **bs58**: Base58 encoding
-- **bech32**: Bech32/Bech32m encoding
 
 ---
 

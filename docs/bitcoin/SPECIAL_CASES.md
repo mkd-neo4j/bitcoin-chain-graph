@@ -22,7 +22,7 @@ The **first transaction in every block** is the coinbase transaction - the minin
 - The input's `previousTxid` is all zeros (`0x00...00`)
 - The input's `previousOutputIndex` is `0xFFFFFFFF` (4294967295)
 - The input's `scriptSig` contains arbitrary data (block height + extra nonce)
-- No `witness` data (even in SegWit blocks)
+- May contain `witness` data (post-SegWit blocks include witness commitment in coinbase)
 - Creates new bitcoin (block reward + transaction fees)
 
 ### Detection
@@ -38,47 +38,42 @@ def is_coinbase(transaction):
 
 ### Ingestion Handling
 
-**Phase 2 - Create Transaction:**
-```cypher
-CREATE (t:Transaction {
-  txid: $txid,
-  blockHeight: $blockHeight,
-  isCoinbase: true,
-  // ... other properties
-})
-```
-
-**Phase 3 - Create Outputs:**
+**Phase 2 - Create Outputs:**
 - Process outputs normally - coinbase outputs are spendable like any other UTXO
 - Derive addresses normally (usually P2PK in early blocks, P2PKH or P2WPKH in modern blocks)
 
+**Phase 3 - Create Transaction (with amounts):**
+```cypher
+MERGE (t:Transaction {txid: tx.txid})
+SET t.blockHeight = tx.blockHeight,
+    t.isCoinbase = true,
+    t.totalInput = 0,
+    t.totalOutput = tx.totalOutput,
+    t.fee = 0
+    // ... other properties
+```
+
+> **Note:** Amounts (`totalInput`, `totalOutput`, `fee`) are stored as INTEGER values in satoshis (1 BTC = 100,000,000 satoshis). They are pre-calculated in Rust using the UTXO cache during Phase 3, not computed via graph traversal.
+
 **Phase 4 - Create Input:**
 ```cypher
-CREATE (i:Input {
-  inputId: $txid + ':0',
-  inputIndex: 0,
-  previousTxid: "0000000000000000000000000000000000000000000000000000000000000000",
-  previousOutputIndex: 4294967295,
-  scriptSig: $coinbaseScriptSig,
-  sequence: $sequence
-})
-CREATE (i)-[:HAS_INPUT]->(t)
+MERGE (i:Input {inputId: inp.inputId})
+SET i.inputIndex = inp.inputIndex,
+    i.scriptSig = inp.scriptSig,
+    i.sequence = inp.sequence,
+    i.witness = inp.witness
+MERGE (t)-[:HAS_INPUT]->(i)
 // DO NOT create SPENDS relationship - there is no previous output
+// WHERE inp.previousOutputIndex <> 4294967295 filters out coinbase inputs
 ```
 
-**Critical:** Do NOT attempt to look up previous output or create SPENDS relationship for coinbase inputs.
+> **Note:** `previousTxid` and `previousOutputIndex` are passed in the batch parameters for the SPENDS relationship lookup but are NOT stored as properties on the Input node. The Input node only stores: `inputId`, `inputIndex`, `scriptSig`, `sequence`, `witness`.
 
-**Phase 5 - Calculate Amounts:**
-```cypher
-// For coinbase transactions:
-SET t.totalInput = 0  // No inputs spent
-SET t.totalOutput = $sumOfOutputs
-SET t.fee = 0  // No fee (or negative fee conceptually, since new bitcoin created)
-```
+**Critical:** Do NOT attempt to look up previous output or create SPENDS relationship for coinbase inputs. The Cypher query uses `WHERE inp.previousOutputIndex <> 4294967295` to skip coinbase inputs.
 
 **Phase 6 - Simplified Layer:**
 - **PERFORMS relationship:** Coinbase has no sender - DO NOT create PERFORMS relationship
-- **BENEFITS_TO relationship:** Create normally to miner's address(es)
+- **BENEFITS_TO relationship:** Create normally to miner's address(es), with `outputCount` and `amountReceived` properties
 
 ---
 
@@ -110,19 +105,18 @@ def is_op_return(scriptPubKey_bytes):
 
 ### Ingestion Handling
 
-**Phase 3 - Create Output:**
+**Phase 2 - Create Output:**
 ```cypher
-CREATE (o:Output {
-  outputId: $txid + ':' + $outputIndex,
-  outputIndex: $outputIndex,
-  amount: $amount,  // Usually 0, but store actual value
-  scriptPubKey: $scriptPubKey,
-  scriptType: 'NULL_DATA',
-  isSpent: false,  // Will never be spent
-  spentInTxid: null,
-  spentAtHeight: null
-})
-CREATE (t)-[:HAS_OUTPUT]->(o)
+MERGE (o:Output {outputId: out.outputId})
+ON CREATE SET
+    o.outputIndex = out.outputIndex,
+    o.amount = out.amount,  // Usually 0, but store actual value (in satoshis)
+    o.scriptPubKey = out.scriptPubKey,
+    o.scriptType = 'NULL_DATA',
+    o.isSpent = false,
+    o.spentInTxid = null,
+    o.spentAtHeight = null
+MERGE (t)-[:HAS_OUTPUT]->(o)
 // DO NOT create LOCKED_TO relationship - there is no address
 ```
 
@@ -154,14 +148,13 @@ The **first block in the Bitcoin blockchain** (height 0), hardcoded into Bitcoin
 
 **Phase 1 - Create Block:**
 ```cypher
-CREATE (genesis:Block {
-  height: 0,
-  hash: "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
-  previousHash: "0000000000000000000000000000000000000000000000000000000000000000",
-  timestamp: datetime('2009-01-03T18:15:05Z'),
-  // ... other properties
-})
+MERGE (genesis:Block {hash: "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"})
+SET genesis.height = 0,
+    genesis.previousHash = "0000000000000000000000000000000000000000000000000000000000000000",
+    genesis.timestamp = datetime({epochSeconds: 1231006505}),
+    // ... other properties
 // DO NOT create NEXT_BLOCK relationship from a previous block (there is none)
+// The query uses WHERE block.height > 0 to skip genesis
 ```
 
 **Genesis Coinbase Transaction:**
@@ -174,17 +167,14 @@ CREATE (genesis:Block {
 The genesis coinbase output (50 BTC to `1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa`) is **unspendable** due to a quirk in Bitcoin Core's implementation. However, for data integrity:
 
 ```cypher
-// Mark genesis output with special flag (optional)
-CREATE (o:Output {
-  outputId: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b:0",
-  outputIndex: 0,
-  amount: 50.0,
-  scriptType: 'P2PK',
-  isSpent: false,
-  spentInTxid: null,
-  spentAtHeight: null,
-  // Optional: genesisOutput: true
-})
+MERGE (o:Output {outputId: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b:0"})
+ON CREATE SET
+    o.outputIndex = 0,
+    o.amount = 5000000000,  // 50 BTC in satoshis
+    o.scriptType = 'P2PK',
+    o.isSpent = false,
+    o.spentInTxid = null,
+    o.spentAtHeight = null
 ```
 
 **Why unspendable?** Bitcoin Core doesn't add the genesis coinbase output to its UTXO database. Any transaction attempting to spend it would be rejected. This is a protocol quirk, not a script rule.
@@ -206,14 +196,15 @@ An **obsolete output type** that locks funds directly to a public key (not a has
 
 ### Ingestion Handling
 
-**Phase 3 - Address Derivation:**
+**Phase 2 - Address Derivation (during output creation):**
 ```python
-# Detect P2PK pattern
-if script matches "<pubkey> OP_CHECKSIG":
-    pubkey = extract_pubkey_from_script(script)
-    pubkey_hash = RIPEMD160(SHA256(pubkey))  # HASH160
-    address = base58_encode(version_byte + pubkey_hash + checksum)
-    script_type = 'P2PK'
+# Detect P2PK pattern via instruction parsing
+# Code checks for exactly 2 instructions: PushBytes + OP_CHECKSIG
+if script has exactly 2 instructions:
+    if instructions == [PushBytes(pubkey), OP_CHECKSIG]:
+        pubkey = PublicKey.from_slice(pubkey_bytes)
+        address = Address.p2pkh(pubkey, network)
+        script_type = 'P2PK'
 ```
 
 **Important:** P2PK scripts contain the **full public key**, not a hash. To derive an address:
@@ -245,24 +236,20 @@ An **unspendable or non-standard** output type for M-of-N multisig not wrapped i
 
 ### Ingestion Handling
 
-**Phase 3 - Address Derivation:**
+**Phase 2 - Address Derivation (during output creation):**
 ```cypher
-// Detect bare multisig
-if script matches "<m> <pubkeys> <n> OP_CHECKMULTISIG":
-    // No single address can be derived
-    CREATE (o:Output {
-      scriptType: 'MULTISIG',  // or 'UNKNOWN'
-      // ... other properties
-    })
-    // DO NOT create LOCKED_TO relationship
+// Bare multisig does not match any known ScriptType variant
+// Code maps it to UNKNOWN (no Multisig variant in ScriptType enum)
+MERGE (o:Output {outputId: out.outputId})
+ON CREATE SET
+    o.scriptType = 'UNKNOWN',
+    // ... other properties
+// DO NOT create LOCKED_TO relationship - no single address derivable
 ```
 
-**Options:**
-1. **Mark as UNKNOWN:** Set `scriptType = 'UNKNOWN'`, no address
-2. **Mark as MULTISIG:** Set `scriptType = 'MULTISIG'`, no address
-3. **Advanced:** Extract all pubkeys, create multiple relationships to multiple addresses (complex)
+> **Implementation note:** The `ScriptType` enum in `src/parser/address.rs` has 8 variants: `P2PKH`, `P2SH`, `P2WPKH`, `P2WSH`, `P2TR`, `P2PK`, `NullData`, `Unknown`. There is no `Multisig` variant. Bare multisig scripts fall through to `Unknown` since they don't match any of the checked patterns.
 
-**Recommendation:** Treat as UNKNOWN. Modern multisig uses P2SH or P2WSH wrappers which have single addresses.
+**Recommendation:** Treat as UNKNOWN (which is what the code does). Modern multisig uses P2SH or P2WSH wrappers which have single addresses.
 
 ---
 
@@ -279,13 +266,12 @@ Any scriptPubKey that doesn't match known patterns:
 ### Ingestion Handling
 
 ```cypher
-CREATE (o:Output {
-  outputId: $outputId,
-  scriptPubKey: $scriptPubKey,  // Store raw script for future analysis
-  scriptType: 'UNKNOWN',
-  amount: $amount,
-  isSpent: false
-})
+MERGE (o:Output {outputId: out.outputId})
+ON CREATE SET
+    o.scriptPubKey = out.scriptPubKey,  // Store raw script for future analysis
+    o.scriptType = 'UNKNOWN',
+    o.amount = out.amount,  // Satoshis (INTEGER)
+    o.isSpent = false
 // DO NOT create LOCKED_TO relationship
 ```
 
@@ -313,11 +299,9 @@ CREATE (o:Output {
 
 **Phase 4 - Create Input:**
 ```cypher
-CREATE (i:Input {
-  inputId: $inputId,
-  scriptSig: $scriptSig,  // Empty or minimal for SegWit
-  witness: $witnessArray  // Array of hex strings (SegWit data)
-})
+MERGE (i:Input {inputId: inp.inputId})
+SET i.scriptSig = inp.scriptSig,  // Empty or minimal for SegWit
+    i.witness = inp.witness        // Array of hex strings (SegWit data)
 ```
 
 **Storage:**
@@ -325,8 +309,9 @@ CREATE (i:Input {
 - For P2WPKH: witness = `[signature, pubkey]`
 - For P2WSH: witness = `[signature1, signature2, ..., witnessScript]`
 - For P2TR: witness = `[signature]` or `[signature, ..., witnessScript, controlBlock]`
+- For coinbase (post-SegWit): witness contains the witness commitment
 
-**Note:** Neo4j supports array properties, so store directly as string array.
+**Note:** Neo4j supports array properties, so store directly as string array. The code stores witness for ALL inputs, including coinbase transactions (see `InputData::from_input()` in `src/domain/conversions.rs`).
 
 ---
 
@@ -351,16 +336,16 @@ CREATE (i:Input {
 
 **Handling during ingestion:**
 ```cypher
-CREATE (t:Transaction {
-  locktime: $locktime,
-  // Optional: derive locktimeType
-  locktimeType: CASE
-    WHEN $locktime = 0 THEN 'none'
-    WHEN $locktime < 500000000 THEN 'block_height'
-    ELSE 'timestamp'
-  END
-})
+MERGE (t:Transaction {txid: tx.txid})
+SET t.locktime = tx.locktime
+// Only the raw locktime value (u32) is stored.
+// The code does NOT derive or store a locktimeType property.
 ```
+
+**Interpreting locktime values:**
+- `0` = no restriction (transaction can be included in any block)
+- `< 500,000,000` = block height (locked until chain reaches this height)
+- `>= 500,000,000` = Unix timestamp (locked until this time)
 
 **Note:** Locktime is a policy rule. Locked transactions exist in blocks but couldn't have been included until the locktime condition was met.
 
@@ -382,13 +367,15 @@ Each input has a `sequence` field (4 bytes).
 
 **Handling during ingestion:**
 ```cypher
-CREATE (i:Input {
-  sequence: $sequence,
-  // Optional flags:
-  isRBF: $sequence < 0xFFFFFFFE,
-  isFinal: $sequence = 0xFFFFFFFF
-})
+MERGE (i:Input {inputId: inp.inputId})
+SET i.sequence = inp.sequence
+// Only the raw sequence value (u32) is stored.
+// The code does NOT derive or store isRBF or isFinal properties.
 ```
+
+**Interpreting sequence values:**
+- `0xFFFFFFFF` (4294967295) = locktime disabled, RBF disabled (final)
+- `< 0xFFFFFFFE` = RBF potentially enabled, or relative locktime active
 
 **Note:** Once a transaction is in a block (confirmed), RBF is irrelevant. Only matters for mempool handling.
 
@@ -420,11 +407,9 @@ CREATE (i:Input {
 **Strategy 2 - Differentiate by block:**
 ```cypher
 // Store composite key if handling pre-BIP-30 blocks
-CREATE (t:Transaction {
-  txid: $txid,
-  blockHeight: $blockHeight,  // Include in uniqueness
-  blockHash: $blockHash
-})
+MERGE (t:Transaction {txid: $txid})
+SET t.blockHeight = $blockHeight,
+    t.blockHash = $blockHash
 // Composite constraint:
 // CREATE CONSTRAINT tx_block_unique FOR (t:Transaction) REQUIRE (t.txid, t.blockHeight) IS UNIQUE
 ```
@@ -452,17 +437,25 @@ No special handling needed - process coinbase transaction normally. Empty blocks
 
 ## Summary Checklist
 
-- [ ] Handle coinbase transactions (no SPENDS relationship for input)
-- [ ] Handle OP_RETURN outputs (no address, no LOCKED_TO)
-- [ ] Handle genesis block (no previous block, unspendable coinbase output)
-- [ ] Handle P2PK outputs (derive address from public key hash)
-- [ ] Handle bare multisig (mark as UNKNOWN or MULTISIG)
-- [ ] Handle unknown scripts (store raw scriptPubKey)
-- [ ] Store witness data for SegWit inputs (as array)
-- [ ] Store transaction version and locktime
-- [ ] Store input sequence numbers
-- [ ] Handle potential duplicate txids in pre-2013 blocks (if ingesting historical data)
-- [ ] Handle empty blocks (coinbase only)
+- [x] Handle coinbase transactions (no SPENDS relationship for input, `WHERE inp.previousOutputIndex <> 4294967295`)
+- [x] Handle OP_RETURN outputs (no address, no LOCKED_TO, `scriptType = 'NULL_DATA'`)
+- [x] Handle genesis block (no previous block, unspendable coinbase output)
+- [x] Handle P2PK outputs (derive address via instruction parsing + `Address::p2pkh()`)
+- [x] Handle bare multisig (mapped to `scriptType = 'UNKNOWN'`, no `Multisig` variant)
+- [x] Handle unknown scripts (store raw scriptPubKey, `scriptType = 'UNKNOWN'`)
+- [x] Store witness data for ALL inputs including coinbase (as string array)
+- [x] Store transaction version and locktime (raw values only, no derived properties)
+- [x] Store input sequence numbers (raw value only, no `isRBF`/`isFinal` properties)
+- [x] Handle potential duplicate txids via MERGE (idempotent, last-write-wins)
+- [x] Handle empty blocks (coinbase only, no special handling needed)
+
+> **Implementation notes:**
+> - All Cypher queries use **MERGE** (not CREATE) for idempotent reprocessing
+> - All amounts are **INTEGER satoshis** (not FLOAT BTC). 1 BTC = 100,000,000 satoshis
+> - Transaction amounts (`totalInput`, `totalOutput`, `fee`) are calculated in **Rust** using the UTXO cache during Phase 3, not via graph traversal
+> - Phase 5 (Calculate Amounts) has been **removed** in M7 -- amounts are now part of Phase 3
+> - Input nodes store only: `inputId`, `inputIndex`, `scriptSig`, `sequence`, `witness`
+> - `previousTxid`/`previousOutputIndex` are used for SPENDS lookup, not stored on Input node
 
 ---
 
