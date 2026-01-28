@@ -457,15 +457,17 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         let total_blocks = blocks.len();
         tracing::info!(total_blocks, batch_size, "Starting batch ingestion");
 
-        // Validate first block's parent hash (reorg detection)
-        if let Some((height, block, _)) = blocks.first() {
-            self.validate_parent_hash(block, *height).await?;
-        }
-
         for (batch_idx, chunk) in blocks.chunks(batch_size).enumerate() {
             let start_height = chunk.first().map(|(h, _, _)| *h).unwrap_or(0);
             let end_height = chunk.last().map(|(h, _, _)| *h).unwrap_or(0);
             let blocks_in_batch = chunk.len();
+
+            // Validate parent hash of the first block in each chunk.
+            // This catches reorgs that occur at any chunk boundary, not just
+            // the very first block of the entire batch.
+            if let Some((height, block, _)) = chunk.first() {
+                self.validate_parent_hash(block, *height).await?;
+            }
 
             tracing::info!(
                 batch = batch_idx + 1,

@@ -1004,7 +1004,13 @@ async fn find_fork_point(
         );
     }
 
-    // Should never reach here in practice — genesis block should always match
-    tracing::error!("Fork point not found — chains diverge from genesis");
-    Ok(0)
+    // If we get here, even genesis blocks don't match. This means either:
+    // - The database was built against a different network (e.g., testnet vs mainnet)
+    // - The database is corrupted
+    // Returning Ok(0) would be wrong — it would roll back to genesis and try to
+    // re-ingest, but since genesis doesn't match, it would fail again in a loop.
+    anyhow::bail!(
+        "Fork point not found — stored and canonical chains diverge all the way to genesis. \
+         This likely means the database was built against a different Bitcoin network."
+    );
 }
