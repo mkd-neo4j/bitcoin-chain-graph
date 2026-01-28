@@ -51,7 +51,7 @@ impl TransactionData {
     ///
     /// # Note
     /// total_input, total_output, and fee are initialized as None and will be
-    /// calculated in Phase 5 using the UTXO cache (Rust-based calculation).
+    /// calculated in Phase 3 using the UTXO cache (Rust-based calculation).
     pub fn from_transaction(
         tx: &Transaction,
         block_height: u32,

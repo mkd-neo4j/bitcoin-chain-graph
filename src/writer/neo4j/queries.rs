@@ -81,11 +81,15 @@ pub const CREATE_TRANSACTIONS_QUERY: &str = r#"
 // PHASE 3: OUTPUT INGESTION
 // =============================================================================
 
-/// Create/Update Output nodes with HAS_OUTPUT relationships
+/// Create/Update Output nodes
 ///
 /// Uses MERGE on outputId (unique identifier) and SET for properties.
 /// Preserves isSpent status if already set.
 /// Idempotent for reprocessing scenarios.
+///
+/// NOTE: HAS_OUTPUT relationships are created separately by CREATE_HAS_OUTPUT_QUERY
+/// after Transaction nodes exist (Phase 3.5). Outputs are created in Phase 2
+/// (before Transactions in Phase 3) to support same-block UTXO references.
 ///
 /// Parameters:
 /// - $outputs: List of output objects with properties
@@ -105,9 +109,6 @@ pub const CREATE_OUTPUTS_QUERY: &str = r#"
         o.amount = out.amount,
         o.scriptPubKey = out.scriptPubKey,
         o.scriptType = out.scriptType
-    WITH o, out
-    MATCH (t:Transaction {txid: out.txid})
-    MERGE (t)-[:HAS_OUTPUT]->(o)
 "#;
 
 /// Create LOCKED_TO relationships for outputs with addresses
@@ -122,6 +123,21 @@ pub const CREATE_LOCKED_TO_QUERY: &str = r#"
     MATCH (o:Output {outputId: out.outputId})
     MERGE (a:Address {address: out.address})
     MERGE (o)-[:LOCKED_TO]->(a)
+"#;
+
+/// Create HAS_OUTPUT relationships (Transaction -> Output)
+///
+/// Runs in Phase 3.5, AFTER both Output nodes (Phase 2) and Transaction nodes
+/// (Phase 3) exist. Separated from CREATE_OUTPUTS_QUERY because outputs must be
+/// created before transactions to support same-block UTXO references.
+///
+/// Parameters:
+/// - $outputs: List of output objects with txid and outputId fields
+pub const CREATE_HAS_OUTPUT_QUERY: &str = r#"
+    UNWIND $outputs AS out
+    MATCH (t:Transaction {txid: out.txid})
+    MATCH (o:Output {outputId: out.outputId})
+    MERGE (t)-[:HAS_OUTPUT]->(o)
 "#;
 
 // =============================================================================

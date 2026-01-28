@@ -12,16 +12,17 @@
 //! - **After M7**: Amounts calculated in Rust using cache, relationships pre-aggregated
 //! - **Performance**: 10-100x faster ingestion expected
 //!
-//! # 6-Phase Ingestion Process (M7)
+//! # Ingestion Phase Ordering (M7)
 //!
 //! **IMPORTANT:** Phases 2 and 3 are swapped to handle same-block UTXO references!
 //!
 //! 1. **Phase 1: Block Nodes** - Create Block nodes with NEXT_BLOCK relationships
 //! 2. **Phase 2: Output Nodes** - Create Output nodes + populate UTXO cache (BEFORE calculating amounts!)
-//! 3. **Phase 3: Transaction Nodes** - Create Transaction nodes WITH amounts (calculated in Rust using cache)
-//! 4. **Phase 4: Input Nodes** - Create Input nodes + remove spent outputs from cache
-//! 5. **Phase 5: REMOVED** - Amounts now calculated in Phase 3
+//! 3. **Phase 3: Transaction Nodes** - Create Transaction nodes WITH amounts (calculated in Rust using cache). Also builds PERFORMS data alongside amount calculation.
+//! 4. **Phase 3.5: HAS_OUTPUT** - Create HAS_OUTPUT relationships (Transaction → Output). Separated because outputs must exist before transactions for same-block UTXO references, but HAS_OUTPUT needs both to exist.
+//! 5. **Phase 4: Input Nodes** - Create Input nodes + SPENDS relationships
 //! 6. **Phase 6: Simplified Layer** - Create PERFORMS and BENEFITS_TO from pre-aggregated data
+//! 7. **Phase 7: Cache Cleanup** - Remove spent outputs from UTXO cache
 //!
 //! **Why Phase 2/3 are swapped:** Bitcoin allows transactions to spend outputs created earlier
 //! in the SAME block. For example, in block 546:
@@ -254,19 +255,22 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
 
         // Phase 2: Create Output nodes and populate UTXO cache (M7 - SWAPPED WITH PHASE 3!)
         // CRITICAL: This must happen BEFORE Phase 3 to handle same-block UTXO references
-        self.ingest_outputs_and_cache(block, height).await?;
+        let output_data = self.ingest_outputs_and_cache(block, height).await?;
 
         // Phase 3: Create Transaction nodes WITH amounts (M7: calculated in Rust using cache)
-        // Now outputs from earlier transactions in this block are in cache
-        self.ingest_transactions_with_amounts(block, height).await?;
+        // Also builds PERFORMS data alongside amount calculation to avoid redundant lookups
+        let performs_data = self.ingest_transactions_with_amounts(block, height).await?;
+
+        // Phase 3.5: Create HAS_OUTPUT relationships (Transaction -> Output)
+        // Must run AFTER Phase 3 so Transaction nodes exist
+        self.writer.write_has_output_relationships(&output_data).await?;
 
         // Phase 4: Create Input nodes (cache removal deferred to Phase 7)
         self.ingest_inputs(block, height).await?;
 
-        // Phase 5: REMOVED in M7 - amounts calculated in Phase 3
-
         // Phase 6: Create simplified layer from pre-aggregated data (M7)
-        self.write_simplified_layer_rust(block).await?;
+        // PERFORMS data was built in Phase 3; BENEFITS_TO is built here from outputs
+        self.write_simplified_layer_rust(block, performs_data).await?;
 
         // Phase 7: Remove spent outputs from cache (must be AFTER Phase 6!)
         self.remove_spent_outputs_from_cache(block);
@@ -293,8 +297,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// 1. Blocks
     /// 2. Outputs (+ cache population) - BEFORE transactions for same-block UTXO references
     /// 3. Transactions (with amounts calculated from cache)
-    /// 4. Inputs (+ cache removal)
-    /// 5. Simplified layer
+    /// 3.5. HAS_OUTPUT relationships (Transaction → Output)
+    /// 4. Inputs
+    /// 6. Simplified layer (PERFORMS + BENEFITS_TO)
+    /// 7. Cache cleanup (remove spent outputs)
     ///
     /// # Arguments
     /// * `blocks` - Slice of (height, block, file_name) tuples in blockchain height order
@@ -359,7 +365,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 .sum();
 
             // Pre-build simplified layer accumulators (populated during Phases 2 and 3
-            // to avoid redundant address derivation and cache lookups in Phase 5)
+            // to avoid redundant address derivation and cache lookups in Phase 6)
             let mut all_performs_data: Vec<PerformsData> = Vec::with_capacity(total_txs);
             let mut all_benefits_to_data: Vec<BenefitsToData> = Vec::with_capacity(total_txs);
 
@@ -502,6 +508,19 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 "Phase complete"
             );
 
+            // Phase 3.5: Create HAS_OUTPUT relationships (Transaction -> Output)
+            // Must run AFTER Phase 3 so Transaction nodes exist
+            let phase35_start = std::time::Instant::now();
+            self.writer
+                .write_has_output_relationships(&output_data_batch)
+                .await?;
+            tracing::debug!(
+                phase = "3.5_has_output",
+                count = output_data_batch.len(),
+                write_secs = format!("{:.2}", phase35_start.elapsed().as_secs_f64()),
+                "HAS_OUTPUT relationships created"
+            );
+
             // Phase 4: Accumulate inputs (cache removal deferred to Phase 6)
             let phase4_start = std::time::Instant::now();
             let mut input_data_batch = Vec::with_capacity(total_inputs);
@@ -527,8 +546,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 "Phase complete"
             );
 
-            // Phase 5: Simplified layer (parallel writes using data accumulated in Phases 2-3)
-            let phase5_start = std::time::Instant::now();
+            // Phase 6: Simplified layer (parallel writes using data accumulated in Phases 2-3)
+            let phase6_start = std::time::Instant::now();
 
             // Partition data by address hash to enable parallel writes without deadlocks
             const NUM_BUCKETS: usize = 4;
@@ -569,15 +588,15 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             }
 
             tracing::debug!(
-                phase = "5_simplified",
+                phase = "6_simplified",
                 performs_count = all_performs_data.len(),
                 benefits_count = all_benefits_to_data.len(),
-                write_secs = format!("{:.2}", phase5_start.elapsed().as_secs_f64()),
+                write_secs = format!("{:.2}", phase6_start.elapsed().as_secs_f64()),
                 "Phase complete"
             );
 
-            // Phase 6: Remove spent outputs from cache (deferred from Phase 4)
-            // Must happen AFTER Phase 3 (which does UTXO lookups for amounts and PERFORMS)
+            // Phase 7: Remove spent outputs from cache (deferred from Phase 4)
+            // Must happen AFTER Phase 6 (which needs UTXO lookups for amounts and PERFORMS)
             // Use batch remove for efficiency
             let spent_keys: Vec<UtxoKey> = chunk
                 .iter()
@@ -631,8 +650,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
 
     /// Phase 2: Create Output nodes and populate UTXO cache (M7)
     ///
-    /// Creates Output nodes with properties, HAS_OUTPUT relationships to transactions,
-    /// and LOCKED_TO relationships to addresses (where derivable).
+    /// Creates Output nodes with properties and LOCKED_TO relationships to addresses
+    /// (where derivable). Populates the UTXO cache concurrently with the database write.
     ///
     /// **M7 Addition**: After successful write, inserts each output into the UTXO cache
     /// for use in future transactions (Phase 3 amount calculations).
@@ -640,7 +659,13 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// **CRITICAL**: This phase was moved BEFORE transaction processing (Phase 3) to handle
     /// same-block UTXO references. Bitcoin allows transactions to spend outputs created
     /// earlier in the SAME block.
-    async fn ingest_outputs_and_cache(&self, block: &Block, _height: u32) -> Result<()> {
+    ///
+    /// **NOTE**: HAS_OUTPUT relationships (Transaction→Output) are created in Phase 3.5,
+    /// after Transaction nodes exist. See `ingest_block()` for the full phase ordering.
+    ///
+    /// # Returns
+    /// The collected `Vec<OutputData>`, reused by Phase 3.5 for HAS_OUTPUT relationships.
+    async fn ingest_outputs_and_cache(&self, block: &Block, _height: u32) -> Result<Vec<OutputData>> {
         let total_outputs: usize = block.txdata.iter().map(|tx| tx.output.len()).sum();
         let mut all_outputs = Vec::with_capacity(total_outputs);
 
@@ -673,12 +698,14 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         let (write_result, _) = tokio::join!(write_future, cache_future);
         write_result?;
 
-        Ok(())
+        Ok(all_outputs)
     }
 
     /// Phase 3: Create Transaction nodes WITH amounts (M7 - calculated in Rust)
     ///
     /// Creates Transaction nodes with INCLUDED_IN relationships to the block.
+    /// Also builds PERFORMS aggregation data alongside amount calculation to avoid
+    /// redundant UTXO lookups in Phase 6.
     ///
     /// **M7 Change**: Calculates total_input, total_output, and fee in Rust using
     /// the UTXO cache, avoiding expensive Neo4j graph traversals.
@@ -691,11 +718,20 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// - total_output = sum(transaction.outputs.amount) - easy, current block data
     /// - total_input = sum(previous_outputs.amount) - lookup from UTXO cache (including same-block!)
     /// - fee = total_input - total_output (0 for coinbase)
-    async fn ingest_transactions_with_amounts(&self, block: &Block, height: u32) -> Result<()> {
+    ///
+    /// # Returns
+    /// `Vec<PerformsData>` - pre-aggregated PERFORMS data built during amount calculation,
+    /// passed to Phase 6 to avoid redundant cache lookups.
+    async fn ingest_transactions_with_amounts(
+        &self,
+        block: &Block,
+        height: u32,
+    ) -> Result<Vec<PerformsData>> {
         let block_hash = block.block_hash().to_string();
         let timestamp = block.header.time as i64;
 
         let mut transactions: Vec<TransactionData> = Vec::with_capacity(block.txdata.len());
+        let mut all_performs_data: Vec<PerformsData> = Vec::with_capacity(block.txdata.len());
 
         for tx in &block.txdata {
             let mut tx_data = TransactionData::from_transaction(tx, height, &block_hash, timestamp);
@@ -713,7 +749,34 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                     .map(|i| UtxoKey::from_outpoint(&i.previous_output))
                     .collect();
                 let found = self.utxo_cache.get_many_with_fallback(&keys).await?;
-                found.values().map(|o| o.amount).sum()
+
+                // Build PERFORMS aggregation alongside amount calculation
+                // (avoids redundant cache lookups in Phase 6)
+                let mut performs_map: HashMap<String, (u32, u64)> = HashMap::new();
+                let mut sum: u64 = 0;
+                for output in found.values() {
+                    sum += output.amount;
+                    if let Some(ref address) = output.address {
+                        let addr_str: &str = address;
+                        let entry =
+                            performs_map.entry(addr_str.to_string()).or_insert((0, 0));
+                        entry.0 += 1;
+                        entry.1 += output.amount;
+                    }
+                }
+
+                // Convert performs_map to PerformsData
+                let txid = tx.txid().to_string();
+                for (address, (input_count, amount_spent)) in performs_map {
+                    all_performs_data.push(PerformsData {
+                        from_address: address,
+                        to_txid: txid.clone(),
+                        input_count,
+                        amount_spent,
+                    });
+                }
+
+                sum
             };
 
             // Calculate fee
@@ -731,7 +794,9 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             transactions.push(tx_data);
         }
 
-        self.writer.write_transactions(&transactions).await
+        self.writer.write_transactions(&transactions).await?;
+
+        Ok(all_performs_data)
     }
 
     /// Phase 4: Create Input nodes (cache removal deferred to Phase 7)
@@ -783,90 +848,6 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         self.utxo_cache.remove_many(&spent_keys);
     }
 
-    /// Extract simplified layer data from a block (PERFORMS + BENEFITS_TO)
-    ///
-    /// Extracts data WITHOUT writing to database, allowing batch accumulation.
-    /// This enables batching multiple blocks together for parallel writes.
-    ///
-    /// # Returns
-    /// Tuple of (PERFORMS data, BENEFITS_TO data) for this block
-    async fn extract_simplified_layer_data(
-        &self,
-        block: &Block,
-    ) -> Result<(Vec<PerformsData>, Vec<BenefitsToData>)> {
-        let tx_count = block.txdata.len();
-        let mut performs_data: Vec<PerformsData> = Vec::with_capacity(tx_count);
-        let mut benefits_to_data: Vec<BenefitsToData> = Vec::with_capacity(tx_count);
-
-        for tx in &block.txdata {
-            let txid = tx.txid().to_string();
-
-            // Build PERFORMS data (Address → Transaction via inputs)
-            if !tx.is_coinbase() {
-                // Batch lookup with Neo4j fallback for all cache misses
-                let keys: Vec<UtxoKey> = tx
-                    .input
-                    .iter()
-                    .map(|i| UtxoKey::from_outpoint(&i.previous_output))
-                    .collect();
-                let found = self.utxo_cache.get_many_with_fallback(&keys).await?;
-
-                // Aggregate by (address, txid)
-                let mut performs_map: HashMap<String, (u32, u64)> = HashMap::new();
-                for output in found.values() {
-                    if let Some(ref address) = output.address {
-                        let addr_str: &str = address;
-                        let entry = performs_map.entry(addr_str.to_string()).or_insert((0, 0));
-                        entry.0 += 1;
-                        entry.1 += output.amount;
-                    }
-                }
-
-                // Convert map to PerformsData
-                for (address, (input_count, amount_spent)) in performs_map {
-                    performs_data.push(PerformsData {
-                        from_address: address,
-                        to_txid: txid.clone(),
-                        input_count,
-                        amount_spent,
-                    });
-                }
-            }
-
-            // Build BENEFITS_TO data (Transaction → Address via outputs)
-            // Aggregate by (txid, address)
-            let mut benefits_map: HashMap<String, (u32, u64)> = HashMap::new();
-
-            for (output_index, output) in tx.output.iter().enumerate() {
-                // Extract address from current block (already in memory)
-                let output_data = OutputData::from_output(
-                    output,
-                    &txid,
-                    output_index as u32,
-                    self.network,
-                );
-
-                if let Some(address) = output_data.address {
-                    let entry = benefits_map.entry(address).or_insert((0, 0));
-                    entry.0 += 1; // increment output count
-                    entry.1 += output.value.to_sat(); // add amount
-                }
-            }
-
-            // Convert map to BenefitsToData
-            for (address, (output_count, amount_received)) in benefits_map {
-                benefits_to_data.push(BenefitsToData {
-                    from_txid: txid.clone(),
-                    to_address: address,
-                    output_count,
-                    amount_received,
-                });
-            }
-        }
-
-        Ok((performs_data, benefits_to_data))
-    }
-
     /// Phase 6: Create simplified layer from pre-aggregated data (M7 - Rust calculation)
     ///
     /// Creates direct relationships for easier querying:
@@ -877,11 +858,47 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// avoiding expensive Neo4j graph traversals. Data is pre-aggregated before
     /// being sent to Neo4j for bulk relationship creation.
     ///
-    /// This method is used for single-block ingestion. For batch ingestion,
-    /// use `extract_simplified_layer_data()` followed by parallel writes.
-    async fn write_simplified_layer_rust(&self, block: &Block) -> Result<()> {
-        // Extract data using the shared extraction method
-        let (performs_data, benefits_to_data) = self.extract_simplified_layer_data(block).await?;
+    /// PERFORMS data is built during Phase 3 (alongside amount calculation) to avoid
+    /// redundant UTXO cache lookups. BENEFITS_TO data is built here from output data
+    /// (cheap - no cache lookups needed, just address extraction).
+    ///
+    /// # Arguments
+    /// * `block` - The block being processed (for BENEFITS_TO extraction)
+    /// * `performs_data` - Pre-built PERFORMS data from Phase 3
+    async fn write_simplified_layer_rust(
+        &self,
+        block: &Block,
+        performs_data: Vec<PerformsData>,
+    ) -> Result<()> {
+        // Build BENEFITS_TO data from block outputs (cheap - no cache lookups)
+        let mut benefits_to_data: Vec<BenefitsToData> = Vec::with_capacity(block.txdata.len());
+        for tx in &block.txdata {
+            let txid = tx.txid().to_string();
+            let mut benefits_map: HashMap<String, (u32, u64)> = HashMap::new();
+
+            for (output_index, output) in tx.output.iter().enumerate() {
+                let output_data = OutputData::from_output(
+                    output,
+                    &txid,
+                    output_index as u32,
+                    self.network,
+                );
+                if let Some(address) = output_data.address {
+                    let entry = benefits_map.entry(address).or_insert((0, 0));
+                    entry.0 += 1;
+                    entry.1 += output.value.to_sat();
+                }
+            }
+
+            for (address, (output_count, amount_received)) in benefits_map {
+                benefits_to_data.push(BenefitsToData {
+                    from_txid: txid.clone(),
+                    to_address: address,
+                    output_count,
+                    amount_received,
+                });
+            }
+        }
 
         // Write pre-aggregated relationships to database (no graph traversal)
         if !performs_data.is_empty() {

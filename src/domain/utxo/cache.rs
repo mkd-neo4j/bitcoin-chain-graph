@@ -478,7 +478,10 @@ impl<W: GraphWriter> UtxoCache<W> {
     /// for misses). Returns all found outputs keyed by UtxoKey. Reduces N Neo4j
     /// round-trips to 1 UNWIND query for all cache misses.
     ///
-    /// Outputs not found in either cache or Neo4j are skipped with a warning.
+    /// # Errors
+    /// Returns an error if any requested UTXOs cannot be found in cache or Neo4j.
+    /// Missing UTXOs would produce incorrect amount/fee calculations, so this is
+    /// treated as a hard failure rather than silently producing wrong data.
     pub async fn get_many_with_fallback(
         &self,
         keys: &[UtxoKey],
@@ -515,12 +518,14 @@ impl<W: GraphWriter> UtxoCache<W> {
                 .take(5)
                 .map(|k| k.to_output_id_string())
                 .collect();
-            tracing::warn!(
+            return Err(crate::writer::WriterError::QueryFailed(format!(
+                "Missing {} of {} UTXOs (not in cache or Neo4j). \
+                 Amount/fee calculations would be incorrect. \
+                 Sample missing IDs: {:?}",
                 missing_count,
-                total_requested = keys.len(),
-                sample_missing_ids = ?missing_ids,
-                "UTXOs not found in cache or Neo4j — fee/amount calculations may be inaccurate"
-            );
+                keys.len(),
+                missing_ids,
+            )));
         }
 
         Ok(found)

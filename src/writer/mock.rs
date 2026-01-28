@@ -163,6 +163,12 @@ impl GraphWriter for MockWriter {
         Ok(())
     }
 
+    async fn write_has_output_relationships(&self, _outputs: &[OutputData]) -> Result<()> {
+        // MockWriter doesn't track relationships separately.
+        // The HAS_OUTPUT relationship is implicit from the output's txid field.
+        Ok(())
+    }
+
     async fn write_inputs(&self, inputs: &[InputData]) -> Result<()> {
         let mut storage = self.storage.lock().unwrap();
         storage.inputs.extend_from_slice(inputs);

@@ -325,6 +325,17 @@ impl GraphWriter for Neo4jWriter {
         Ok(())
     }
 
+    async fn write_has_output_relationships(&self, outputs: &[OutputData]) -> Result<()> {
+        self.execute_batched(
+            outputs,
+            queries::CREATE_HAS_OUTPUT_QUERY,
+            "outputs",
+            "write_has_output_relationships",
+            outputs_to_bolt_list,
+        )
+        .await
+    }
+
     async fn write_inputs(&self, inputs: &[InputData]) -> Result<()> {
         self.execute_batched(
             inputs,

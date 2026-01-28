@@ -101,6 +101,24 @@ pub trait GraphWriter: Send + Sync {
     /// Returns error if output writing fails.
     async fn write_outputs(&self, outputs: &[OutputData]) -> Result<()>;
 
+    // Phase 3.5: HAS_OUTPUT Relationships
+
+    /// Write HAS_OUTPUT relationships in bulk (Transaction -> Output)
+    ///
+    /// Creates HAS_OUTPUT relationships linking Transaction nodes to their
+    /// Output nodes. Called in Phase 3.5 AFTER both outputs (Phase 2) and
+    /// transactions (Phase 3) have been written.
+    ///
+    /// Separated from `write_outputs()` because outputs are created before
+    /// transactions to support same-block UTXO references.
+    ///
+    /// # Arguments
+    /// * `outputs` - Slice of OutputData containing txid and outputId
+    ///
+    /// # Errors
+    /// Returns error if relationship creation fails.
+    async fn write_has_output_relationships(&self, outputs: &[OutputData]) -> Result<()>;
+
     // Phase 4: Inputs
 
     /// Write input nodes and SPENDS relationships in bulk

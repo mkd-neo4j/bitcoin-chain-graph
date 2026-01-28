@@ -46,7 +46,7 @@ pub struct BlockData {
 ///
 /// Maps directly to Transaction node properties in Neo4j.
 /// Amount fields (total_input, total_output, fee) are calculated in Rust during
-/// Phase 5 using the UTXO cache, avoiding expensive Neo4j graph traversals.
+/// Phase 3 using the UTXO cache, avoiding expensive Neo4j graph traversals.
 #[derive(Clone, Debug)]
 pub struct TransactionData {
     /// Transaction hash (unique identifier)
@@ -69,11 +69,11 @@ pub struct TransactionData {
     pub weight: usize,
     /// True if this is a coinbase (mining reward) transaction
     pub is_coinbase: bool,
-    /// Total input amount in satoshis (calculated in Phase 5)
+    /// Total input amount in satoshis (calculated in Phase 3)
     pub total_input: Option<u64>,
-    /// Total output amount in satoshis (calculated in Phase 5)
+    /// Total output amount in satoshis (calculated in Phase 3)
     pub total_output: Option<u64>,
-    /// Transaction fee in satoshis (calculated in Phase 5)
+    /// Transaction fee in satoshis (calculated in Phase 3)
     pub fee: Option<u64>,
 }
 
