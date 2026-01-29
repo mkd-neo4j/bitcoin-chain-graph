@@ -341,6 +341,33 @@ impl GraphWriter for MockWriter {
 
         Ok(())
     }
+
+    async fn get_max_block_height(&self) -> Result<Option<u32>> {
+        let storage = self.storage.lock().unwrap();
+        Ok(storage.blocks.iter().map(|b| b.height).max())
+    }
+
+    async fn check_block_complete(&self, height: u32) -> Result<(u32, u32)> {
+        let storage = self.storage.lock().unwrap();
+
+        // Find the block
+        let block = storage
+            .blocks
+            .iter()
+            .find(|b| b.height == height)
+            .ok_or_else(|| WriterError::QueryFailed(format!("Block {} not found", height)))?;
+
+        let expected = block.tx_count;
+
+        // Count transactions in this block
+        let actual = storage
+            .transactions
+            .iter()
+            .filter(|t| t.block_height == height)
+            .count() as u32;
+
+        Ok((expected, actual))
+    }
 }
 
 #[cfg(test)]

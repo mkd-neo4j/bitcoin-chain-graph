@@ -322,4 +322,95 @@ pub trait GraphWriter: Send + Sync {
     /// # Errors
     /// Returns error if any rollback step fails.
     async fn rollback_block(&self, height: u32) -> Result<()>;
+
+    // Crash Recovery
+
+    /// Get the maximum block height currently in the database
+    ///
+    /// Used for crash recovery to detect blocks written but not checkpointed.
+    /// If the database has blocks beyond the checkpoint, this indicates a
+    /// crash occurred mid-batch after writing some blocks but before updating
+    /// the checkpoint.
+    ///
+    /// # Returns
+    /// Some(height) if blocks exist, None if database is empty
+    ///
+    /// # Errors
+    /// Returns error if query fails.
+    async fn get_max_block_height(&self) -> Result<Option<u32>>;
+
+    /// Check if a block at given height is complete
+    ///
+    /// Compares the block's expected transaction count (from block.txCount)
+    /// with the actual number of Transaction nodes linked to it. A mismatch
+    /// indicates the block was partially written during a crashed batch.
+    ///
+    /// # Arguments
+    /// * `height` - Block height to check
+    ///
+    /// # Returns
+    /// (expected_tx_count, actual_tx_count) tuple
+    ///
+    /// # Errors
+    /// Returns error if block doesn't exist or query fails.
+    async fn check_block_complete(&self, height: u32) -> Result<(u32, u32)>;
+
+    // =========================================================================
+    // Fast Write Methods (CREATE instead of MERGE)
+    // =========================================================================
+    //
+    // These methods use CREATE queries for better performance during forward
+    // ingestion when we know nodes don't exist yet. They will fail with
+    // constraint violations if duplicates exist.
+    //
+    // Default implementations delegate to the regular methods, allowing
+    // implementations that don't need optimization (like MockWriter) to
+    // work without changes.
+
+    /// Fast write blocks using CREATE (no existence check)
+    ///
+    /// Use only during forward ingestion when blocks are guaranteed new.
+    /// Will fail with constraint violation if block already exists.
+    ///
+    /// Default implementation delegates to `write_blocks()`.
+    async fn write_blocks_fast(&self, blocks: &[BlockData]) -> Result<()> {
+        self.write_blocks(blocks).await
+    }
+
+    /// Fast write transactions using CREATE (no existence check)
+    ///
+    /// Use only during forward ingestion when transactions are guaranteed new.
+    /// Will fail with constraint violation if transaction already exists.
+    ///
+    /// Default implementation delegates to `write_transactions()`.
+    async fn write_transactions_fast(&self, transactions: &[TransactionData]) -> Result<()> {
+        self.write_transactions(transactions).await
+    }
+
+    /// Fast write outputs using CREATE (no existence check)
+    ///
+    /// Use only during forward ingestion when outputs are guaranteed new.
+    /// Will fail with constraint violation if output already exists.
+    ///
+    /// Default implementation delegates to `write_outputs()`.
+    async fn write_outputs_fast(&self, outputs: &[OutputData]) -> Result<()> {
+        self.write_outputs(outputs).await
+    }
+
+    /// Fast write HAS_OUTPUT relationships using CREATE (no existence check)
+    ///
+    /// Default implementation delegates to `write_has_output_relationships()`.
+    async fn write_has_output_relationships_fast(&self, outputs: &[OutputData]) -> Result<()> {
+        self.write_has_output_relationships(outputs).await
+    }
+
+    /// Fast write inputs using CREATE (no existence check)
+    ///
+    /// Use only during forward ingestion when inputs are guaranteed new.
+    /// Will fail with constraint violation if input already exists.
+    ///
+    /// Default implementation delegates to `write_inputs()`.
+    async fn write_inputs_fast(&self, inputs: &[InputData]) -> Result<()> {
+        self.write_inputs(inputs).await
+    }
 }

@@ -87,7 +87,7 @@ impl Neo4jWriter {
     /// Executes a trivial query to check connectivity. Called at startup
     /// and can be used for monitoring.
     pub async fn health_check(&self) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(30), self.graph.run(query("RETURN 1")))
+        tokio::time::timeout(self.query_timeout, self.graph.run(query("RETURN 1")))
             .await
             .map_err(|_| WriterError::ConnectionFailed("Health check timed out".to_string()))?
             .map_err(|e| WriterError::ConnectionFailed(format!("Health check failed: {}", e)))?;
@@ -242,6 +242,89 @@ impl Neo4jWriter {
                 }
             }
         }
+    }
+
+    // =========================================================================
+    // Fast Write Methods (CREATE instead of MERGE)
+    // =========================================================================
+    //
+    // These methods use CREATE queries for better performance during forward
+    // ingestion when we know nodes don't exist yet. They will fail with
+    // constraint violations if duplicates exist.
+
+    /// Fast write blocks using CREATE (no existence check)
+    ///
+    /// Use only during forward ingestion when blocks are guaranteed new.
+    /// Will fail with constraint violation if block already exists.
+    pub async fn write_blocks_fast(&self, blocks: &[BlockData]) -> Result<()> {
+        self.execute_batched(
+            blocks,
+            queries::CREATE_BLOCKS_FAST_QUERY,
+            "blocks",
+            "write_blocks_fast",
+            blocks_to_bolt_list,
+        )
+        .await
+    }
+
+    /// Fast write transactions using CREATE (no existence check)
+    ///
+    /// Use only during forward ingestion when transactions are guaranteed new.
+    /// Will fail with constraint violation if transaction already exists.
+    pub async fn write_transactions_fast(&self, transactions: &[TransactionData]) -> Result<()> {
+        self.execute_batched(
+            transactions,
+            queries::CREATE_TRANSACTIONS_FAST_QUERY,
+            "transactions",
+            "write_transactions_fast",
+            transactions_to_bolt_list,
+        )
+        .await
+    }
+
+    /// Fast write outputs using CREATE (no existence check)
+    ///
+    /// Use only during forward ingestion when outputs are guaranteed new.
+    /// Will fail with constraint violation if output already exists.
+    ///
+    /// Uses combined query that creates Output nodes and LOCKED_TO relationships
+    /// in a single network round-trip for better performance.
+    pub async fn write_outputs_fast(&self, outputs: &[OutputData]) -> Result<()> {
+        self.execute_batched(
+            outputs,
+            queries::CREATE_OUTPUTS_WITH_LOCKED_TO_FAST_QUERY,
+            "outputs",
+            "write_outputs_fast",
+            outputs_to_bolt_list,
+        )
+        .await
+    }
+
+    /// Fast write HAS_OUTPUT relationships using CREATE (no existence check)
+    pub async fn write_has_output_relationships_fast(&self, outputs: &[OutputData]) -> Result<()> {
+        self.execute_batched(
+            outputs,
+            queries::CREATE_HAS_OUTPUT_FAST_QUERY,
+            "outputs",
+            "write_has_output_relationships_fast",
+            outputs_to_bolt_list,
+        )
+        .await
+    }
+
+    /// Fast write inputs using CREATE (no existence check)
+    ///
+    /// Use only during forward ingestion when inputs are guaranteed new.
+    /// Will fail with constraint violation if input already exists.
+    pub async fn write_inputs_fast(&self, inputs: &[InputData]) -> Result<()> {
+        self.execute_batched(
+            inputs,
+            queries::CREATE_INPUTS_FAST_QUERY,
+            "inputs",
+            "write_inputs_fast",
+            inputs_to_bolt_list,
+        )
+        .await
     }
 }
 
@@ -727,5 +810,72 @@ impl GraphWriter for Neo4jWriter {
 
         tracing::warn!(height, "Block rolled back successfully");
         Ok(())
+    }
+
+    async fn get_max_block_height(&self) -> Result<Option<u32>> {
+        let mut result = tokio::time::timeout(
+            self.query_timeout,
+            self.graph.execute(query(queries::GET_MAX_BLOCK_HEIGHT_QUERY)),
+        )
+        .await
+        .map_err(|_| WriterError::QueryFailed("get_max_block_height timed out".to_string()))?
+        .map_err(|e| WriterError::QueryFailed(format!("get_max_block_height failed: {}", e)))?;
+
+        if let Some(row) = result.next().await.map_err(|e| {
+            WriterError::QueryFailed(format!("Failed to fetch max height: {}", e))
+        })? {
+            // max() returns null if no blocks exist
+            let height: Option<i64> = row.get("maxHeight").ok();
+            Ok(height.map(|h| h as u32))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn check_block_complete(&self, height: u32) -> Result<(u32, u32)> {
+        let mut result = tokio::time::timeout(
+            self.query_timeout,
+            self.graph.execute(
+                query(queries::CHECK_BLOCK_COMPLETE_QUERY).param("height", height as i64),
+            ),
+        )
+        .await
+        .map_err(|_| WriterError::QueryFailed("check_block_complete timed out".to_string()))?
+        .map_err(|e| WriterError::QueryFailed(format!("check_block_complete failed: {}", e)))?;
+
+        if let Some(row) = result.next().await.map_err(|e| {
+            WriterError::QueryFailed(format!("Failed to fetch block completeness: {}", e))
+        })? {
+            let expected: i64 = row.get("expectedTxCount").unwrap_or(0);
+            let actual: i64 = row.get("actualTxCount").unwrap_or(0);
+            Ok((expected as u32, actual as u32))
+        } else {
+            Err(WriterError::QueryFailed(format!(
+                "Block {} not found",
+                height
+            )))
+        }
+    }
+
+    // Fast write method overrides (use CREATE instead of MERGE)
+
+    async fn write_blocks_fast(&self, blocks: &[BlockData]) -> Result<()> {
+        Neo4jWriter::write_blocks_fast(self, blocks).await
+    }
+
+    async fn write_transactions_fast(&self, transactions: &[TransactionData]) -> Result<()> {
+        Neo4jWriter::write_transactions_fast(self, transactions).await
+    }
+
+    async fn write_outputs_fast(&self, outputs: &[OutputData]) -> Result<()> {
+        Neo4jWriter::write_outputs_fast(self, outputs).await
+    }
+
+    async fn write_has_output_relationships_fast(&self, outputs: &[OutputData]) -> Result<()> {
+        Neo4jWriter::write_has_output_relationships_fast(self, outputs).await
+    }
+
+    async fn write_inputs_fast(&self, inputs: &[InputData]) -> Result<()> {
+        Neo4jWriter::write_inputs_fast(self, inputs).await
     }
 }

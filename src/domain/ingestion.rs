@@ -175,6 +175,14 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         self.utxo_cache.len()
     }
 
+    /// Log cache statistics periodically (every 10,000 operations).
+    ///
+    /// Call this after batch operations to monitor cache health. Only logs
+    /// when total operations cross a threshold to avoid log flooding.
+    pub fn maybe_log_cache_stats(&self) {
+        self.utxo_cache.maybe_log_stats();
+    }
+
     /// Get reference to the UTXO cache
     ///
     /// Returns a reference to the internal UTXO cache for direct access.
@@ -230,6 +238,107 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// Returns error if checkpoint update fails
     pub async fn update_checkpoint(&self, checkpoint: &CheckpointData) -> Result<()> {
         self.writer.update_checkpoint(checkpoint).await
+    }
+
+    /// Sync checkpoint with actual database state on resume
+    ///
+    /// Finds the highest COMPLETE block (where transaction count matches expected).
+    /// Rolls back any incomplete blocks above checkpoint, then updates checkpoint
+    /// to the highest complete block. This preserves work for complete blocks
+    /// while cleaning up partial data from crashed batches.
+    ///
+    /// This handles crash recovery scenarios:
+    /// - If blocks exist beyond checkpoint (from a crash mid-batch), verify each is complete
+    /// - Roll back incomplete blocks (missing transactions/inputs from partial phase writes)
+    /// - Preserve complete blocks and sync checkpoint to highest complete block
+    /// - Resume from highest_complete + 1
+    ///
+    /// # Returns
+    /// The height to resume from (highest_complete + 1).
+    ///
+    /// # Errors
+    /// Returns error if database queries fail.
+    pub async fn sync_checkpoint_with_db(&self) -> Result<u32> {
+        let checkpoint = self.writer.get_checkpoint().await?;
+        let checkpoint_height = checkpoint
+            .as_ref()
+            .map(|c| c.last_processed_height)
+            .unwrap_or(-1);
+
+        let max_db_height = self.writer.get_max_block_height().await?;
+
+        match max_db_height {
+            Some(db_height) if db_height as i32 > checkpoint_height => {
+                tracing::info!(
+                    checkpoint_height,
+                    db_height,
+                    "Detected blocks beyond checkpoint - checking completeness"
+                );
+
+                // Walk backwards from highest block to find first complete block
+                let mut highest_complete = checkpoint_height;
+
+                for height in (checkpoint_height as u32 + 1..=db_height).rev() {
+                    let (expected, actual) = self.writer.check_block_complete(height).await?;
+
+                    if expected == actual && actual > 0 {
+                        // This block is complete - found our target
+                        highest_complete = height as i32;
+                        tracing::info!(
+                            height,
+                            tx_count = actual,
+                            "Found complete block"
+                        );
+                        break;
+                    } else {
+                        // Incomplete block - roll it back
+                        tracing::warn!(
+                            height,
+                            expected_tx = expected,
+                            actual_tx = actual,
+                            "Found incomplete block - rolling back"
+                        );
+                        self.writer.rollback_block(height).await?;
+                    }
+                }
+
+                // If we found complete blocks above checkpoint, update checkpoint
+                if highest_complete > checkpoint_height {
+                    let block_hash = self
+                        .writer
+                        .lookup_block_hash(highest_complete as u32)
+                        .await?
+                        .unwrap_or_else(|| "unknown".to_string());
+
+                    let new_checkpoint = CheckpointData {
+                        last_processed_height: highest_complete,
+                        last_processed_hash: block_hash,
+                        last_processed_file: checkpoint
+                            .as_ref()
+                            .map(|c| c.last_processed_file.clone())
+                            .unwrap_or_else(|| "recovered".to_string()),
+                        last_processed_file_offset: None,
+                        timestamp: chrono::Utc::now().timestamp(),
+                        status: "in_progress".to_string(),
+                    };
+
+                    self.writer.update_checkpoint(&new_checkpoint).await?;
+
+                    tracing::info!(
+                        old_checkpoint = checkpoint_height,
+                        new_checkpoint = highest_complete,
+                        recovered_blocks = highest_complete - checkpoint_height,
+                        "Checkpoint synced with database - preserved complete blocks"
+                    );
+                }
+
+                Ok((highest_complete + 1) as u32)
+            }
+            _ => {
+                // No sync needed - return normal resume height
+                self.get_resume_height().await
+            }
+        }
     }
 
     /// Validate that a block's previous hash matches the stored block
@@ -484,9 +593,9 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 block_data_batch.push(BlockData::from_block(block, *height));
             }
 
-            // Write blocks in one batch
+            // Write blocks in one batch (fast CREATE for forward ingestion)
             let write_start = std::time::Instant::now();
-            self.writer.write_blocks(&block_data_batch).await?;
+            self.writer.write_blocks_fast(&block_data_batch).await?;
             tracing::debug!(
                 phase = "1_blocks",
                 count = block_data_batch.len(),
@@ -554,8 +663,9 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             // Write outputs to Neo4j AND populate cache concurrently.
             // Neo4j write is I/O-bound; cache population is CPU-bound.
             // tokio::join! overlaps the Neo4j network wait with cache inserts.
+            // Using fast CREATE for forward ingestion (no existence check).
             let write_start = std::time::Instant::now();
-            let write_future = self.writer.write_outputs(&output_data_batch);
+            let write_future = self.writer.write_outputs_fast(&output_data_batch);
             let cache_future = async {
                 for output in &output_data_batch {
                     if let Some(key) = UtxoKey::from_hex_txid(&output.txid, output.output_index) {
@@ -580,13 +690,27 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             );
 
             // Phase 3: Accumulate transactions (with amounts calculated from cache) AND build PERFORMS
+            // Refactored to batch UTXO lookups across ALL transactions (1 Neo4j query instead of N)
             let phase3_start = std::time::Instant::now();
-            let mut transaction_data_batch = Vec::with_capacity(total_txs);
+
+            // Helper struct for tracking pending transactions during batched UTXO lookup
+            struct PendingTx<'a> {
+                tx: &'a bitcoin::Transaction,
+                block_height: u32,
+                block_hash: String,
+                timestamp: i64,
+                key_range: std::ops::Range<usize>,
+            }
+
+            // Phase 3a: Collect all input keys from all non-coinbase transactions
+            let mut all_input_keys: Vec<UtxoKey> = Vec::with_capacity(total_inputs);
+            let mut pending_txs: Vec<PendingTx> = Vec::with_capacity(total_txs);
+
             for (height, block, _file_name) in chunk {
                 let block_hash = block.block_hash().to_string();
                 let timestamp = block.header.time as i64;
 
-                // BIP30: Warn about known duplicate-txid blocks
+                // BIP30: Warn about known duplicate-txid blocks (once per block)
                 if BIP30_DUPLICATE_HEIGHTS.contains(height) {
                     tracing::warn!(
                         height,
@@ -597,26 +721,59 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 }
 
                 for tx in &block.txdata {
-                    let mut tx_data =
-                        TransactionData::from_transaction(tx, *height, &block_hash, timestamp);
+                    let start = all_input_keys.len();
+                    if !tx.is_coinbase() {
+                        all_input_keys.extend(
+                            tx.input
+                                .iter()
+                                .map(|i| UtxoKey::from_outpoint(&i.previous_output)),
+                        );
+                    }
+                    pending_txs.push(PendingTx {
+                        tx,
+                        block_height: *height,
+                        block_hash: block_hash.clone(),
+                        timestamp,
+                        key_range: start..all_input_keys.len(),
+                    });
+                }
+            }
 
-                    // Calculate amounts (same logic as single-block ingestion)
-                    let total_output: u64 = tx.output.iter().map(|out| out.value.to_sat()).sum();
-                    let total_input: u64 = if tx.is_coinbase() {
-                        0
-                    } else {
-                        // Batch lookup with Neo4j fallback for all cache misses
-                        let keys: Vec<UtxoKey> = tx
-                            .input
-                            .iter()
-                            .map(|i| UtxoKey::from_outpoint(&i.previous_output))
-                            .collect();
-                        let found = self.utxo_cache.get_many_with_fallback(&keys).await?;
+            // Phase 3b: Single batched lookup for ALL input keys (1 Neo4j query for all cache misses)
+            let all_outputs = self
+                .utxo_cache
+                .get_many_with_fallback(&all_input_keys)
+                .await?;
 
-                        // Build PERFORMS aggregation alongside amount calculation
-                        let mut performs_map: HashMap<String, (u32, u64)> = HashMap::new();
-                        let mut sum: u64 = 0;
-                        for output in found.values() {
+            tracing::debug!(
+                total_keys = all_input_keys.len(),
+                total_txs = pending_txs.len(),
+                "Batched UTXO lookup complete"
+            );
+
+            // Phase 3c: Process each transaction using pre-fetched outputs
+            let mut transaction_data_batch = Vec::with_capacity(total_txs);
+            for pending in &pending_txs {
+                let mut tx_data = TransactionData::from_transaction(
+                    pending.tx,
+                    pending.block_height,
+                    &pending.block_hash,
+                    pending.timestamp,
+                );
+
+                let total_output: u64 =
+                    pending.tx.output.iter().map(|out| out.value.to_sat()).sum();
+
+                let total_input: u64 = if pending.tx.is_coinbase() {
+                    0
+                } else {
+                    // Get pre-fetched outputs for this transaction's inputs
+                    let tx_keys = &all_input_keys[pending.key_range.clone()];
+                    let mut performs_map: HashMap<String, (u32, u64)> = HashMap::new();
+                    let mut sum: u64 = 0;
+
+                    for key in tx_keys {
+                        if let Some(output) = all_outputs.get(key) {
                             sum += output.amount;
                             if let Some(ref address) = output.address {
                                 let addr_str: &str = address;
@@ -626,33 +783,33 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                                 entry.1 += output.amount;
                             }
                         }
+                    }
 
-                        // Convert performs_map to PerformsData
-                        let txid = tx.txid().to_string();
-                        for (address, (input_count, amount_spent)) in performs_map {
-                            all_performs_data.push(PerformsData {
-                                from_address: address,
-                                to_txid: txid.clone(),
-                                input_count,
-                                amount_spent,
-                            });
-                        }
+                    // Convert performs_map to PerformsData
+                    let txid = pending.tx.txid().to_string();
+                    for (address, (input_count, amount_spent)) in performs_map {
+                        all_performs_data.push(PerformsData {
+                            from_address: address,
+                            to_txid: txid.clone(),
+                            input_count,
+                            amount_spent,
+                        });
+                    }
 
-                        sum
-                    };
+                    sum
+                };
 
-                    tx_data.total_input = Some(total_input);
-                    tx_data.total_output = Some(total_output);
-                    tx_data.fee = Some(total_input.saturating_sub(total_output));
+                tx_data.total_input = Some(total_input);
+                tx_data.total_output = Some(total_output);
+                tx_data.fee = Some(total_input.saturating_sub(total_output));
 
-                    transaction_data_batch.push(tx_data);
-                }
+                transaction_data_batch.push(tx_data);
             }
 
-            // Write transactions in one batch
+            // Write transactions in one batch (fast CREATE for forward ingestion)
             let write_start = std::time::Instant::now();
             self.writer
-                .write_transactions(&transaction_data_batch)
+                .write_transactions_fast(&transaction_data_batch)
                 .await?;
             tracing::debug!(
                 phase = "3_transactions",
@@ -664,9 +821,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
 
             // Phase 3.5: Create HAS_OUTPUT relationships (Transaction -> Output)
             // Must run AFTER Phase 3 so Transaction nodes exist
+            // Using fast CREATE for forward ingestion.
             let phase35_start = std::time::Instant::now();
             self.writer
-                .write_has_output_relationships(&output_data_batch)
+                .write_has_output_relationships_fast(&output_data_batch)
                 .await?;
             tracing::debug!(
                 phase = "3.5_has_output",
@@ -689,9 +847,9 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 }
             }
 
-            // Write inputs in one batch
+            // Write inputs in one batch (fast CREATE for forward ingestion)
             let write_start = std::time::Instant::now();
-            self.writer.write_inputs(&input_data_batch).await?;
+            self.writer.write_inputs_fast(&input_data_batch).await?;
             tracing::debug!(
                 phase = "4_inputs",
                 count = input_data_batch.len(),
@@ -704,7 +862,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             let phase6_start = std::time::Instant::now();
 
             // Partition data by address hash to enable parallel writes without deadlocks
-            const NUM_BUCKETS: usize = 4;
+            // 8 buckets provides good parallelism while staying within connection pool limits
+            const NUM_BUCKETS: usize = 8;
 
             let performs_buckets =
                 Self::partition_performs_by_address(&all_performs_data, NUM_BUCKETS);
@@ -894,38 +1053,57 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             );
         }
 
+        // Phase 3a: Collect all input keys from all non-coinbase transactions
+        let total_inputs: usize = block.txdata.iter().map(|tx| tx.input.len()).sum();
+        let mut all_input_keys: Vec<UtxoKey> = Vec::with_capacity(total_inputs);
+        let mut tx_key_ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(block.txdata.len());
+
+        for tx in &block.txdata {
+            let start = all_input_keys.len();
+            if !tx.is_coinbase() {
+                all_input_keys.extend(
+                    tx.input
+                        .iter()
+                        .map(|i| UtxoKey::from_outpoint(&i.previous_output)),
+                );
+            }
+            tx_key_ranges.push(start..all_input_keys.len());
+        }
+
+        // Phase 3b: Single batched lookup for ALL input keys (1 Neo4j query for all cache misses)
+        let all_outputs = self
+            .utxo_cache
+            .get_many_with_fallback(&all_input_keys)
+            .await?;
+
+        // Phase 3c: Process each transaction using pre-fetched outputs
         let mut transactions: Vec<TransactionData> = Vec::with_capacity(block.txdata.len());
         let mut all_performs_data: Vec<PerformsData> = Vec::with_capacity(block.txdata.len());
 
-        for tx in &block.txdata {
+        for (tx, key_range) in block.txdata.iter().zip(tx_key_ranges.iter()) {
             let mut tx_data = TransactionData::from_transaction(tx, height, &block_hash, timestamp);
 
             // Calculate total_output (easy - sum current outputs)
             let total_output: u64 = tx.output.iter().map(|out| out.value.to_sat()).sum();
 
-            // Calculate total_input (batch lookup with Neo4j fallback for misses)
+            // Calculate total_input using pre-fetched outputs
             let total_input: u64 = if tx.is_coinbase() {
                 0 // Coinbase has no inputs
             } else {
-                let keys: Vec<UtxoKey> = tx
-                    .input
-                    .iter()
-                    .map(|i| UtxoKey::from_outpoint(&i.previous_output))
-                    .collect();
-                let found = self.utxo_cache.get_many_with_fallback(&keys).await?;
-
-                // Build PERFORMS aggregation alongside amount calculation
-                // (avoids redundant cache lookups in Phase 6)
+                let tx_keys = &all_input_keys[key_range.clone()];
                 let mut performs_map: HashMap<String, (u32, u64)> = HashMap::new();
                 let mut sum: u64 = 0;
-                for output in found.values() {
-                    sum += output.amount;
-                    if let Some(ref address) = output.address {
-                        let addr_str: &str = address;
-                        let entry =
-                            performs_map.entry(addr_str.to_string()).or_insert((0, 0));
-                        entry.0 += 1;
-                        entry.1 += output.amount;
+
+                for key in tx_keys {
+                    if let Some(output) = all_outputs.get(key) {
+                        sum += output.amount;
+                        if let Some(ref address) = output.address {
+                            let addr_str: &str = address;
+                            let entry =
+                                performs_map.entry(addr_str.to_string()).or_insert((0, 0));
+                            entry.0 += 1;
+                            entry.1 += output.amount;
+                        }
                     }
                 }
 

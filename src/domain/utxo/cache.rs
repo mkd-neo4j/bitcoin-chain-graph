@@ -20,6 +20,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
+// Logging Configuration
+// ---------------------------------------------------------------------------
+
+/// Interval for periodic stats logging (every N cache operations).
+/// Set high enough to avoid log flooding during heavy ingestion.
+const STATS_LOG_INTERVAL: u64 = 10_000;
+
+// ---------------------------------------------------------------------------
 // UtxoKey: compact 36-byte binary cache key
 // ---------------------------------------------------------------------------
 
@@ -508,6 +516,7 @@ impl<W: GraphWriter> UtxoCache<W> {
                     found.insert(key, cached);
                 }
             }
+
         }
 
         if found.len() < keys.len() {
@@ -640,6 +649,40 @@ impl<W: GraphWriter> UtxoCache<W> {
             0.0
         } else {
             total_len as f64 / total_cap as f64
+        }
+    }
+
+    /// Log cache statistics periodically (every STATS_LOG_INTERVAL operations).
+    ///
+    /// Call this after batch operations to track cache health. Logs at INFO level
+    /// normally, WARN level if hit rate drops below 50%.
+    ///
+    /// Designed to avoid log flooding — only logs when total operations cross
+    /// a multiple of STATS_LOG_INTERVAL.
+    pub fn maybe_log_stats(&self) {
+        let stats = self.stats.snapshot();
+        let total_ops = stats.hits + stats.misses;
+
+        // Only log at intervals to avoid flooding
+        if total_ops > 0 && total_ops % STATS_LOG_INTERVAL == 0 {
+            let hit_rate = stats.hit_rate_percent();
+            if hit_rate < 50.0 {
+                tracing::warn!(
+                    hits = stats.hits,
+                    misses = stats.misses,
+                    hit_rate = format!("{:.1}%", hit_rate),
+                    cache_size = self.len(),
+                    "UTXO cache hit rate is low"
+                );
+            } else {
+                tracing::info!(
+                    hits = stats.hits,
+                    misses = stats.misses,
+                    hit_rate = format!("{:.1}%", hit_rate),
+                    cache_size = self.len(),
+                    "UTXO cache stats"
+                );
+            }
         }
     }
 }

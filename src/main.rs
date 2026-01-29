@@ -112,13 +112,24 @@ async fn main() -> Result<()> {
 
 /// Initialize tracing subscriber for structured logging
 fn init_logging(config: &Config) {
-    // Check for RUST_LOG environment variable, otherwise use config
-    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| config.logging.level.clone());
-
-    // Create env filter
-    let env_filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(&log_level))
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    // Create env filter: if RUST_LOG is set, use it directly for full control.
+    // Otherwise, use config level but filter noisy HTTP client crates.
+    let (env_filter, log_level) = if let Ok(rust_log) = std::env::var("RUST_LOG") {
+        // RUST_LOG explicitly set — use as-is for full control
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("info"));
+        (filter, rust_log)
+    } else {
+        // Build a filter that quiets noisy HTTP client internals
+        let app_level = &config.logging.level;
+        let filter_str = format!(
+            "{},hyper=warn,hyper_util=warn,reqwest=warn,h2=warn",
+            app_level
+        );
+        let filter = EnvFilter::try_new(&filter_str)
+            .unwrap_or_else(|_| EnvFilter::new("info"));
+        (filter, app_level.clone())
+    };
 
     // Setup formatting layer
     let fmt_layer = fmt::layer()
@@ -291,10 +302,13 @@ async fn resume(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
         println!("   To resume anyway, the error status will be updated to 'in_progress'");
     }
 
+    // Sync checkpoint with database state (handles crash recovery)
+    // This detects blocks written but not checkpointed, verifies completeness,
+    // and updates the checkpoint to preserve work from complete blocks.
     let resume_height = orchestrator
-        .get_resume_height()
+        .sync_checkpoint_with_db()
         .await
-        .context("Failed to calculate resume height")?;
+        .context("Failed to sync checkpoint with database")?;
 
     println!("\n🔄 Resume Plan:");
     println!("   Resume from block: {}", resume_height);
@@ -608,11 +622,13 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         println!("   ✅ Schema initialized");
     }
 
-    // Get resume height
+    // Sync checkpoint with database state (handles crash recovery)
+    // This detects blocks written but not checkpointed, verifies completeness,
+    // and updates the checkpoint to preserve work from complete blocks.
     let resume_height = orchestrator
-        .get_resume_height()
+        .sync_checkpoint_with_db()
         .await
-        .context("Failed to get resume height")?;
+        .context("Failed to sync checkpoint with database")?;
 
     // Create RPC provider and verify connectivity
     println!(
@@ -697,6 +713,12 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
             break;
         }
 
+        // Check for shutdown after fetch completes
+        if shutdown_token.is_cancelled() {
+            tracing::info!("Shutdown requested after fetch, stopping catchup");
+            break;
+        }
+
         let fetch_elapsed = fetch_start.elapsed();
         let batch_end = blocks.last().map(|(h, _, _)| *h).unwrap_or(current_height);
 
@@ -724,6 +746,15 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
                 .with_context(|| format!("Failed to ingest batch {}-{}", current_height, batch_end));
         }
 
+        // Check for shutdown after batch completes (batch can take a long time)
+        if shutdown_token.is_cancelled() {
+            tracing::info!(
+                processed_up_to = batch_end,
+                "Shutdown requested after batch, stopping catchup"
+            );
+            break;
+        }
+
         blocks_processed += blocks.len() as u64;
         current_height = batch_end + 1;
 
@@ -739,6 +770,9 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
             cache_hit_rate = format!("{:.1}%", stats.hit_rate_percent()),
             "Batch ingested"
         );
+
+        // Periodic cache stats logging (every 10k ops, avoids log flooding)
+        orchestrator.maybe_log_cache_stats();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -858,6 +892,8 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
                                 total_blocks = blocks_processed,
                                 "Block ingested (real-time)"
                             );
+                            // Periodic cache stats logging
+                            orchestrator.maybe_log_cache_stats();
                             height += 1;
                         }
                         Err(WriterError::ReorgDetected {

@@ -95,6 +95,10 @@ fn default_query_timeout_secs() -> u64 {
     120 // 2 minutes default
 }
 
+fn default_utxo_lookup_batch_size() -> usize {
+    1000 // Batch up to 1000 transactions' input lookups together
+}
+
 /// Ingestion process configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestionConfig {
@@ -149,8 +153,22 @@ pub struct PerformanceConfig {
     /// - High performance: 10,000 blocks
     /// - Ultra performance: 10,000+ blocks
     ///
-    /// Set to 0 to disable pre-warming (not recommended).
+    /// Set to 0 to disable pre-warming.
+    /// Note: This setting is only used in file-based ingestion (resume command),
+    /// not in live mode which starts with an empty cache.
+    #[serde(default)]
     pub utxo_prewarm_depth: u32,
+
+    /// Maximum number of transactions to batch for UTXO lookups.
+    ///
+    /// During ingestion, input UTXOs must be looked up to calculate transaction
+    /// amounts. Instead of querying per-transaction (N round-trips), we batch
+    /// lookups across multiple transactions (1 round-trip for all cache misses).
+    ///
+    /// Higher values = fewer Neo4j round-trips during cold cache, but more memory.
+    /// Default: 1000 transactions per batch.
+    #[serde(default = "default_utxo_lookup_batch_size")]
+    pub utxo_lookup_batch_size: usize,
 
     /// Number of concurrent batch writes
     pub parallel_batches: usize,
@@ -449,6 +467,7 @@ impl PerformanceConfig {
     /// let config = PerformanceConfig {
     ///     utxo_cache_memory_mb: 50,
     ///     utxo_prewarm_depth: 50,
+    ///     utxo_lookup_batch_size: 1000,
     ///     parallel_batches: 4,
     ///     progress_report_interval: 100,
     /// };
@@ -469,6 +488,7 @@ impl Default for PerformanceConfig {
         Self {
             utxo_cache_memory_mb: 140, // ~1.9M entries
             utxo_prewarm_depth: 1_000_000,
+            utxo_lookup_batch_size: default_utxo_lookup_batch_size(),
             parallel_batches: 4,
             progress_report_interval: 500,
         }

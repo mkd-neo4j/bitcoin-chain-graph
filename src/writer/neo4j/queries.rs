@@ -432,3 +432,171 @@ pub const ROLLBACK_DELETE_BLOCK_QUERY: &str = r#"
     MATCH (b:Block {height: $height})
     DETACH DELETE b
 "#;
+
+// =============================================================================
+// FAST CREATE QUERIES (for forward ingestion - no existence check)
+// =============================================================================
+//
+// These queries use CREATE instead of MERGE for better performance during
+// forward ingestion when we know nodes don't exist yet. They will fail with
+// a constraint violation if duplicates exist, which is safer than MERGE
+// silently updating.
+//
+// Use these only during normal catchup/ingestion. Use the MERGE-based queries
+// above for reprocessing or recovery scenarios.
+
+/// Fast CREATE for Block nodes (no existence check)
+///
+/// Use only during forward ingestion when blocks are guaranteed new.
+/// Will fail with constraint violation if block already exists.
+///
+/// Parameters:
+/// - $blocks: List of block objects with properties
+pub const CREATE_BLOCKS_FAST_QUERY: &str = r#"
+    UNWIND $blocks AS block
+    CREATE (b:Block {hash: block.hash})
+    SET b.height = block.height,
+        b.previousHash = block.previousHash,
+        b.merkleRoot = block.merkleRoot,
+        b.timestamp = datetime({epochSeconds: block.timestamp}),
+        b.bits = block.bits,
+        b.difficulty = block.difficulty,
+        b.nonce = block.nonce,
+        b.version = block.version,
+        b.txCount = block.txCount,
+        b.size = block.size,
+        b.weight = block.weight
+    WITH b, block
+    WHERE block.height > 0
+    MATCH (prev:Block {height: block.height - 1})
+    CREATE (prev)-[:NEXT_BLOCK]->(b)
+"#;
+
+/// Fast CREATE for Transaction nodes (no existence check)
+///
+/// Use only during forward ingestion when transactions are guaranteed new.
+/// Will fail with constraint violation if transaction already exists.
+///
+/// Parameters:
+/// - $transactions: List of transaction objects with ALL properties including amounts
+pub const CREATE_TRANSACTIONS_FAST_QUERY: &str = r#"
+    UNWIND $transactions AS tx
+    CREATE (t:Transaction {txid: tx.txid})
+    SET t.blockHeight = tx.blockHeight,
+        t.blockHash = tx.blockHash,
+        t.timestamp = datetime({epochSeconds: tx.timestamp}),
+        t.version = tx.version,
+        t.locktime = tx.locktime,
+        t.size = tx.size,
+        t.vsize = tx.vsize,
+        t.weight = tx.weight,
+        t.isCoinbase = tx.isCoinbase,
+        t.totalInput = tx.totalInput,
+        t.totalOutput = tx.totalOutput,
+        t.fee = tx.fee
+    WITH t, tx
+    MATCH (b:Block {height: tx.blockHeight})
+    CREATE (t)-[:INCLUDED_IN]->(b)
+"#;
+
+/// Fast CREATE for Output nodes WITH LOCKED_TO relationships in single query
+///
+/// Combines output node creation with LOCKED_TO relationship creation to save
+/// one network round-trip. Uses CREATE for outputs (forward ingestion) and
+/// MERGE for Address nodes (may already exist from previous outputs).
+///
+/// Performance optimization: Instead of two separate queries:
+/// 1. CREATE outputs
+/// 2. MATCH outputs, MERGE addresses, CREATE LOCKED_TO
+///
+/// This query does both in one pass, avoiding the MATCH lookup overhead.
+///
+/// Parameters:
+/// - $outputs: List of output objects with properties (including optional address)
+pub const CREATE_OUTPUTS_WITH_LOCKED_TO_FAST_QUERY: &str = r#"
+    UNWIND $outputs AS out
+    CREATE (o:Output {
+        outputId: out.outputId,
+        outputIndex: out.outputIndex,
+        amount: out.amount,
+        scriptPubKey: out.scriptPubKey,
+        scriptType: out.scriptType,
+        isSpent: false,
+        spentInTxid: null,
+        spentAtHeight: null
+    })
+    WITH o, out
+    WHERE out.address IS NOT NULL
+    MERGE (a:Address {address: out.address})
+    CREATE (o)-[:LOCKED_TO]->(a)
+"#;
+
+/// Fast CREATE for Input nodes (no existence check)
+///
+/// Use only during forward ingestion when inputs are guaranteed new.
+/// Will fail with constraint violation if input already exists.
+///
+/// Parameters:
+/// - $inputs: List of input objects with properties
+pub const CREATE_INPUTS_FAST_QUERY: &str = r#"
+    UNWIND $inputs AS inp
+    CREATE (i:Input {inputId: inp.inputId})
+    SET i.inputIndex = inp.inputIndex,
+        i.scriptSig = inp.scriptSig,
+        i.sequence = inp.sequence,
+        i.witness = inp.witness
+    WITH i, inp
+    MATCH (t:Transaction {txid: inp.txid})
+    CREATE (t)-[:HAS_INPUT]->(i)
+    WITH i, inp
+    WHERE inp.previousOutputIndex <> 4294967295
+    MATCH (o:Output {outputId: inp.previousTxid + ':' + toString(inp.previousOutputIndex)})
+    CREATE (i)-[:SPENDS]->(o)
+    SET o.isSpent = true,
+        o.spentInTxid = inp.txid,
+        o.spentAtHeight = inp.blockHeight
+"#;
+
+/// Fast CREATE for HAS_OUTPUT relationships (no existence check)
+///
+/// Use only during forward ingestion when relationships are guaranteed new.
+///
+/// Parameters:
+/// - $outputs: List of output objects with txid and outputId fields
+pub const CREATE_HAS_OUTPUT_FAST_QUERY: &str = r#"
+    UNWIND $outputs AS out
+    MATCH (t:Transaction {txid: out.txid})
+    MATCH (o:Output {outputId: out.outputId})
+    CREATE (t)-[:HAS_OUTPUT]->(o)
+"#;
+
+// =============================================================================
+// CRASH RECOVERY QUERIES
+// =============================================================================
+
+/// Get the maximum block height in the database
+///
+/// Used for crash recovery to detect blocks written but not checkpointed.
+/// Returns null if no blocks exist.
+pub const GET_MAX_BLOCK_HEIGHT_QUERY: &str = r#"
+    MATCH (b:Block)
+    RETURN max(b.height) AS maxHeight
+"#;
+
+/// Check if a block is complete (has expected transaction count)
+///
+/// Compares the block's stored txCount with the actual number of Transaction
+/// nodes linked via INCLUDED_IN. A mismatch indicates the block was partially
+/// written (e.g., crash after Phase 1 but before Phase 3).
+///
+/// Parameters:
+/// - $height: Block height to check
+///
+/// Returns:
+/// - expectedTxCount: The block's txCount property
+/// - actualTxCount: Count of Transaction nodes linked to this block
+pub const CHECK_BLOCK_COMPLETE_QUERY: &str = r#"
+    MATCH (b:Block {height: $height})
+    OPTIONAL MATCH (t:Transaction)-[:INCLUDED_IN]->(b)
+    RETURN b.txCount AS expectedTxCount, count(t) AS actualTxCount
+"#;
