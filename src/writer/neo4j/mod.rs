@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use neo4rs::{query, BoltType, ConfigBuilder, Graph};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config::Neo4jConfig;
 use crate::domain::{
@@ -34,6 +35,7 @@ pub struct Neo4jWriter {
     graph: Arc<Graph>,
     batch_size: usize,
     max_retries: usize,
+    query_timeout: Duration,
 }
 
 impl Neo4jWriter {
@@ -54,6 +56,7 @@ impl Neo4jWriter {
             graph: Arc::new(graph),
             batch_size: config.write_batch_size,
             max_retries: config.max_retries,
+            query_timeout: Duration::from_secs(config.query_timeout_secs),
         };
 
         // Verify the connection is alive
@@ -84,9 +87,9 @@ impl Neo4jWriter {
     /// Executes a trivial query to check connectivity. Called at startup
     /// and can be used for monitoring.
     pub async fn health_check(&self) -> Result<()> {
-        self.graph
-            .run(query("RETURN 1"))
+        tokio::time::timeout(Duration::from_secs(30), self.graph.run(query("RETURN 1")))
             .await
+            .map_err(|_| WriterError::ConnectionFailed("Health check timed out".to_string()))?
             .map_err(|e| WriterError::ConnectionFailed(format!("Health check failed: {}", e)))?;
         Ok(())
     }
@@ -169,10 +172,11 @@ impl Neo4jWriter {
         Ok(())
     }
 
-    /// Execute an async Neo4j operation with exponential backoff retry.
+    /// Execute an async Neo4j operation with exponential backoff retry and timeout.
     ///
-    /// Retries on transient errors (QueryFailed, ConnectionFailed) up to
+    /// Retries on transient errors (QueryFailed, ConnectionFailed) or timeouts up to
     /// `max_retries` times with exponential backoff (200ms, 400ms, 800ms, ...).
+    /// Each query attempt is wrapped with a timeout to prevent hanging on dead connections.
     async fn run_with_retry<F, Fut>(
         &self,
         operation_name: &str,
@@ -187,9 +191,13 @@ impl Neo4jWriter {
     {
         let mut attempt = 0;
         loop {
-            match f().await {
-                Ok(()) => return Ok(()),
-                Err(e) => {
+            // Wrap query with timeout to detect dead connections
+            let result = tokio::time::timeout(self.query_timeout, f()).await;
+
+            match result {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(e)) => {
+                    // Query returned an error
                     let writer_err = WriterError::QueryFailed(format!(
                         "{} failed (batch {}/{}, {} records): {}",
                         operation_name, batch_num, total_batches, record_count, e
@@ -197,8 +205,7 @@ impl Neo4jWriter {
 
                     if attempt < self.max_retries && writer_err.is_retryable() {
                         attempt += 1;
-                        let delay =
-                            std::time::Duration::from_millis(200 * (2_u64.pow(attempt as u32 - 1)));
+                        let delay = Duration::from_millis(200 * (2_u64.pow(attempt as u32 - 1)));
                         tracing::warn!(
                             operation = operation_name,
                             attempt,
@@ -210,6 +217,27 @@ impl Neo4jWriter {
                         tokio::time::sleep(delay).await;
                     } else {
                         return Err(writer_err);
+                    }
+                }
+                Err(_elapsed) => {
+                    // Query timed out - likely dead connection
+                    if attempt < self.max_retries {
+                        attempt += 1;
+                        let delay = Duration::from_millis(200 * (2_u64.pow(attempt as u32 - 1)));
+                        tracing::warn!(
+                            operation = operation_name,
+                            attempt,
+                            max_retries = self.max_retries,
+                            timeout_secs = self.query_timeout.as_secs(),
+                            delay_ms = delay.as_millis() as u64,
+                            "Query timed out, retrying (possible dead connection)"
+                        );
+                        tokio::time::sleep(delay).await;
+                    } else {
+                        return Err(WriterError::QueryFailed(format!(
+                            "{} timed out after {}s (batch {}/{}, {} records) - possible dead connection",
+                            operation_name, self.query_timeout.as_secs(), batch_num, total_batches, record_count
+                        )));
                     }
                 }
             }
@@ -375,17 +403,26 @@ impl GraphWriter for Neo4jWriter {
         }
 
         let ids: Vec<&str> = output_ids.iter().map(|s| s.as_str()).collect();
-        let mut result = self
-            .graph
-            .execute(query(queries::LOOKUP_OUTPUTS_BATCH_QUERY).param("outputIds", ids))
-            .await
-            .map_err(|e| {
-                WriterError::QueryFailed(format!(
-                    "lookup_outputs_batch failed ({} ids): {}",
-                    output_ids.len(),
-                    e
-                ))
-            })?;
+        let mut result = tokio::time::timeout(
+            self.query_timeout,
+            self.graph
+                .execute(query(queries::LOOKUP_OUTPUTS_BATCH_QUERY).param("outputIds", ids)),
+        )
+        .await
+        .map_err(|_| {
+            WriterError::QueryFailed(format!(
+                "lookup_outputs_batch timed out after {}s ({} ids)",
+                self.query_timeout.as_secs(),
+                output_ids.len()
+            ))
+        })?
+        .map_err(|e| {
+            WriterError::QueryFailed(format!(
+                "lookup_outputs_batch failed ({} ids): {}",
+                output_ids.len(),
+                e
+            ))
+        })?;
 
         let mut outputs = Vec::with_capacity(output_ids.len());
         while let Some(row) = result
@@ -419,13 +456,22 @@ impl GraphWriter for Neo4jWriter {
     }
 
     async fn lookup_output(&self, output_id: &str) -> Result<OutputData> {
-        let mut result = self
-            .graph
-            .execute(query(queries::LOOKUP_OUTPUT_QUERY).param("outputId", output_id))
-            .await
-            .map_err(|e| {
-                WriterError::QueryFailed(format!("lookup_output failed ({}): {}", output_id, e))
-            })?;
+        let mut result = tokio::time::timeout(
+            self.query_timeout,
+            self.graph
+                .execute(query(queries::LOOKUP_OUTPUT_QUERY).param("outputId", output_id)),
+        )
+        .await
+        .map_err(|_| {
+            WriterError::QueryFailed(format!(
+                "lookup_output timed out after {}s ({})",
+                self.query_timeout.as_secs(),
+                output_id
+            ))
+        })?
+        .map_err(|e| {
+            WriterError::QueryFailed(format!("lookup_output failed ({}): {}", output_id, e))
+        })?;
 
         let row = result
             .next()
@@ -490,8 +536,9 @@ impl GraphWriter for Neo4jWriter {
     }
 
     async fn update_checkpoint(&self, checkpoint: &CheckpointData) -> Result<()> {
-        self.graph
-            .run(
+        tokio::time::timeout(
+            self.query_timeout,
+            self.graph.run(
                 query(queries::UPDATE_CHECKPOINT_QUERY)
                     .param("height", checkpoint.last_processed_height)
                     .param("hash", checkpoint.last_processed_hash.clone())
@@ -501,21 +548,33 @@ impl GraphWriter for Neo4jWriter {
                         checkpoint.last_processed_file_offset.unwrap_or(0) as i64,
                     )
                     .param("status", checkpoint.status.clone()),
-            )
-            .await
-            .map_err(|e| {
-                WriterError::CheckpointError(format!("update_checkpoint failed: {}", e))
-            })?;
+            ),
+        )
+        .await
+        .map_err(|_| {
+            WriterError::CheckpointError(format!(
+                "update_checkpoint timed out after {}s",
+                self.query_timeout.as_secs()
+            ))
+        })?
+        .map_err(|e| WriterError::CheckpointError(format!("update_checkpoint failed: {}", e)))?;
 
         Ok(())
     }
 
     async fn get_checkpoint(&self) -> Result<Option<CheckpointData>> {
-        let mut result = self
-            .graph
-            .execute(query(queries::GET_CHECKPOINT_QUERY))
-            .await
-            .map_err(|e| WriterError::CheckpointError(format!("get_checkpoint failed: {}", e)))?;
+        let mut result = tokio::time::timeout(
+            self.query_timeout,
+            self.graph.execute(query(queries::GET_CHECKPOINT_QUERY)),
+        )
+        .await
+        .map_err(|_| {
+            WriterError::CheckpointError(format!(
+                "get_checkpoint timed out after {}s",
+                self.query_timeout.as_secs()
+            ))
+        })?
+        .map_err(|e| WriterError::CheckpointError(format!("get_checkpoint failed: {}", e)))?;
 
         if let Some(row) = result.next().await.map_err(|e| {
             WriterError::CheckpointError(format!("Failed to fetch checkpoint: {}", e))
@@ -576,13 +635,25 @@ impl GraphWriter for Neo4jWriter {
     }
 
     async fn lookup_block_hash(&self, height: u32) -> Result<Option<String>> {
-        let mut result = self
-            .graph
-            .execute(query(queries::LOOKUP_BLOCK_HASH_QUERY).param("height", height))
-            .await
-            .map_err(|e| {
-                WriterError::QueryFailed(format!("lookup_block_hash failed (height {}): {}", height, e))
-            })?;
+        let mut result = tokio::time::timeout(
+            self.query_timeout,
+            self.graph
+                .execute(query(queries::LOOKUP_BLOCK_HASH_QUERY).param("height", height)),
+        )
+        .await
+        .map_err(|_| {
+            WriterError::QueryFailed(format!(
+                "lookup_block_hash timed out after {}s (height {})",
+                self.query_timeout.as_secs(),
+                height
+            ))
+        })?
+        .map_err(|e| {
+            WriterError::QueryFailed(format!(
+                "lookup_block_hash failed (height {}): {}",
+                height, e
+            ))
+        })?;
 
         if let Some(row) = result.next().await.map_err(|e| {
             WriterError::QueryFailed(format!("Failed to fetch block hash row: {}", e))

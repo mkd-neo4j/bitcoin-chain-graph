@@ -85,6 +85,14 @@ pub struct Neo4jConfig {
 
     /// Batch size for writing records to Neo4j (chunk size for UNWIND queries)
     pub write_batch_size: usize,
+
+    /// Query timeout in seconds (prevents hanging on dead connections)
+    #[serde(default = "default_query_timeout_secs")]
+    pub query_timeout_secs: u64,
+}
+
+fn default_query_timeout_secs() -> u64 {
+    120 // 2 minutes default
 }
 
 /// Ingestion process configuration
@@ -404,6 +412,7 @@ impl Default for Neo4jConfig {
             fetch_size: 500,
             max_retries: 3,
             write_batch_size: 5000,
+            query_timeout_secs: default_query_timeout_secs(),
         }
     }
 }
