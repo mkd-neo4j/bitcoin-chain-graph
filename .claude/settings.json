@@ -1,0 +1,41 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'if [[ \"$TOOL_INPUT\" == *.rs ]] || [[ \"${FILE_PATH:-}\" == *.rs ]]; then cargo fmt 2>/dev/null; fi'",
+            "timeout": 30,
+            "statusMessage": "Formatting Rust code..."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); if [ \"$BRANCH\" = \"main\" ]; then echo \"ERROR: Direct edits to main branch are blocked. Create a feature branch first.\" >&2; exit 2; fi'",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/verify.sh",
+            "timeout": 300,
+            "statusMessage": "Running verification checks..."
+          }
+        ]
+      }
+    ]
+  }
+}
