@@ -5,7 +5,7 @@
 use thiserror::Error;
 
 /// Errors that can occur during graph database operations
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum WriterError {
     #[error("Output not found: {0}")]
     OutputNotFound(String),
