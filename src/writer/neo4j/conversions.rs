@@ -129,8 +129,8 @@ pub fn filter_outputs_with_address(outputs: &[OutputData]) -> Vec<&OutputData> {
 
 /// Convert InputData to BoltMap for Neo4j
 ///
-/// Block height is read from `input.block_height` to correctly set
-/// `spentAtHeight` on spent outputs in the Cypher query.
+/// Pre-computes `previousOutputId` from `previous_txid` and `previous_output_index`
+/// to avoid Cypher string concatenation in the query.
 pub fn input_to_bolt_map(input: &InputData) -> BoltMap {
     let mut map = BoltMap::new();
     map.put("inputId".into(), input.input_id.as_str().into());
@@ -152,7 +152,13 @@ pub fn input_to_bolt_map(input: &InputData) -> BoltMap {
         .collect();
     map.put("witness".into(), BoltType::List(witness_list.into()));
 
-    map.put("blockHeight".into(), (input.block_height as i64).into());
+    // Pre-compute previousOutputId in Rust (avoids Cypher string concatenation)
+    let previous_output_id = format!("{}:{}", input.previous_txid, input.previous_output_index);
+    map.put(
+        "previousOutputId".into(),
+        previous_output_id.as_str().into(),
+    );
+
     map
 }
 

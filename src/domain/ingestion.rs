@@ -284,11 +284,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                     if expected == actual && actual > 0 {
                         // This block is complete - found our target
                         highest_complete = height as i32;
-                        tracing::info!(
-                            height,
-                            tx_count = actual,
-                            "Found complete block"
-                        );
+                        tracing::info!(height, tx_count = actual, "Found complete block");
                         break;
                     } else {
                         // Incomplete block - roll it back
@@ -509,14 +505,17 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
 
         // Phase 3.5: Create HAS_OUTPUT relationships (Transaction -> Output)
         // Must run AFTER Phase 3 so Transaction nodes exist
-        self.writer.write_has_output_relationships(&output_data).await?;
+        self.writer
+            .write_has_output_relationships(&output_data)
+            .await?;
 
         // Phase 4: Create Input nodes (cache removal deferred to Phase 7)
         self.ingest_inputs(block, height).await?;
 
         // Phase 6: Create simplified layer from pre-aggregated data (M7)
         // PERFORMS data was built in Phase 3; BENEFITS_TO is built here from outputs
-        self.write_simplified_layer_rust(block, performs_data).await?;
+        self.write_simplified_layer_rust(block, performs_data)
+            .await?;
 
         // Phase 7: Remove spent outputs from cache (must be AFTER Phase 6!)
         self.remove_spent_outputs_from_cache(block);
@@ -672,7 +671,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                         let cached_output = CachedOutput {
                             output_index: output.output_index,
                             amount: output.amount,
-                            script_type: output.script_type.parse().unwrap_or(ScriptTypeTag::Unknown),
+                            script_type: output
+                                .script_type
+                                .parse()
+                                .unwrap_or(ScriptTypeTag::Unknown),
                             address: output.address.as_deref().map(Arc::from),
                         };
                         self.utxo_cache.insert(key, cached_output);
@@ -978,7 +980,11 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     ///
     /// # Returns
     /// The collected `Vec<OutputData>`, reused by Phase 3.5 for HAS_OUTPUT relationships.
-    async fn ingest_outputs_and_cache(&self, block: &Block, _height: u32) -> Result<Vec<OutputData>> {
+    async fn ingest_outputs_and_cache(
+        &self,
+        block: &Block,
+        _height: u32,
+    ) -> Result<Vec<OutputData>> {
         let total_outputs: usize = block.txdata.iter().map(|tx| tx.output.len()).sum();
         let mut all_outputs = Vec::with_capacity(total_outputs);
 
@@ -1099,8 +1105,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                         sum += output.amount;
                         if let Some(ref address) = output.address {
                             let addr_str: &str = address;
-                            let entry =
-                                performs_map.entry(addr_str.to_string()).or_insert((0, 0));
+                            let entry = performs_map.entry(addr_str.to_string()).or_insert((0, 0));
                             entry.0 += 1;
                             entry.1 += output.amount;
                         }
@@ -1219,12 +1224,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             let mut benefits_map: HashMap<String, (u32, u64)> = HashMap::new();
 
             for (output_index, output) in tx.output.iter().enumerate() {
-                let output_data = OutputData::from_output(
-                    output,
-                    &txid,
-                    output_index as u32,
-                    self.network,
-                );
+                let output_data =
+                    OutputData::from_output(output, &txid, output_index as u32, self.network);
                 if let Some(address) = output_data.address {
                     let entry = benefits_map.entry(address).or_insert((0, 0));
                     entry.0 += 1;

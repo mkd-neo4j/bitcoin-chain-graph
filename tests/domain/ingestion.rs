@@ -704,7 +704,10 @@ async fn test_validate_parent_hash_genesis_skips() {
 
     // Genesis block (height 0) should skip validation entirely
     let result = orchestrator.validate_parent_hash(&genesis, 0).await;
-    assert!(result.is_ok(), "Genesis block should skip parent hash validation");
+    assert!(
+        result.is_ok(),
+        "Genesis block should skip parent hash validation"
+    );
 }
 
 /// Test that parent hash validation succeeds when hashes match
@@ -721,7 +724,10 @@ async fn test_validate_parent_hash_matches() {
 
     // Validation should succeed since block 4 is in the DB and hashes match
     let result = orchestrator.validate_parent_hash(&block5, 5).await;
-    assert!(result.is_ok(), "Parent hash validation should succeed when hashes match");
+    assert!(
+        result.is_ok(),
+        "Parent hash validation should succeed when hashes match"
+    );
 }
 
 /// Test that parent hash validation detects a mismatch (reorg signal)
@@ -743,7 +749,11 @@ async fn test_validate_parent_hash_mismatch_detects_reorg() {
     assert!(result.is_err(), "Should detect parent hash mismatch");
 
     match result.unwrap_err() {
-        WriterError::ReorgDetected { height, expected, actual } => {
+        WriterError::ReorgDetected {
+            height,
+            expected,
+            actual,
+        } => {
             assert_eq!(height, 5);
             assert!(!expected.is_empty(), "Expected hash should be populated");
             assert!(!actual.is_empty(), "Actual hash should be populated");
@@ -769,7 +779,10 @@ async fn test_validate_parent_hash_no_parent_in_db() {
     // Validate block 1 at height 1 — no block at height 0 in DB
     // Should succeed (skip validation when parent not stored)
     let result = orchestrator.validate_parent_hash(&block1, 1).await;
-    assert!(result.is_ok(), "Should succeed when parent block is not in DB");
+    assert!(
+        result.is_ok(),
+        "Should succeed when parent block is not in DB"
+    );
 }
 
 /// Test that lookup_block_hash returns the correct hash for a stored block
@@ -781,7 +794,11 @@ async fn test_lookup_block_hash_found() {
     let block1_hash = &blocks[1].hash;
 
     let result = orchestrator.lookup_block_hash(1).await.unwrap();
-    assert_eq!(result.as_ref(), Some(block1_hash), "Should return stored block hash");
+    assert_eq!(
+        result.as_ref(),
+        Some(block1_hash),
+        "Should return stored block hash"
+    );
 }
 
 /// Test that lookup_block_hash returns None for a non-existent height
@@ -790,7 +807,10 @@ async fn test_lookup_block_hash_not_found() {
     let (orchestrator, _writer) = setup_chain(3).await;
 
     let result = orchestrator.lookup_block_hash(999).await.unwrap();
-    assert!(result.is_none(), "Should return None for non-existent block height");
+    assert!(
+        result.is_none(),
+        "Should return None for non-existent block height"
+    );
 }
 
 /// Test that rollback_block removes all data associated with a single block
@@ -840,7 +860,10 @@ async fn test_rollback_preserves_other_blocks() {
     // Block 0 should be completely intact
     let blocks_after = writer.get_blocks().await;
     let block0_after = blocks_after.iter().find(|b| b.height == 0).unwrap();
-    assert_eq!(block0_after.hash, block0_hash, "Block 0 should be unchanged");
+    assert_eq!(
+        block0_after.hash, block0_hash,
+        "Block 0 should be unchanged"
+    );
 
     // All blocks 0-3 should still exist
     for h in 0..4 {
@@ -864,7 +887,11 @@ async fn test_rollback_to_height_multiple_blocks() {
     let rolled_back = orchestrator.rollback_to_height(9, 5).await.unwrap();
 
     assert_eq!(rolled_back, 4, "Should have rolled back 4 blocks");
-    assert_eq!(writer.get_blocks().await.len(), 6, "Should have blocks 0-5 remaining");
+    assert_eq!(
+        writer.get_blocks().await.len(),
+        6,
+        "Should have blocks 0-5 remaining"
+    );
 
     // Verify exactly blocks 0-5 remain
     let blocks = writer.get_blocks().await;
@@ -892,12 +919,20 @@ async fn test_rollback_to_height_noop_when_at_or_past_fork() {
     // fork_point == current_tip → no rollback
     let rolled_back = orchestrator.rollback_to_height(4, 4).await.unwrap();
     assert_eq!(rolled_back, 0, "Should roll back 0 blocks");
-    assert_eq!(writer.get_blocks().await.len(), 5, "All blocks should remain");
+    assert_eq!(
+        writer.get_blocks().await.len(),
+        5,
+        "All blocks should remain"
+    );
 
     // fork_point > current_tip → no rollback
     let rolled_back = orchestrator.rollback_to_height(4, 10).await.unwrap();
     assert_eq!(rolled_back, 0, "Should roll back 0 blocks");
-    assert_eq!(writer.get_blocks().await.len(), 5, "All blocks should remain");
+    assert_eq!(
+        writer.get_blocks().await.len(),
+        5,
+        "All blocks should remain"
+    );
 }
 
 /// Test that rollback_to_height updates the checkpoint
@@ -1006,7 +1041,11 @@ async fn test_rollback_and_reingest_cycle() {
     }
 
     // Should be back to 10 blocks
-    assert_eq!(writer.get_blocks().await.len(), 10, "Should have 10 blocks after re-ingest");
+    assert_eq!(
+        writer.get_blocks().await.len(),
+        10,
+        "Should have 10 blocks after re-ingest"
+    );
 
     // All heights 0-9 should be present
     let blocks = writer.get_blocks().await;

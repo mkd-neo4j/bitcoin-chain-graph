@@ -753,57 +753,46 @@ impl GraphWriter for Neo4jWriter {
     async fn rollback_block(&self, height: u32) -> Result<()> {
         tracing::warn!(height, "Rolling back block");
 
-        // Step 1: Revert spent status on outputs spent by this block's transactions
-        self.graph
-            .run(query(queries::ROLLBACK_REVERT_SPENT_QUERY).param("height", height))
-            .await
-            .map_err(|e| {
-                WriterError::QueryFailed(format!(
-                    "rollback_block step 1 (revert spent) failed at height {}: {}",
-                    height, e
-                ))
-            })?;
-
-        // Step 2: Delete all Input nodes (DETACH removes HAS_INPUT and SPENDS)
+        // Step 1: Delete all Input nodes (DETACH removes HAS_INPUT and SPENDS)
         self.graph
             .run(query(queries::ROLLBACK_DELETE_INPUTS_QUERY).param("height", height))
             .await
             .map_err(|e| {
                 WriterError::QueryFailed(format!(
-                    "rollback_block step 2 (delete inputs) failed at height {}: {}",
+                    "rollback_block step 1 (delete inputs) failed at height {}: {}",
                     height, e
                 ))
             })?;
 
-        // Step 3: Delete all Output nodes (DETACH removes HAS_OUTPUT and LOCKED_TO)
+        // Step 2: Delete all Output nodes (DETACH removes HAS_OUTPUT and LOCKED_TO)
         self.graph
             .run(query(queries::ROLLBACK_DELETE_OUTPUTS_QUERY).param("height", height))
             .await
             .map_err(|e| {
                 WriterError::QueryFailed(format!(
-                    "rollback_block step 3 (delete outputs) failed at height {}: {}",
+                    "rollback_block step 2 (delete outputs) failed at height {}: {}",
                     height, e
                 ))
             })?;
 
-        // Step 4: Delete all Transaction nodes (DETACH removes INCLUDED_IN, PERFORMS, BENEFITS_TO)
+        // Step 3: Delete all Transaction nodes (DETACH removes INCLUDED_IN, PERFORMS, BENEFITS_TO)
         self.graph
             .run(query(queries::ROLLBACK_DELETE_TRANSACTIONS_QUERY).param("height", height))
             .await
             .map_err(|e| {
                 WriterError::QueryFailed(format!(
-                    "rollback_block step 4 (delete transactions) failed at height {}: {}",
+                    "rollback_block step 3 (delete transactions) failed at height {}: {}",
                     height, e
                 ))
             })?;
 
-        // Step 5: Delete the Block node (DETACH removes NEXT_BLOCK)
+        // Step 4: Delete the Block node (DETACH removes NEXT_BLOCK)
         self.graph
             .run(query(queries::ROLLBACK_DELETE_BLOCK_QUERY).param("height", height))
             .await
             .map_err(|e| {
                 WriterError::QueryFailed(format!(
-                    "rollback_block step 5 (delete block) failed at height {}: {}",
+                    "rollback_block step 4 (delete block) failed at height {}: {}",
                     height, e
                 ))
             })?;
