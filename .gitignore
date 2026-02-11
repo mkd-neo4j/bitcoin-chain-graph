@@ -17,6 +17,10 @@ test_data/*
 .DS_Store
 Thumbs.db
 
+# Claude Code (local/ephemeral files)
+.claude/settings.local.json
+.claude/plans/
+
 # Configuration files (may contain secrets)
 /config/
 config.toml
