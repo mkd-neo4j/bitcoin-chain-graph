@@ -121,6 +121,21 @@ git add tests/ src/ feature-docs/
 git commit -m "test(<scope>): add failing tests for <feature-name>"
 ```
 
+---
+
+## COMPLETION GATE — MANDATORY
+
+**You are NOT done until every item below is checked. The `task-completed.sh` hook will REJECT your task if the feature doc is in the wrong directory. Skipping these steps breaks the entire pipeline — the builder will never find your feature doc.**
+
+- [ ] **Feature doc MOVED**: The `.md` file is in `feature-docs/testing/`, NOT still in `feature-docs/ready/`
+- [ ] **Status field UPDATED**: The frontmatter says `status: testing` (not `status: ready`)
+- [ ] **STATUS.md UPDATED**: `feature-docs/STATUS.md` has a current entry for this feature showing `testing` status
+- [ ] **Feature doc COMMITTED**: The moved feature doc is included in your git commit (not just the test files)
+
+If you already did Steps 6-8 above, this is a confirmation check. If you skipped any of them, go back and do them NOW before producing your report.
+
+---
+
 ## Output
 
 ```

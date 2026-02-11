@@ -141,9 +141,22 @@ This prevents a builder from independently arriving at the same "obvious" optimi
 - **Test-writer**: Never writes implementation code. Only creates test files.
 - **Builder**: Never modifies test files. If tests are wrong, stop and report.
 - **Reviewer**: Maps to the `code-reviewer` agent.
-- **Moving files IS the status transition** — the `status` field in frontmatter and the directory must stay in sync.
-- **Progress dashboard**: Update `feature-docs/STATUS.md` after every stage transition.
+- **Moving files IS the status transition** — the `status` field in frontmatter and the directory must stay in sync. This is not optional. The `task-completed.sh` hook blocks task completion if a feature doc's `status:` field does not match its directory.
+- **Progress dashboard**: Update `feature-docs/STATUS.md` after every stage transition. This is the only way the next agent (or the orchestrator) can orient without reading every directory.
 - **Ideation reference**: Feature docs may include `ideation-ref` in frontmatter pointing to the ideation folder for additional context.
+
+### Lifecycle Compliance Checklist
+
+Every agent must complete ALL of these before finishing a task. The `task-completed.sh` hook enforces items 1-2 deterministically — your task WILL be rejected if they are not done.
+
+1. **Feature doc is in the correct directory** for the current stage (e.g., `testing/` after test-writer, `review/` after builder)
+2. **`status:` frontmatter matches the directory name** (e.g., `status: testing` for a doc in `testing/`)
+3. **`feature-docs/STATUS.md` has a current entry** reflecting the new stage
+4. **Feature doc is included in the git commit** (not just source/test files)
+
+### Deterministic Enforcement
+
+The `task-completed.sh` hook scans all feature docs in `ready/`, `testing/`, `building/`, `review/`, and `completed/`. For each doc with a `status:` field, it verifies the value matches the directory name. If any mismatch is found, task completion is blocked with exit code 2. This is not a prompt convention — it is a shell script that runs automatically and cannot be skipped.
 
 ## Kickoff Commands
 
