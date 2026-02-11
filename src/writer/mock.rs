@@ -16,6 +16,18 @@ use crate::domain::{
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 
+/// Snapshot of MockStorage state at transaction begin, used for rollback
+#[derive(Debug, Clone)]
+struct MockSnapshot {
+    blocks_len: usize,
+    transactions_len: usize,
+    outputs_len: usize,
+    inputs_len: usize,
+    performs_len: usize,
+    benefits_to_len: usize,
+    checkpoint: Option<CheckpointData>,
+}
+
 /// In-memory storage for mock writer
 #[derive(Debug, Default)]
 struct MockStorage {
@@ -30,6 +42,8 @@ struct MockStorage {
     transaction_commit_count: u32,
     in_transaction: bool,
     checkpoint_written_in_txn: bool,
+    /// Snapshot saved at begin_transaction for rollback support
+    snapshot: Option<MockSnapshot>,
     /// Configured failures: method_name -> error
     failures: std::collections::HashMap<String, Option<WriterError>>,
     /// Transient failures: method_name -> (error, remaining_failures)
@@ -494,16 +508,36 @@ impl GraphWriter for MockWriter {
             return Err(err);
         }
         storage.in_transaction = true;
+        storage.snapshot = Some(MockSnapshot {
+            blocks_len: storage.blocks.len(),
+            transactions_len: storage.transactions.len(),
+            outputs_len: storage.outputs.len(),
+            inputs_len: storage.inputs.len(),
+            performs_len: storage.performs.len(),
+            benefits_to_len: storage.benefits_to.len(),
+            checkpoint: storage.checkpoint.clone(),
+        });
         Ok(())
     }
 
     async fn commit_transaction(&self) -> Result<()> {
         let mut storage = self.storage.lock().unwrap();
         if let Some(err) = Self::check_failure(&mut storage, "commit_transaction") {
+            // On commit failure, rollback the transaction
+            if let Some(snap) = storage.snapshot.take() {
+                storage.blocks.truncate(snap.blocks_len);
+                storage.transactions.truncate(snap.transactions_len);
+                storage.outputs.truncate(snap.outputs_len);
+                storage.inputs.truncate(snap.inputs_len);
+                storage.performs.truncate(snap.performs_len);
+                storage.benefits_to.truncate(snap.benefits_to_len);
+                storage.checkpoint = snap.checkpoint;
+            }
             storage.in_transaction = false;
             return Err(err);
         }
         storage.in_transaction = false;
+        storage.snapshot = None;
         storage.transaction_commit_count += 1;
         Ok(())
     }
@@ -512,6 +546,15 @@ impl GraphWriter for MockWriter {
         let mut storage = self.storage.lock().unwrap();
         if let Some(err) = Self::check_failure(&mut storage, "rollback_transaction") {
             return Err(err);
+        }
+        if let Some(snap) = storage.snapshot.take() {
+            storage.blocks.truncate(snap.blocks_len);
+            storage.transactions.truncate(snap.transactions_len);
+            storage.outputs.truncate(snap.outputs_len);
+            storage.inputs.truncate(snap.inputs_len);
+            storage.performs.truncate(snap.performs_len);
+            storage.benefits_to.truncate(snap.benefits_to_len);
+            storage.checkpoint = snap.checkpoint;
         }
         storage.in_transaction = false;
         Ok(())
