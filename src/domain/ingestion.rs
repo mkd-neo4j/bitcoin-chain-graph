@@ -585,6 +585,49 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 "Processing batch"
             );
 
+            // Begin atomic transaction for this chunk
+            self.writer.begin_transaction().await?;
+
+            let chunk_result = self
+                .process_batch_chunk(chunk, batch_idx, blocks_in_batch)
+                .await;
+
+            match chunk_result {
+                Ok(()) => {
+                    self.writer.commit_transaction().await?;
+                    tracing::info!(batch = batch_idx + 1, "Batch complete");
+                }
+                Err(e) => {
+                    tracing::error!(
+                        batch = batch_idx + 1,
+                        error = %e,
+                        "Batch chunk failed — rolling back transaction"
+                    );
+                    if let Err(rollback_err) = self.writer.rollback_transaction().await {
+                        tracing::error!(
+                            error = %rollback_err,
+                            "Rollback failed after chunk error"
+                        );
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        tracing::info!(total_blocks, "Batch ingestion complete");
+        Ok(())
+    }
+
+    /// Process a single batch chunk through all 7 phases
+    ///
+    /// Extracted from `ingest_blocks_batch` to enable transaction wrapping.
+    /// The caller is responsible for begin/commit/rollback.
+    async fn process_batch_chunk(
+        &self,
+        chunk: &[(u32, Block, String)],
+        _batch_idx: usize,
+        blocks_in_batch: usize,
+    ) -> Result<()> {
             // Phase 1: Accumulate all block data
             let phase1_start = std::time::Instant::now();
             let mut block_data_batch = Vec::with_capacity(blocks_in_batch);
@@ -947,11 +990,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 );
             }
 
-            tracing::info!(batch = batch_idx + 1, "Batch complete");
-        }
-
-        tracing::info!(total_blocks, "Batch ingestion complete");
-        Ok(())
+            Ok(())
     }
 
     /// Phase 1: Create Block node

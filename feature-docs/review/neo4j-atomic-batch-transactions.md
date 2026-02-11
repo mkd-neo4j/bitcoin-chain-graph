@@ -1,6 +1,6 @@
 ---
 title: Neo4j Atomic Batch Transactions
-status: testing
+status: review
 priority: high
 affected-files:
   - src/writer/traits.rs
