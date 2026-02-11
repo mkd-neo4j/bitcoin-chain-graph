@@ -17,8 +17,22 @@ if git diff --quiet HEAD -- . 2>/dev/null && \
   exit 0
 fi
 
-# Run verification
+# Fast verify first (type check only) — catches most errors quickly.
+# Falls back to full verify only if fast-verify script exists.
+FAST_SCRIPT="$CLAUDE_PROJECT_DIR"/scripts/fast-verify.sh
+if [ -f "${FAST_SCRIPT}" ]; then
+  OUT=$(bash "${FAST_SCRIPT}" 2>&1)
+  RC=$?
+  if [ $RC -ne 0 ]; then
+    echo "$OUT" | tail -20 >&2
+    exit $RC
+  fi
+  # Fast check passed — skip full verify on Stop (TaskCompleted handles it)
+  exit 0
+fi
+
+# No fast-verify available — run full verification
 OUT=$("$CLAUDE_PROJECT_DIR"/scripts/verify.sh 2>&1)
 RC=$?
-echo "$OUT" | tail -30 >&2
+echo "$OUT" | tail -20 >&2
 exit $RC
