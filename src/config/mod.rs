@@ -501,3 +501,52 @@ impl Default for LoggingConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_performance_config_defaults_include_cache_persistence() {
+        let config = PerformanceConfig::default();
+        assert_eq!(
+            config.utxo_cache_file, "utxo_cache.bin",
+            "Default utxo_cache_file should be 'utxo_cache.bin'"
+        );
+        assert_eq!(
+            config.utxo_cache_snapshot_interval, 2000,
+            "Default utxo_cache_snapshot_interval should be 2000"
+        );
+    }
+
+    #[test]
+    fn test_performance_config_deserialize_without_cache_fields() {
+        // When TOML omits the new fields, serde defaults should kick in
+        let toml_str = r#"
+            utxo_cache_memory_mb = 140
+            utxo_prewarm_depth = 1000000
+            utxo_lookup_batch_size = 1000
+            parallel_batches = 4
+            progress_report_interval = 500
+        "#;
+        let config: PerformanceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.utxo_cache_file, "utxo_cache.bin");
+        assert_eq!(config.utxo_cache_snapshot_interval, 2000);
+    }
+
+    #[test]
+    fn test_performance_config_empty_cache_file_disables_persistence() {
+        let toml_str = r#"
+            utxo_cache_memory_mb = 140
+            utxo_prewarm_depth = 1000000
+            utxo_lookup_batch_size = 1000
+            parallel_batches = 4
+            progress_report_interval = 500
+            utxo_cache_file = ""
+            utxo_cache_snapshot_interval = 0
+        "#;
+        let config: PerformanceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.utxo_cache_file, "");
+        assert_eq!(config.utxo_cache_snapshot_interval, 0);
+    }
+}
