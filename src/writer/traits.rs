@@ -413,4 +413,37 @@ pub trait GraphWriter: Send + Sync {
     async fn write_inputs_fast(&self, inputs: &[InputData]) -> Result<()> {
         self.write_inputs(inputs).await
     }
+
+    // =========================================================================
+    // Transaction Management
+    // =========================================================================
+    //
+    // Explicit transaction support for atomic batch operations.
+    // All phase writes within a batch chunk execute inside a single transaction.
+    // If any phase fails, the entire transaction is rolled back.
+
+    /// Begin an explicit database transaction
+    ///
+    /// All subsequent write operations will be part of this transaction
+    /// until `commit_transaction()` or `rollback_transaction()` is called.
+    ///
+    /// # Errors
+    /// Returns error if transaction creation fails.
+    async fn begin_transaction(&self) -> Result<()>;
+
+    /// Commit the current explicit transaction
+    ///
+    /// Atomically persists all writes since `begin_transaction()`.
+    ///
+    /// # Errors
+    /// Returns error if commit fails (e.g., timeout, memory pressure).
+    async fn commit_transaction(&self) -> Result<()>;
+
+    /// Roll back the current explicit transaction
+    ///
+    /// Discards all writes since `begin_transaction()`.
+    ///
+    /// # Errors
+    /// Returns error if rollback fails.
+    async fn rollback_transaction(&self) -> Result<()>;
 }

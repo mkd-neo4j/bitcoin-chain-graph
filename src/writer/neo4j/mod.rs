@@ -869,6 +869,18 @@ impl GraphWriter for Neo4jWriter {
     async fn write_inputs_fast(&self, inputs: &[InputData]) -> Result<()> {
         Neo4jWriter::write_inputs_fast(self, inputs).await
     }
+
+    async fn begin_transaction(&self) -> Result<()> {
+        todo!("Neo4jWriter::begin_transaction — wrap batch in explicit neo4rs transaction")
+    }
+
+    async fn commit_transaction(&self) -> Result<()> {
+        todo!("Neo4jWriter::commit_transaction — commit explicit neo4rs transaction")
+    }
+
+    async fn rollback_transaction(&self) -> Result<()> {
+        todo!("Neo4jWriter::rollback_transaction — rollback explicit neo4rs transaction")
+    }
 }
 
 #[cfg(test)]
