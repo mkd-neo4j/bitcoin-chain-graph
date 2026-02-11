@@ -815,15 +815,18 @@ impl GraphWriter for Neo4jWriter {
     async fn get_max_block_height(&self) -> Result<Option<u32>> {
         let mut result = tokio::time::timeout(
             self.query_timeout,
-            self.graph.execute(query(queries::GET_MAX_BLOCK_HEIGHT_QUERY)),
+            self.graph
+                .execute(query(queries::GET_MAX_BLOCK_HEIGHT_QUERY)),
         )
         .await
         .map_err(|_| WriterError::QueryFailed("get_max_block_height timed out".to_string()))?
         .map_err(|e| WriterError::QueryFailed(format!("get_max_block_height failed: {}", e)))?;
 
-        if let Some(row) = result.next().await.map_err(|e| {
-            WriterError::QueryFailed(format!("Failed to fetch max height: {}", e))
-        })? {
+        if let Some(row) = result
+            .next()
+            .await
+            .map_err(|e| WriterError::QueryFailed(format!("Failed to fetch max height: {}", e)))?
+        {
             // max() returns null if no blocks exist
             let height: Option<i64> = row.get("maxHeight").ok();
             Ok(height.map(|h| h as u32))
@@ -835,9 +838,8 @@ impl GraphWriter for Neo4jWriter {
     async fn check_block_complete(&self, height: u32) -> Result<(u32, u32)> {
         let mut result = tokio::time::timeout(
             self.query_timeout,
-            self.graph.execute(
-                query(queries::CHECK_BLOCK_COMPLETE_QUERY).param("height", height as i64),
-            ),
+            self.graph
+                .execute(query(queries::CHECK_BLOCK_COMPLETE_QUERY).param("height", height as i64)),
         )
         .await
         .map_err(|_| WriterError::QueryFailed("check_block_complete timed out".to_string()))?
@@ -877,5 +879,77 @@ impl GraphWriter for Neo4jWriter {
 
     async fn write_inputs_fast(&self, inputs: &[InputData]) -> Result<()> {
         Neo4jWriter::write_inputs_fast(self, inputs).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // =========================================================================
+    // AC 6: rollback_block does NOT execute ROLLBACK_REVERT_SPENT_QUERY
+    // =========================================================================
+
+    #[test]
+    fn ac6_rollback_block_does_not_reference_revert_spent_query() {
+        // After the feature is implemented, the rollback_block method should NOT
+        // reference ROLLBACK_REVERT_SPENT_QUERY since DETACH DELETE on Input nodes
+        // automatically removes SPENDS relationships.
+        //
+        // We verify this by checking that the source of this module does not
+        // reference ROLLBACK_REVERT_SPENT_QUERY in the rollback_block method.
+        let source = include_str!("mod.rs");
+
+        // Find the rollback_block method and check it doesn't use REVERT_SPENT
+        let rollback_section = source
+            .find("async fn rollback_block")
+            .expect("rollback_block method should exist");
+        // Get the rest of the source from the rollback_block method
+        let rollback_source = &source[rollback_section..];
+        // Find the end of the method (next "async fn" or end of impl block)
+        let method_end = rollback_source
+            .find("\n    async fn ")
+            .or_else(|| rollback_source.find("\n}\n"))
+            .unwrap_or(rollback_source.len());
+        let rollback_body = &rollback_source[..method_end];
+
+        assert!(
+            !rollback_body.contains("ROLLBACK_REVERT_SPENT"),
+            "rollback_block should not reference ROLLBACK_REVERT_SPENT_QUERY; \
+             DETACH DELETE on Input nodes automatically removes SPENDS relationships"
+        );
+    }
+
+    // =========================================================================
+    // AC 8: write_inputs_fast executes exactly ONE execute_batched call
+    // =========================================================================
+
+    #[test]
+    fn ac8_write_inputs_fast_single_execute_batched_call() {
+        // After the feature is implemented, write_inputs_fast should make exactly
+        // one execute_batched call (not two), preserving per-batch atomicity so
+        // Input nodes cannot exist without their SPENDS relationships.
+        let source = include_str!("mod.rs");
+
+        // Find the write_inputs_fast method on Neo4jWriter (the inherent impl, not the trait impl)
+        // The inherent impl uses "pub async fn write_inputs_fast"
+        let method_start = source
+            .find("pub async fn write_inputs_fast")
+            .expect("write_inputs_fast inherent method should exist");
+        let method_source = &source[method_start..];
+
+        // Find the end of the method (next pub async fn or closing brace of impl block)
+        let method_end = method_source[1..]
+            .find("\n    pub async fn ")
+            .or_else(|| method_source[1..].find("\n    /// Fast write HAS_OUTPUT"))
+            .or_else(|| method_source[1..].find("\n}\n"))
+            .map(|pos| pos + 1)
+            .unwrap_or(method_source.len());
+        let method_body = &method_source[..method_end];
+
+        let execute_batched_count = method_body.matches("execute_batched").count();
+        assert_eq!(
+            execute_batched_count, 1,
+            "write_inputs_fast should have exactly one execute_batched call, found {}",
+            execute_batched_count
+        );
     }
 }
