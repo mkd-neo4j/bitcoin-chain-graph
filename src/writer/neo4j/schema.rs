@@ -147,4 +147,39 @@ mod tests {
         assert!(index.contains("IF NOT EXISTS"));
         assert!(index.contains("ON"));
     }
+
+    // =========================================================================
+    // AC 7: create_indexes does NOT create an output_spent index
+    // =========================================================================
+
+    #[test]
+    fn ac7_no_output_spent_index() {
+        // The create_indexes function defines indexes in a vec. We need to verify
+        // that no index creates an index on (o.isSpent). Since the function is
+        // private and async, we test by inspecting the source code pattern:
+        // the indexes vec should NOT contain "output_spent" or "o.isSpent".
+        //
+        // We test this by checking that the constant source code that would be
+        // in the indexes vec does not contain output_spent index creation.
+        // Since we can't call create_indexes directly from a sync test, we
+        // verify the expectation about what the implementation should look like.
+        //
+        // After the feature is implemented, the "output_spent" index line should
+        // be removed from the indexes vec in create_indexes().
+        //
+        // For now, we can verify the expectation by checking the module's source.
+        // This test will fail because the current code DOES create output_spent.
+
+        // Read the source of this module to verify no output_spent index
+        let source = include_str!("schema.rs");
+
+        assert!(
+            !source.contains("output_spent"),
+            "schema.rs should not contain an output_spent index definition"
+        );
+        assert!(
+            !source.contains("o.isSpent"),
+            "schema.rs should not reference o.isSpent in any index"
+        );
+    }
 }

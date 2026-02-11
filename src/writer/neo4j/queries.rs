@@ -600,3 +600,209 @@ pub const CHECK_BLOCK_COMPLETE_QUERY: &str = r#"
     OPTIONAL MATCH (t:Transaction)-[:INCLUDED_IN]->(b)
     RETURN b.txCount AS expectedTxCount, count(t) AS actualTxCount
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // AC 1: CREATE_INPUTS_FAST_QUERY — single UNWIND, no SET on Output,
+    //        uses inp.previousOutputId instead of Cypher string concatenation
+    // =========================================================================
+
+    #[test]
+    fn ac1_fast_input_query_uses_previous_output_id_param() {
+        // After the change, the query should reference inp.previousOutputId
+        // (pre-computed in Rust) instead of Cypher concatenation
+        assert!(
+            CREATE_INPUTS_FAST_QUERY.contains("inp.previousOutputId"),
+            "CREATE_INPUTS_FAST_QUERY should use inp.previousOutputId instead of Cypher concatenation"
+        );
+    }
+
+    #[test]
+    fn ac1_fast_input_query_no_cypher_concatenation() {
+        // The query should NOT contain string concatenation for outputId
+        assert!(
+            !CREATE_INPUTS_FAST_QUERY
+                .contains("inp.previousTxid + ':' + toString(inp.previousOutputIndex)"),
+            "CREATE_INPUTS_FAST_QUERY should not use Cypher string concatenation for outputId"
+        );
+    }
+
+    #[test]
+    fn ac1_fast_input_query_no_set_on_output() {
+        // The query should NOT SET any properties on Output nodes (o.isSpent, etc.)
+        assert!(
+            !CREATE_INPUTS_FAST_QUERY.contains("o.isSpent"),
+            "CREATE_INPUTS_FAST_QUERY should not SET isSpent on Output nodes"
+        );
+        assert!(
+            !CREATE_INPUTS_FAST_QUERY.contains("o.spentInTxid"),
+            "CREATE_INPUTS_FAST_QUERY should not SET spentInTxid on Output nodes"
+        );
+        assert!(
+            !CREATE_INPUTS_FAST_QUERY.contains("o.spentAtHeight"),
+            "CREATE_INPUTS_FAST_QUERY should not SET spentAtHeight on Output nodes"
+        );
+    }
+
+    #[test]
+    fn ac1_fast_input_query_single_unwind() {
+        // The query should have exactly one UNWIND (single query, not split)
+        let unwind_count = CREATE_INPUTS_FAST_QUERY.matches("UNWIND").count();
+        assert_eq!(
+            unwind_count, 1,
+            "CREATE_INPUTS_FAST_QUERY should have exactly one UNWIND (single query)"
+        );
+    }
+
+    #[test]
+    fn ac1_fast_input_query_creates_input_has_input_and_spends() {
+        // The query should still create Input nodes, HAS_INPUT, and SPENDS
+        assert!(
+            CREATE_INPUTS_FAST_QUERY.contains("CREATE (i:Input"),
+            "CREATE_INPUTS_FAST_QUERY should create Input nodes"
+        );
+        assert!(
+            CREATE_INPUTS_FAST_QUERY.contains("HAS_INPUT"),
+            "CREATE_INPUTS_FAST_QUERY should create HAS_INPUT relationships"
+        );
+        assert!(
+            CREATE_INPUTS_FAST_QUERY.contains("SPENDS"),
+            "CREATE_INPUTS_FAST_QUERY should create SPENDS relationships"
+        );
+    }
+
+    // =========================================================================
+    // AC 2: CREATE_INPUTS_QUERY (MERGE recovery variant) — same pattern as fast
+    // =========================================================================
+
+    #[test]
+    fn ac2_merge_input_query_uses_previous_output_id_param() {
+        assert!(
+            CREATE_INPUTS_QUERY.contains("inp.previousOutputId"),
+            "CREATE_INPUTS_QUERY should use inp.previousOutputId instead of Cypher concatenation"
+        );
+    }
+
+    #[test]
+    fn ac2_merge_input_query_no_cypher_concatenation() {
+        assert!(
+            !CREATE_INPUTS_QUERY
+                .contains("inp.previousTxid + ':' + toString(inp.previousOutputIndex)"),
+            "CREATE_INPUTS_QUERY should not use Cypher string concatenation for outputId"
+        );
+    }
+
+    #[test]
+    fn ac2_merge_input_query_no_set_on_output() {
+        assert!(
+            !CREATE_INPUTS_QUERY.contains("o.isSpent"),
+            "CREATE_INPUTS_QUERY should not SET isSpent on Output nodes"
+        );
+        assert!(
+            !CREATE_INPUTS_QUERY.contains("o.spentInTxid"),
+            "CREATE_INPUTS_QUERY should not SET spentInTxid on Output nodes"
+        );
+        assert!(
+            !CREATE_INPUTS_QUERY.contains("o.spentAtHeight"),
+            "CREATE_INPUTS_QUERY should not SET spentAtHeight on Output nodes"
+        );
+    }
+
+    #[test]
+    fn ac2_merge_input_query_single_unwind() {
+        let unwind_count = CREATE_INPUTS_QUERY.matches("UNWIND").count();
+        assert_eq!(
+            unwind_count, 1,
+            "CREATE_INPUTS_QUERY should have exactly one UNWIND (single query)"
+        );
+    }
+
+    // =========================================================================
+    // AC 3: CREATE_OUTPUTS_QUERY — ON CREATE SET does NOT include isSpent fields
+    // =========================================================================
+
+    #[test]
+    fn ac3_outputs_query_no_is_spent_in_on_create_set() {
+        assert!(
+            !CREATE_OUTPUTS_QUERY.contains("isSpent"),
+            "CREATE_OUTPUTS_QUERY should not include isSpent in ON CREATE SET"
+        );
+    }
+
+    #[test]
+    fn ac3_outputs_query_no_spent_in_txid_in_on_create_set() {
+        assert!(
+            !CREATE_OUTPUTS_QUERY.contains("spentInTxid"),
+            "CREATE_OUTPUTS_QUERY should not include spentInTxid in ON CREATE SET"
+        );
+    }
+
+    #[test]
+    fn ac3_outputs_query_no_spent_at_height_in_on_create_set() {
+        assert!(
+            !CREATE_OUTPUTS_QUERY.contains("spentAtHeight"),
+            "CREATE_OUTPUTS_QUERY should not include spentAtHeight in ON CREATE SET"
+        );
+    }
+
+    // =========================================================================
+    // AC 4: CREATE_OUTPUTS_WITH_LOCKED_TO_FAST_QUERY — no isSpent fields
+    // =========================================================================
+
+    #[test]
+    fn ac4_fast_outputs_query_no_is_spent() {
+        assert!(
+            !CREATE_OUTPUTS_WITH_LOCKED_TO_FAST_QUERY.contains("isSpent"),
+            "CREATE_OUTPUTS_WITH_LOCKED_TO_FAST_QUERY should not include isSpent"
+        );
+    }
+
+    #[test]
+    fn ac4_fast_outputs_query_no_spent_in_txid() {
+        assert!(
+            !CREATE_OUTPUTS_WITH_LOCKED_TO_FAST_QUERY.contains("spentInTxid"),
+            "CREATE_OUTPUTS_WITH_LOCKED_TO_FAST_QUERY should not include spentInTxid"
+        );
+    }
+
+    #[test]
+    fn ac4_fast_outputs_query_no_spent_at_height() {
+        assert!(
+            !CREATE_OUTPUTS_WITH_LOCKED_TO_FAST_QUERY.contains("spentAtHeight"),
+            "CREATE_OUTPUTS_WITH_LOCKED_TO_FAST_QUERY should not include spentAtHeight"
+        );
+    }
+
+    // =========================================================================
+    // AC 9: Coinbase filtering — WHERE clause filters coinbase inputs
+    // =========================================================================
+
+    #[test]
+    fn ac9_fast_input_query_filters_coinbase_via_where_clause() {
+        // The query should have a WHERE clause that filters out coinbase inputs
+        // (previousOutputIndex = 4294967295 = 0xFFFFFFFF) before creating SPENDS
+        assert!(
+            CREATE_INPUTS_FAST_QUERY.contains("4294967295"),
+            "CREATE_INPUTS_FAST_QUERY should filter coinbase inputs by previousOutputIndex 4294967295"
+        );
+        assert!(
+            CREATE_INPUTS_FAST_QUERY.contains("WHERE"),
+            "CREATE_INPUTS_FAST_QUERY should have a WHERE clause for coinbase filtering"
+        );
+    }
+
+    #[test]
+    fn ac9_merge_input_query_filters_coinbase_via_where_clause() {
+        assert!(
+            CREATE_INPUTS_QUERY.contains("4294967295"),
+            "CREATE_INPUTS_QUERY should filter coinbase inputs by previousOutputIndex 4294967295"
+        );
+        assert!(
+            CREATE_INPUTS_QUERY.contains("WHERE"),
+            "CREATE_INPUTS_QUERY should have a WHERE clause for coinbase filtering"
+        );
+    }
+}
