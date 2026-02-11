@@ -359,6 +359,25 @@ async fn run_streaming_ingestion(
 ) -> Result<()> {
     let start_time = Instant::now();
     let mut blocks_processed = 0;
+    let cache_file = &config.performance.utxo_cache_file;
+
+    // Try to load UTXO cache from snapshot file (faster than pre-warming from files)
+    if !cache_file.is_empty() {
+        let cache = orchestrator.get_cache();
+        match cache.load_from_file(cache_file, Some(start_height)) {
+            Ok(loaded) if loaded > 0 => {
+                println!(
+                    "   ✅ UTXO cache restored: {} entries ({:.1}% full)",
+                    loaded,
+                    cache.fill_percentage() * 100.0
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load UTXO cache file, starting with empty cache");
+            }
+        }
+    }
 
     // Pre-warm cache if resuming and configured
     if enable_prewarm && config.performance.utxo_prewarm_depth > 0 && start_height > 0 {
@@ -481,8 +500,27 @@ async fn run_streaming_ingestion(
                 "Batch complete"
             );
 
+            // Periodic cache snapshot
+            let snapshot_interval = config.performance.utxo_cache_snapshot_interval;
+            if snapshot_interval > 0
+                && !cache_file.is_empty()
+                && batch_end_height % snapshot_interval == 0
+            {
+                if let Err(e) = orchestrator.get_cache().save_to_file(cache_file, batch_end_height) {
+                    tracing::warn!(error = %e, height = batch_end_height, "Periodic cache snapshot failed");
+                }
+            }
+
             // Clear batch for next iteration
             batch.clear();
+        }
+    }
+
+    // Save cache on completion
+    if !cache_file.is_empty() {
+        let final_height = start_height + blocks_processed as u32;
+        if let Err(e) = orchestrator.get_cache().save_to_file(cache_file, final_height) {
+            tracing::warn!(error = %e, "Failed to save UTXO cache on completion");
         }
     }
 
@@ -603,6 +641,37 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         config.performance.cache_capacity(),
     );
 
+    // Try to load UTXO cache from snapshot file
+    let cache_file = &config.performance.utxo_cache_file;
+    if !cache_file.is_empty() {
+        let checkpoint_data = orchestrator
+            .get_checkpoint()
+            .await
+            .ok()
+            .flatten();
+        let current_height = checkpoint_data.as_ref().and_then(|cp| {
+            if cp.last_processed_height >= 0 {
+                Some(cp.last_processed_height as u32)
+            } else {
+                None
+            }
+        });
+        let cache = orchestrator.get_cache();
+        match cache.load_from_file(cache_file, current_height) {
+            Ok(loaded) if loaded > 0 => {
+                println!(
+                    "   ✅ UTXO cache restored: {} entries ({:.1}% full)",
+                    loaded,
+                    cache.fill_percentage() * 100.0
+                );
+            }
+            Ok(_) => {} // No file or empty, will start cold
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load UTXO cache file, starting with empty cache");
+            }
+        }
+    }
+
     // Ensure schema is initialized
     let checkpoint = orchestrator
         .get_checkpoint()
@@ -649,12 +718,29 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
     println!("   RPC batch size: {}", rpc_batch_size);
     println!("   ZMQ endpoint: {}", rpc_config.zmq_endpoint);
 
-    // Set up graceful shutdown via Ctrl+C
+    // Set up graceful shutdown via Ctrl+C (SIGINT) AND SIGTERM (systemd stop)
     let shutdown_token = CancellationToken::new();
     let token_clone = shutdown_token.clone();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        tracing::info!("Shutdown signal received, finishing current operation...");
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("SIGINT received, finishing current operation...");
+                }
+                _ = sigterm.recv() => {
+                    tracing::info!("SIGTERM received, finishing current operation...");
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.ok();
+            tracing::info!("Shutdown signal received, finishing current operation...");
+        }
         token_clone.cancel();
     });
 
@@ -766,6 +852,17 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
 
         // Periodic cache stats logging (every 10k ops, avoids log flooding)
         orchestrator.maybe_log_cache_stats();
+
+        // Periodic cache snapshot (protects against hard crashes)
+        let snapshot_interval = config.performance.utxo_cache_snapshot_interval;
+        if snapshot_interval > 0
+            && !cache_file.is_empty()
+            && batch_end % snapshot_interval == 0
+        {
+            if let Err(e) = orchestrator.get_cache().save_to_file(cache_file, batch_end) {
+                tracing::warn!(error = %e, height = batch_end, "Periodic cache snapshot failed");
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -887,6 +984,16 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
                             );
                             // Periodic cache stats logging
                             orchestrator.maybe_log_cache_stats();
+                            // Periodic cache snapshot
+                            let snapshot_interval = config.performance.utxo_cache_snapshot_interval;
+                            if snapshot_interval > 0
+                                && !cache_file.is_empty()
+                                && height % snapshot_interval == 0
+                            {
+                                if let Err(e) = orchestrator.get_cache().save_to_file(cache_file, height) {
+                                    tracing::warn!(error = %e, height, "Periodic cache snapshot failed");
+                                }
+                            }
                             height += 1;
                         }
                         Err(WriterError::ReorgDetected {
@@ -972,6 +1079,19 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
                 max_height
             );
             break;
+        }
+    }
+
+    // Graceful shutdown: save cache to disk
+    if !cache_file.is_empty() {
+        let save_height = current_height.saturating_sub(1);
+        match orchestrator.get_cache().save_to_file(cache_file, save_height) {
+            Ok(saved) => {
+                tracing::info!(entries = saved, height = save_height, "UTXO cache saved on shutdown");
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to save UTXO cache on shutdown");
+            }
         }
     }
 

@@ -15,6 +15,7 @@ use crate::writer::{GraphWriter, Result};
 use bitcoin::hashes::Hash;
 use lru::LruCache;
 use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -697,6 +698,311 @@ impl<W: GraphWriter> UtxoCache<W> {
                 );
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cache Persistence: binary file format constants
+// ---------------------------------------------------------------------------
+
+/// Magic bytes identifying a UTXO cache file.
+const CACHE_FILE_MAGIC: &[u8; 4] = b"UTXO";
+
+/// Current cache file format version.
+const CACHE_FILE_VERSION: u32 = 1;
+
+impl<W: GraphWriter> UtxoCache<W> {
+    /// Save entire cache contents to a binary file (atomic via temp + rename).
+    ///
+    /// Iterates all shards and writes every entry. The file can be loaded
+    /// back with `load_from_file()` to restore cache state after restart.
+    ///
+    /// Uses atomic write: data is written to `<path>.bin.tmp` first, then renamed
+    /// to the final path. This prevents corruption if the process is killed
+    /// mid-save.
+    ///
+    /// # Arguments
+    /// * `path` - Destination file path
+    /// * `checkpoint_height` - Current ingestion checkpoint height (stored in header
+    ///   for stale-cache detection on load)
+    ///
+    /// # Returns
+    /// The number of entries written.
+    pub fn save_to_file<P: AsRef<std::path::Path>>(
+        &self,
+        path: P,
+        checkpoint_height: u32,
+    ) -> std::io::Result<usize> {
+        let path = path.as_ref();
+        let tmp_path = path.with_extension("bin.tmp");
+
+        let file = std::fs::File::create(&tmp_path)?;
+        let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
+
+        // Count total entries first
+        let total_entries: usize = self
+            .shards
+            .iter()
+            .map(|s| s.lock().expect("shard poisoned").len())
+            .sum();
+
+        // Write header (CRC placeholder — we'll seek back and fill it in)
+        writer.write_all(CACHE_FILE_MAGIC)?;
+        writer.write_all(&CACHE_FILE_VERSION.to_le_bytes())?;
+        writer.write_all(&(total_entries as u64).to_le_bytes())?;
+        writer.write_all(&checkpoint_height.to_le_bytes())?;
+        writer.write_all(&0u32.to_le_bytes())?; // CRC32 placeholder
+
+        let mut hasher = crc32fast::Hasher::new();
+        let mut written = 0usize;
+
+        for shard_mutex in &self.shards {
+            let shard = shard_mutex.lock().expect("shard poisoned");
+            for (key, value) in shard.iter() {
+                writer.write_all(&key.txid)?;
+                hasher.update(&key.txid);
+                let vout_bytes = key.vout.to_le_bytes();
+                writer.write_all(&vout_bytes)?;
+                hasher.update(&vout_bytes);
+
+                let oi_bytes = value.output_index.to_le_bytes();
+                writer.write_all(&oi_bytes)?;
+                hasher.update(&oi_bytes);
+
+                let amt_bytes = value.amount.to_le_bytes();
+                writer.write_all(&amt_bytes)?;
+                hasher.update(&amt_bytes);
+
+                let st_byte = [value.script_type as u8];
+                writer.write_all(&st_byte)?;
+                hasher.update(&st_byte);
+
+                match &value.address {
+                    Some(addr) => {
+                        let addr_bytes = addr.as_bytes();
+                        writer.write_all(&[1u8])?;
+                        hasher.update(&[1u8]);
+                        let len_bytes = (addr_bytes.len() as u16).to_le_bytes();
+                        writer.write_all(&len_bytes)?;
+                        hasher.update(&len_bytes);
+                        writer.write_all(addr_bytes)?;
+                        hasher.update(addr_bytes);
+                    }
+                    None => {
+                        writer.write_all(&[0u8])?;
+                        hasher.update(&[0u8]);
+                    }
+                }
+
+                written += 1;
+            }
+        }
+
+        // Seek back and write the CRC32 into the header
+        writer.flush()?;
+        let crc = hasher.finalize();
+        let mut file = writer.into_inner().map_err(|e| e.into_error())?;
+        file.seek(SeekFrom::Start(20))?;
+        file.write_all(&crc.to_le_bytes())?;
+        file.sync_all()?;
+        drop(file);
+
+        // Atomic rename
+        std::fs::rename(&tmp_path, path)?;
+
+        tracing::info!(
+            entries = written,
+            checkpoint_height = checkpoint_height,
+            crc32 = format!("{:08x}", crc),
+            path = %path.display(),
+            "UTXO cache saved to file"
+        );
+
+        Ok(written)
+    }
+
+    /// Load cache contents from a binary file, replacing current cache contents.
+    ///
+    /// Returns Ok(0) if the file doesn't exist (not an error — first run).
+    ///
+    /// # Stale cache detection
+    ///
+    /// If `current_checkpoint_height` differs from the height stored in the
+    /// file header, a warning is logged. The cache is still loaded.
+    pub fn load_from_file<P: AsRef<std::path::Path>>(
+        &self,
+        path: P,
+        current_checkpoint_height: Option<u32>,
+    ) -> std::io::Result<usize> {
+        let path = path.as_ref();
+
+        if !path.exists() {
+            tracing::info!(path = %path.display(), "No cache file found, starting with empty cache");
+            return Ok(0);
+        }
+
+        let file = std::fs::File::open(path)?;
+        let file_size = file.metadata()?.len();
+        let mut reader = std::io::BufReader::with_capacity(1024 * 1024, file);
+
+        // Read and validate header
+        let mut magic = [0u8; 4];
+        reader.read_exact(&mut magic)?;
+        if &magic != CACHE_FILE_MAGIC {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid cache file magic: {:?}", magic),
+            ));
+        }
+
+        let mut version_bytes = [0u8; 4];
+        reader.read_exact(&mut version_bytes)?;
+        let version = u32::from_le_bytes(version_bytes);
+        if version != CACHE_FILE_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Unsupported cache file version: {}", version),
+            ));
+        }
+
+        let mut count_bytes = [0u8; 8];
+        reader.read_exact(&mut count_bytes)?;
+        let entry_count = u64::from_le_bytes(count_bytes) as usize;
+
+        let mut height_bytes = [0u8; 4];
+        reader.read_exact(&mut height_bytes)?;
+        let saved_height = u32::from_le_bytes(height_bytes);
+
+        let mut crc_bytes = [0u8; 4];
+        reader.read_exact(&mut crc_bytes)?;
+        let expected_crc = u32::from_le_bytes(crc_bytes);
+
+        // Stale cache detection
+        if let Some(current_height) = current_checkpoint_height {
+            if current_height != saved_height {
+                tracing::warn!(
+                    saved_at_height = saved_height,
+                    current_height = current_height,
+                    delta = current_height as i64 - saved_height as i64,
+                    "Cache file is from a different checkpoint height. \
+                     Cache is still usable but may contain stale entries."
+                );
+            }
+        }
+
+        tracing::info!(
+            entries = entry_count,
+            file_size_mb = file_size / (1024 * 1024),
+            saved_at_height = saved_height,
+            path = %path.display(),
+            "Loading UTXO cache from file"
+        );
+
+        // Two-pass: read all entries, validate CRC, then insert
+        let mut hasher = crc32fast::Hasher::new();
+        let mut per_shard: Vec<Vec<(UtxoKey, CachedOutput)>> =
+            (0..NUM_SHARDS).map(|_| Vec::new()).collect();
+
+        for _ in 0..entry_count {
+            let mut txid = [0u8; 32];
+            reader.read_exact(&mut txid)?;
+            hasher.update(&txid);
+
+            let mut vout_bytes = [0u8; 4];
+            reader.read_exact(&mut vout_bytes)?;
+            hasher.update(&vout_bytes);
+            let vout = u32::from_le_bytes(vout_bytes);
+
+            let mut output_index_bytes = [0u8; 4];
+            reader.read_exact(&mut output_index_bytes)?;
+            hasher.update(&output_index_bytes);
+            let output_index = u32::from_le_bytes(output_index_bytes);
+
+            let mut amount_bytes = [0u8; 8];
+            reader.read_exact(&mut amount_bytes)?;
+            hasher.update(&amount_bytes);
+            let amount = u64::from_le_bytes(amount_bytes);
+
+            let mut script_type_byte = [0u8; 1];
+            reader.read_exact(&mut script_type_byte)?;
+            hasher.update(&script_type_byte);
+            let script_type = match script_type_byte[0] {
+                0 => ScriptTypeTag::P2PKH,
+                1 => ScriptTypeTag::P2SH,
+                2 => ScriptTypeTag::P2WPKH,
+                3 => ScriptTypeTag::P2WSH,
+                4 => ScriptTypeTag::P2TR,
+                5 => ScriptTypeTag::P2PK,
+                6 => ScriptTypeTag::NullData,
+                _ => ScriptTypeTag::Unknown,
+            };
+
+            let mut has_address_byte = [0u8; 1];
+            reader.read_exact(&mut has_address_byte)?;
+            hasher.update(&has_address_byte);
+
+            let address = if has_address_byte[0] == 1 {
+                let mut addr_len_bytes = [0u8; 2];
+                reader.read_exact(&mut addr_len_bytes)?;
+                hasher.update(&addr_len_bytes);
+                let addr_len = u16::from_le_bytes(addr_len_bytes) as usize;
+
+                let mut addr_bytes = vec![0u8; addr_len];
+                reader.read_exact(&mut addr_bytes)?;
+                hasher.update(&addr_bytes);
+
+                Some(Arc::from(
+                    std::str::from_utf8(&addr_bytes)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
+                ))
+            } else {
+                None
+            };
+
+            let key = UtxoKey::new(txid, vout);
+            let shard_idx = Self::shard_index(&key);
+            let value = CachedOutput {
+                output_index,
+                amount,
+                script_type,
+                address,
+            };
+
+            per_shard[shard_idx].push((key, value));
+        }
+
+        // Validate CRC before inserting anything
+        let computed_crc = hasher.finalize();
+        if computed_crc != expected_crc {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Cache file CRC mismatch: expected {:08x}, computed {:08x}. \
+                     File may be corrupt.",
+                    expected_crc, computed_crc
+                ),
+            ));
+        }
+
+        // Insert per-shard in reverse order to preserve LRU ordering
+        let mut loaded = 0usize;
+        for (shard_idx, entries) in per_shard.into_iter().enumerate() {
+            let mut shard = self.shards[shard_idx].lock().expect("shard poisoned");
+            for (key, value) in entries.into_iter().rev() {
+                shard.put(key, value);
+                loaded += 1;
+            }
+        }
+
+        tracing::info!(
+            loaded = loaded,
+            cache_size = self.len(),
+            fill_pct = format!("{:.1}", self.fill_percentage() * 100.0),
+            crc32 = format!("{:08x}", computed_crc),
+            "UTXO cache loaded from file"
+        );
+
+        Ok(loaded)
     }
 }
 
@@ -1459,10 +1765,9 @@ mod tests {
         let writer = Arc::new(MockWriter::new());
         let cache = UtxoCache::new(1000, writer.clone());
 
-        // Insert 100 entries
+        // Insert 100 entries (only set txid[31] so shard_index = i%16 spreads across shards)
         for i in 0..100u8 {
             let mut txid = [0u8; 32];
-            txid[0] = i;
             txid[31] = i;
             cache.insert(UtxoKey::new(txid, 0), test_output(i as u64 * 100));
         }
