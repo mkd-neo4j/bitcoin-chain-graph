@@ -543,7 +543,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// 1. Blocks
     /// 2. Outputs (+ cache population) - BEFORE transactions for same-block UTXO references
     /// 3. Transactions (with amounts calculated from cache)
-    /// 3.5. HAS_OUTPUT relationships (Transaction → Output)
+    ///    3.5. HAS_OUTPUT relationships (Transaction → Output)
     /// 4. Inputs
     /// 6. Simplified layer (PERFORMS + BENEFITS_TO)
     /// 7. Cache cleanup (remove spent outputs)
