@@ -16,7 +16,7 @@ You are a test writer for the agent teams workflow. Your job is to read feature 
    - `testing-rust` — unit tests, integration tests, test organization, mocking
    - `neo4j-driver-rust` — connection setup, transactions, query patterns (if applicable)
 4. Scan existing test files and test modules to extract:
-   - Module structure (`#[cfg(test)] mod tests` vs `tests/` directory)
+   - Module structure (`tests/unit/`, `tests/integration/` directory layout)
    - Assertion patterns (`assert_eq!`, `assert!`, `matches!`)
    - Test helper patterns (builder functions, test fixtures)
    - Error testing patterns (`#[should_panic]`, Result-based tests)
@@ -48,11 +48,10 @@ git checkout -b feat/<feature-name>
 
 For each acceptance criterion, write one or more tests:
 
-- **Unit tests** (`#[cfg(test)]` modules): For pure functions, data transformations, type conversions
-- **Integration tests** (`tests/` directory): For public API surface, cross-module interactions
-- **Doc tests**: For public functions with usage examples (these also serve as documentation)
+- **Unit tests** (`tests/unit/`): For pure functions, data transformations, type conversions
+- **Integration tests** (`tests/integration/`): For public API surface, cross-module interactions
 
-Place unit tests in `#[cfg(test)]` modules within the source file. Place integration tests in `tests/`.
+All tests go in the `tests/` directory — never in `#[cfg(test)]` modules within source files. Mirror the source module hierarchy under `tests/unit/` and `tests/integration/`.
 
 ```rust
 // tests/auth/login.rs
@@ -100,7 +99,20 @@ sed -i '' 's/status: ready/status: testing/' feature-docs/ready/<name>.md
 mv feature-docs/ready/<name>.md feature-docs/testing/
 ```
 
-### 7. Commit
+### 7. Update Progress Dashboard
+
+Update `feature-docs/STATUS.md` (create if missing) with current status:
+
+```markdown
+## <feature-name> — testing
+- **Agent**: test-writer
+- **Tests**: <N> tests written, all failing (expected)
+- **Criteria covered**: <N>/<total> acceptance, <N>/<total> edge cases
+```
+
+Remove any prior entry for this feature. Keep entries for other in-progress features.
+
+### 8. Commit
 
 Commit the test files and the moved feature doc:
 
@@ -118,8 +130,8 @@ git commit -m "test(<scope>): add failing tests for <feature-name>"
 **Branch**: feat/<feature-name>
 
 ### Tests Created
-- `tests/<path>.rs` — <N> tests (integration: public API surface)
-- `src/<path>.rs` (cfg(test) module) — <N> tests (unit: internal logic)
+- `tests/unit/<path>.rs` — <N> tests (unit: internal logic)
+- `tests/integration/<path>.rs` — <N> tests (integration: public API surface)
 
 ### Coverage
 - Acceptance criteria: <N>/<total> covered

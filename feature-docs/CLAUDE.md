@@ -7,6 +7,7 @@ This directory manages the Agent Teams workflow — a parallel multi-agent devel
 ```
 feature-docs/
   CLAUDE.md             This file — auto-discovered by Claude
+  STATUS.md             Progress dashboard — updated by agents after each stage
   new-feature.md        Source this to create a new feature (ideation or direct)
   implement-feature.md  Source this to implement an existing feature doc
   ideation/             Explore and shape feature ideas (one subfolder per feature)
@@ -34,6 +35,8 @@ feature-docs/
 4. **Building** — Builder reads the failing tests, implements code until all pass, runs verify, moves the doc here.
 5. **Review** — Reviewer checks code quality, conventions, and completeness. Moves to `completed/` if approved, back to `building/` if not.
 6. **Completed** — Feature is done. Branch is ready for PR.
+
+All agents update `feature-docs/STATUS.md` after each stage transition.
 
 ## Feature Doc Format
 
@@ -139,6 +142,7 @@ This prevents a builder from independently arriving at the same "obvious" optimi
 - **Builder**: Never modifies test files. If tests are wrong, stop and report.
 - **Reviewer**: Maps to the `code-reviewer` agent.
 - **Moving files IS the status transition** — the `status` field in frontmatter and the directory must stay in sync.
+- **Progress dashboard**: Update `feature-docs/STATUS.md` after every stage transition.
 - **Ideation reference**: Feature docs may include `ideation-ref` in frontmatter pointing to the ideation folder for additional context.
 
 ## Kickoff Commands

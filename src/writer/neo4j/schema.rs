@@ -68,8 +68,6 @@ async fn create_indexes(graph: &Graph) -> Result<()> {
         "CREATE INDEX transaction_coinbase IF NOT EXISTS
          FOR (t:Transaction) ON (t.isCoinbase)",
         // Output indexes
-        "CREATE INDEX output_spent IF NOT EXISTS
-         FOR (o:Output) ON (o.isSpent)",
         "CREATE INDEX output_amount IF NOT EXISTS
          FOR (o:Output) ON (o.amount)",
         "CREATE INDEX output_script_type IF NOT EXISTS
@@ -146,5 +144,30 @@ mod tests {
         assert!(index.contains("CREATE INDEX"));
         assert!(index.contains("IF NOT EXISTS"));
         assert!(index.contains("ON"));
+    }
+
+    // =========================================================================
+    // AC 7: create_indexes does NOT create an output_spent index
+    // =========================================================================
+
+    #[test]
+    fn ac7_no_output_spent_index() {
+        // Verify the production schema code does not define an index on
+        // Output.isSpent. We split on the cfg(test) boundary so assertion
+        // strings inside this test don't cause a false positive.
+        let full = include_str!("schema.rs");
+        let production_source = full
+            .split("#[cfg(test)]")
+            .next()
+            .expect("schema.rs should have a #[cfg(test)] boundary");
+
+        assert!(
+            !production_source.contains("output_spent"),
+            "production schema.rs should not contain an output_spent index definition"
+        );
+        assert!(
+            !production_source.contains("o.isSpent"),
+            "production schema.rs should not reference o.isSpent in any index"
+        );
     }
 }
