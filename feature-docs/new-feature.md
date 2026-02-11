@@ -138,40 +138,36 @@ Or source `feature-docs/implement-feature.md` to run the pipeline with pre-fligh
 
 ## Step 8 — Direct Feature Doc Creation (Skip Ideation)
 
-If the user chose to skip ideation at Step 2, guide them through creating a feature doc directly. Ask one question at a time, moving to the next after each answer.
+If the user chose to skip ideation at Step 2, generate the feature doc autonomously using all available context — prior conversation, code reviews, codebase exploration, error reports, etc. **Do not interrogate the user section by section.** Draft first, review once.
 
-**8a — Priority**
-Ask me to choose: high (blocking other work), medium (important), or low (nice to have).
+**8a — Draft the Complete Feature Doc**
 
-**8b — Summary**
-Ask me to describe in one paragraph what this feature does and why it exists. Probe for context — ask a follow-up if my answer is vague. Agents need enough context to make judgment calls during implementation.
+Using the format from `feature-docs/CLAUDE.md` (see the "Feature Doc Format" section), fill in every section:
 
-**8c — Acceptance Criteria**
-Guide me through writing testable acceptance criteria in GIVEN/WHEN/THEN format. After each one I provide, ask if there are more. If my criteria are vague, push back — remind me that each criterion becomes at least one automated test. The test-writer agent cannot work with "the login should work." It needs "GIVEN valid credentials WHEN the user submits THEN a session token is stored."
+- **Priority**: Infer from conversation context. If genuinely unclear, ask once before drafting.
+- **Summary**: Synthesise from everything discussed so far.
+- **Acceptance Criteria**: Write testable GIVEN/WHEN/THEN criteria based on the problem and solution discussed. Each criterion becomes at least one automated test — be precise with function names, field names, error types, and return shapes.
+- **Edge Cases**: Infer from the problem domain (failures, timeouts, boundary conditions, concurrent access, invalid inputs).
+- **Affected Files**: Infer from codebase exploration. If you haven't explored yet, search the codebase now to identify the relevant files.
+- **Out of Scope**: Identify likely scope creep items and adjacent functionality that should not be touched.
+- **Technical Notes**: Include implementation constraints, patterns to follow, and any rejected approaches with reasons.
+- **Style Requirements**: Only for frontend features with visual specs. Skip otherwise.
 
-**8d — Edge Cases**
-Ask me what could go wrong or what unusual inputs might occur. Suggest common ones I might be missing based on the feature (empty inputs, network failures, concurrent access, boundary values, missing permissions). Format as: description — expected behavior.
+For any section where you genuinely lack information, flag it in the draft with a note (e.g., `<!-- REVIEW: I wasn't sure about X — please check -->`). Do not stop to ask.
 
-**8e — Affected Files**
-Ask me which files this feature will create or modify. Explain that these define file ownership — no other feature's agents should touch these files while this one is in progress. If I'm unsure, help me think through it based on the acceptance criteria (what stores, components, routes, or modules would need to change).
+**8b — Show Draft and Ask for Changes**
 
-**8f — Out of Scope**
-Ask me what this feature explicitly does NOT include. Suggest likely scope creep items based on what I've described. This prevents agents from building adjacent functionality.
+Show the complete feature doc and ask: "Here's the feature doc. Want to change anything?"
 
-**8g — Technical Notes**
-Ask if there are implementation hints, constraints, existing patterns to follow, or dependencies on other features. This section is optional but helps the builder agent make better decisions.
+Apply any requested changes. Do not re-ask about sections the user didn't flag.
 
-**8h — Style Requirements (frontend only)**
-If this is a frontend feature, ask about visual specifications, design system components to use, and whether screenshot baselines are needed. Skip this for Python or Rust projects.
+**8c — File Ownership Check**
 
-**8i — Generate and Review**
-Generate the complete feature doc using the format from `feature-docs/CLAUDE.md` (see the "Feature Doc Format" section). Before writing the file, show me the full doc and ask if I want to change anything.
+Before saving, check `feature-docs/testing/` and `feature-docs/building/` for any existing feature docs whose `affected-files` overlap with this one. Warn if there are conflicts.
 
-**8j — File Ownership Check**
-Before saving, check `feature-docs/testing/` and `feature-docs/building/` for any existing feature docs whose `affected-files` overlap with this one. Warn me if there are conflicts.
+**8d — Save and Next Steps**
 
-**8k — Save and Next Steps**
-Write the file to `feature-docs/ready/<feature-name>.md` where the filename is derived from the title (lowercase, hyphens). Then tell me the exact command to kick off the test-writer:
+Write the file to `feature-docs/ready/<feature-name>.md` where the filename is derived from the title (lowercase, hyphens). Then tell the exact command to kick off the test-writer:
 
 ```
 @test-writer Pick up feature-docs/ready/<filename>.md
