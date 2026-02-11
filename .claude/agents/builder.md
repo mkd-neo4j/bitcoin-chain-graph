@@ -106,6 +106,23 @@ git commit -m "feat(<scope>): implement <feature-name>"
 - **Only touch affected files.** Only create or modify files listed in the feature doc's `affected-files`. If implementation requires touching an unlisted file (e.g., adding a `mod` declaration in `lib.rs`), report this to the user before proceeding.
 - **No scope creep.** Only implement what the acceptance criteria require. If you notice adjacent improvements, note them but do not implement them.
 
+---
+
+## COMPLETION GATE — MANDATORY
+
+**You are NOT done until every item below is checked. The `task-completed.sh` hook will REJECT your task if the feature doc is in the wrong directory. Skipping these steps breaks the entire pipeline — the reviewer will never find your feature doc.**
+
+- [ ] **Feature doc MOVED to building** (Step 3): The `.md` file is in `feature-docs/building/`, NOT still in `feature-docs/testing/`
+- [ ] **Status field says `building`** (Step 3): The frontmatter says `status: building`
+- [ ] **Feature doc MOVED to review** (Step 6): The `.md` file is in `feature-docs/review/`, NOT still in `feature-docs/building/`
+- [ ] **Status field says `review`** (Step 6): The frontmatter says `status: review`
+- [ ] **STATUS.md UPDATED** (Step 7): `feature-docs/STATUS.md` has a current entry for this feature showing `review` status
+- [ ] **Feature doc COMMITTED** (Step 8): The moved feature doc is included in your git commit (not just the implementation files)
+
+If you already did Steps 3, 6, 7, and 8 above, this is a confirmation check. If you skipped any of them, go back and do them NOW before producing your report.
+
+---
+
 ## Output
 
 ```

@@ -98,6 +98,53 @@ After I kick off the agent, explain:
 > - Features in `testing/` or `building/` are locked to the current agent
 > - To unlock, move the doc back to `ready/` and source this file again
 
+## Step 6 — Pipeline Orchestration (Between-Stage Verification)
+
+Whether the pipeline runs via TeammateIdle hooks or manual orchestration, **verify lifecycle compliance between every stage**. Agents sometimes skip the doc-move and STATUS.md update steps. The `task-completed.sh` hook enforces this deterministically, but if you are orchestrating manually, check before launching the next agent.
+
+### Between test-writer and builder
+
+After the test-writer finishes, verify before invoking the builder:
+
+1. **Check the feature doc location**: `ls feature-docs/testing/<filename>.md`
+   - If the file is still in `feature-docs/ready/`, the test-writer skipped the move step. Fix it:
+     ```bash
+     sed -i '' 's/status: ready/status: testing/' feature-docs/ready/<filename>.md
+     mv feature-docs/ready/<filename>.md feature-docs/testing/
+     ```
+2. **Check STATUS.md**: `grep '<feature-name>' feature-docs/STATUS.md`
+   - If no entry exists, add one showing `testing` status
+3. **Then launch**: `@builder Pick up feature-docs/testing/<filename>.md`
+
+### Between builder and reviewer
+
+After the builder finishes, verify before invoking the reviewer:
+
+1. **Check the feature doc location**: `ls feature-docs/review/<filename>.md`
+   - If the file is still in `feature-docs/building/`, the builder skipped the move step. Fix it:
+     ```bash
+     sed -i '' 's/status: building/status: review/' feature-docs/building/<filename>.md
+     mv feature-docs/building/<filename>.md feature-docs/review/
+     ```
+2. **Check STATUS.md**: `grep '<feature-name>' feature-docs/STATUS.md`
+   - If the entry still says `building`, update it to `review`
+3. **Then launch**: `@code-reviewer Review feature-docs/review/<filename>.md`
+
+### After reviewer approves
+
+1. **Verify doc moved to completed**: `ls feature-docs/completed/<filename>.md`
+2. **Update STATUS.md** if the reviewer did not
+3. The feature branch is now ready for PR
+
+### If the pipeline stalls mid-stage
+
+If an agent exits without completing lifecycle steps:
+
+1. Check which directory the feature doc is actually in: `ls feature-docs/*/<filename>.md`
+2. Check the `status:` field in the frontmatter: `head -5 feature-docs/*/<filename>.md`
+3. If the status and directory are out of sync, fix them manually
+4. Re-launch the appropriate agent for the current stage
+
 ---
 
 Start with Step 1 now.
