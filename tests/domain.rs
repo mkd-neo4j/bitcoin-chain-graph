@@ -11,4 +11,5 @@ mod ingestion;
 #[path = "domain/utxo"]
 mod utxo {
     mod cache;
+    mod persistence;
 }
