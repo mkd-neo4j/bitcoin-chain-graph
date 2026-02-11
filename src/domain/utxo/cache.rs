@@ -425,7 +425,10 @@ impl<W: GraphWriter> UtxoCache<W> {
         Ok(CachedOutput {
             output_index: output_data.output_index,
             amount: output_data.amount,
-            script_type: output_data.script_type.parse().unwrap_or(ScriptTypeTag::Unknown),
+            script_type: output_data
+                .script_type
+                .parse()
+                .unwrap_or(ScriptTypeTag::Unknown),
             address: output_data.address.map(|a| Arc::from(a.as_str())),
         })
     }
@@ -464,7 +467,9 @@ impl<W: GraphWriter> UtxoCache<W> {
             if indices.is_empty() {
                 continue;
             }
-            let mut shard = self.shards[shard_idx].lock().expect("UTXO shard mutex poisoned");
+            let mut shard = self.shards[shard_idx]
+                .lock()
+                .expect("UTXO shard mutex poisoned");
             for &i in indices {
                 let key = &keys[i];
                 if let Some(output) = shard.get(key) {
@@ -516,7 +521,6 @@ impl<W: GraphWriter> UtxoCache<W> {
                     found.insert(key, cached);
                 }
             }
-
         }
 
         if found.len() < keys.len() {
@@ -551,7 +555,9 @@ impl<W: GraphWriter> UtxoCache<W> {
             if indices.is_empty() {
                 continue;
             }
-            let mut shard = self.shards[shard_idx].lock().expect("UTXO shard mutex poisoned");
+            let mut shard = self.shards[shard_idx]
+                .lock()
+                .expect("UTXO shard mutex poisoned");
             for &i in indices {
                 if shard.pop(&keys[i]).is_some() {
                     self.stats.record_removal();
@@ -583,7 +589,10 @@ impl<W: GraphWriter> UtxoCache<W> {
 
     /// Get total number of entries across all shards.
     pub fn len(&self) -> usize {
-        self.shards.iter().map(|s| s.lock().expect("UTXO shard mutex poisoned").len()).sum()
+        self.shards
+            .iter()
+            .map(|s| s.lock().expect("UTXO shard mutex poisoned").len())
+            .sum()
     }
 
     /// Check if cache is empty.
@@ -639,7 +648,11 @@ impl<W: GraphWriter> UtxoCache<W> {
 
     /// Get cache fill percentage (0.0 to 1.0).
     pub fn fill_percentage(&self) -> f64 {
-        let total_len: usize = self.shards.iter().map(|s| s.lock().expect("UTXO shard mutex poisoned").len()).sum();
+        let total_len: usize = self
+            .shards
+            .iter()
+            .map(|s| s.lock().expect("UTXO shard mutex poisoned").len())
+            .sum();
         let total_cap: usize = self
             .shards
             .iter()

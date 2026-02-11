@@ -12,6 +12,26 @@ if [ ! -d "${FEATURE_DIR}" ]; then
   exit 0
 fi
 
+# Stuck detection: warn if a feature has been in building/ for over 30 minutes.
+# Uses the file's modification time as a proxy for when work started.
+STUCK_THRESHOLD=1800  # 30 minutes in seconds
+NOW=$(date +%s)
+for doc in "${FEATURE_DIR}"/building/*.md; do
+  [ -f "${doc}" ] || continue
+  if [ "$(uname)" = "Darwin" ]; then
+    MOD_TIME=$(stat -f '%m' "${doc}")
+  else
+    MOD_TIME=$(stat -c '%Y' "${doc}")
+  fi
+  ELAPSED=$((NOW - MOD_TIME))
+  if [ "${ELAPSED}" -gt "${STUCK_THRESHOLD}" ]; then
+    TITLE=$(grep -m1 '^title:' "${doc}" | sed 's/^title:[[:space:]]*//')
+    MINS=$((ELAPSED / 60))
+    echo "WARN: ${TITLE} has been in building/ for ${MINS} minutes without completing." >&2
+    echo "The builder may be stuck. Consider checking agent_logs/ for errors or moving the doc back to testing/ to restart." >&2
+  fi
+done
+
 # Priority 1: Features with failing tests need a builder
 for doc in "${FEATURE_DIR}"/testing/*.md; do
   [ -f "${doc}" ] || continue

@@ -1,6 +1,6 @@
 ---
 title: Drop isSpent Properties and Pre-compute outputId
-status: ready
+status: completed
 priority: high
 ideation-ref: feature-docs/ideation/split-input-query-drop-isspent/
 affected-files:

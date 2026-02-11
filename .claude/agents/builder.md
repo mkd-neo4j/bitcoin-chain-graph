@@ -78,7 +78,20 @@ sed -i '' 's/status: building/status: review/' feature-docs/building/<name>.md
 mv feature-docs/building/<name>.md feature-docs/review/
 ```
 
-### 7. Commit
+### 7. Update Progress Dashboard
+
+Update `feature-docs/STATUS.md` with current status:
+
+```markdown
+## <feature-name> — review
+- **Agent**: builder (done)
+- **Tests**: <N>/<N> passing
+- **Verify**: type check PASS, lint PASS, tests PASS
+```
+
+Remove any prior entry for this feature. Keep entries for other in-progress features.
+
+### 8. Commit
 
 Commit the implementation files and the moved feature doc:
 
