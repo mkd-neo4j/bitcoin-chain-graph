@@ -132,6 +132,8 @@ When I say "create the feature" (or similar):
 @test-writer Pick up feature-docs/ready/<feature-name>.md
 ```
 
+Or source `feature-docs/implement-feature.md` to run the pipeline with pre-flight checks (file ownership validation, section completeness).
+
 ---
 
 ## Step 8 — Direct Feature Doc Creation (Skip Ideation)
@@ -174,6 +176,8 @@ Write the file to `feature-docs/ready/<feature-name>.md` where the filename is d
 ```
 @test-writer Pick up feature-docs/ready/<filename>.md
 ```
+
+Or source `feature-docs/implement-feature.md` to run the pipeline with pre-flight checks (file ownership validation, section completeness).
 
 ---
 

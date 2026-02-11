@@ -7,7 +7,8 @@ This directory manages the Agent Teams workflow — a parallel multi-agent devel
 ```
 feature-docs/
   CLAUDE.md             This file — auto-discovered by Claude
-  new-feature.md        Source this to start or resume feature ideation
+  new-feature.md        Source this to create a new feature (ideation or direct)
+  implement-feature.md  Source this to implement an existing feature doc
   ideation/             Explore and shape feature ideas (one subfolder per feature)
     CLAUDE.md           Ideation process guide + README template
   ready/                Distilled feature docs waiting for a test-writer
@@ -19,9 +20,11 @@ feature-docs/
 
 ## Getting Started
 
-**Source `feature-docs/new-feature.md`** to start the feature workflow. It handles both paths:
+**Source `feature-docs/new-feature.md`** to create a new feature. It handles both paths:
 - **Ideation first**: Walk through exploring, validating, and designing the feature with artifacts saved to `ideation/<feature-name>/`
 - **Skip to ready**: If you already know what you want, go straight to creating a feature doc
+
+**Source `feature-docs/implement-feature.md`** to implement an existing feature. It scans `ready/` for available work, runs pre-flight checks (completeness, file ownership conflicts), and kicks off the test-writer to start the pipeline.
 
 ## Lifecycle
 
@@ -56,25 +59,37 @@ context for agents making judgment calls during implementation.
 
 ## Acceptance Criteria
 
-1. GIVEN [context/precondition] WHEN [action] THEN [expected result]
-2. GIVEN [context/precondition] WHEN [action] THEN [expected result]
-3. GIVEN [context/precondition] WHEN [action] THEN [expected result]
+<!-- Use exact names: function names, field names, error types, status codes.
+     The test-writer turns each criterion into an assertion — if it has to
+     guess what "works" means, the test will be wrong. -->
+
+1. GIVEN [exact precondition] WHEN [exact action with specific inputs] THEN [exact observable result with named fields/values]
+2. GIVEN [exact precondition] WHEN [exact action with specific inputs] THEN [exact observable result with named fields/values]
 
 ## Edge Cases
 
-- Description of edge case — expected behavior
-- Description of edge case — expected behavior
+<!-- Tie each case to a specific data pattern or input, not generic error categories. -->
+
+- [Specific input or data condition] — [exact expected behavior with error type/code]
+- [Specific input or data condition] — [exact expected behavior with error type/code]
 
 ## Out of Scope
 
-- What this feature explicitly does NOT include
-- Prevents agents from scope-creeping into adjacent features
+<!-- Name the specific code the builder will be tempted to touch, and explain
+     why touching it is risky. "Separate feature" alone is not enough. -->
+
+- What this feature does NOT include — [reason + what breaks if agent ignores this]
+- What this feature does NOT include — [reason + what breaks if agent ignores this]
 
 ## Technical Notes
 
+<!-- Include rejected approaches with the reason they were rejected.
+     This prevents agents from rediscovering a "clever" optimization
+     that was already considered and ruled out during ideation. -->
+
 - Implementation hints, constraints, or architectural decisions
 - Reference existing patterns: "Follow the pattern in src/existing/file"
-- Dependencies on other features or external services
+- **Rejected**: [what was considered] — [specific failure mode or risk]
 
 ## Style Requirements (frontend only)
 
@@ -89,6 +104,33 @@ context for agents making judgment calls during implementation.
 - `priority` (required): `high` (blocking), `medium` (important), `low` (nice to have)
 - `ideation-ref` (optional): Path to the ideation folder that produced this doc
 - `affected-files` (required): Files this feature creates or modifies — defines ownership
+
+### Writing Effective Acceptance Criteria
+
+Name the functions, fields, error types, and return shapes. The test-writer turns each criterion directly into an assertion.
+
+| Vague (agent has to guess) | Precise (agent can write a test) |
+|---|---|
+| THEN the login works | THEN `authenticate()` returns a `Session` with non-null `token` |
+| THEN an error is shown | THEN it throws `AuthenticationError` with code `"INVALID_CREDENTIALS"` |
+| THEN the data is saved | THEN `authStore.getState().session` contains the new `Session` |
+| THEN the field is removed | THEN the returned object does NOT include a `legacyField` key |
+
+### Writing Actionable Out of Scope
+
+For each exclusion, name the specific temptation and the risk:
+
+> Do NOT remove the deprecated `validateLegacy()` in `src/auth/validators.ts` — it is still called by the admin module and removing it breaks `AdminAuthProvider`.
+
+"Separate feature" is not enough. Name the file, the code, and the consequence.
+
+### Writing Technical Notes That Prevent Wrong Paths
+
+Include at least one rejected approach when a non-obvious design decision was made:
+
+> **Rejected**: localStorage with encryption wrapper. **Why**: XSS-accessible, no real protection — httpOnly cookies are invisible to JS entirely.
+
+This prevents a builder from independently arriving at the same "obvious" optimization and reintroducing a known problem.
 
 ## Rules for Agents
 
