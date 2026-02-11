@@ -116,8 +116,7 @@ fn init_logging(config: &Config) {
     // Otherwise, use config level but filter noisy HTTP client crates.
     let (env_filter, log_level) = if let Ok(rust_log) = std::env::var("RUST_LOG") {
         // RUST_LOG explicitly set — use as-is for full control
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("info"));
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
         (filter, rust_log)
     } else {
         // Build a filter that quiets noisy HTTP client internals
@@ -126,8 +125,7 @@ fn init_logging(config: &Config) {
             "{},hyper=warn,hyper_util=warn,reqwest=warn,h2=warn",
             app_level
         );
-        let filter = EnvFilter::try_new(&filter_str)
-            .unwrap_or_else(|_| EnvFilter::new("info"));
+        let filter = EnvFilter::try_new(&filter_str).unwrap_or_else(|_| EnvFilter::new("info"));
         (filter, app_level.clone())
     };
 
@@ -448,10 +446,7 @@ async fn run_streaming_ingestion(
                 "Ingesting batch"
             );
 
-            if let Err(e) = orchestrator
-                .ingest_blocks_batch(&batch, batch_size)
-                .await
-            {
+            if let Err(e) = orchestrator.ingest_blocks_batch(&batch, batch_size).await {
                 let stats = orchestrator.cache_stats();
                 tracing::error!(
                     error = %e,
@@ -650,10 +645,7 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
     println!("\n📊 Live Mode Configuration:");
     println!("   Resume from block: {}", resume_height);
     println!("   Chain tip: {}", tip);
-    println!(
-        "   Blocks behind: {}",
-        tip.saturating_sub(resume_height)
-    );
+    println!("   Blocks behind: {}", tip.saturating_sub(resume_height));
     println!("   RPC batch size: {}", rpc_batch_size);
     println!("   ZMQ endpoint: {}", rpc_config.zmq_endpoint);
 
@@ -742,8 +734,9 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
                 hit_rate_pct = format!("{:.2}", stats.hit_rate_percent()),
                 "Batch ingestion failed — cache stats at time of failure"
             );
-            return Err(e)
-                .with_context(|| format!("Failed to ingest batch {}-{}", current_height, batch_end));
+            return Err(e).with_context(|| {
+                format!("Failed to ingest batch {}-{}", current_height, batch_end)
+            });
         }
 
         // Check for shutdown after batch completes (batch can take a long time)

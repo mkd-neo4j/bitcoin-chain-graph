@@ -360,9 +360,7 @@ impl Config {
     /// instead of cryptic runtime failures.
     pub fn validate_rpc(&self) -> Result<(), ConfigError> {
         let rpc = self.bitcoin_rpc.as_ref().ok_or_else(|| {
-            ConfigError::ValidationError(
-                "[bitcoin_rpc] section is required for live mode".into(),
-            )
+            ConfigError::ValidationError("[bitcoin_rpc] section is required for live mode".into())
         })?;
 
         if rpc.url.is_empty() {

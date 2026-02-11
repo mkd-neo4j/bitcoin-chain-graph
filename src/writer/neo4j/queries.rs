@@ -84,7 +84,6 @@ pub const CREATE_TRANSACTIONS_QUERY: &str = r#"
 /// Create/Update Output nodes
 ///
 /// Uses MERGE on outputId (unique identifier) and SET for properties.
-/// Preserves isSpent status if already set.
 /// Idempotent for reprocessing scenarios.
 ///
 /// NOTE: HAS_OUTPUT relationships are created separately by CREATE_HAS_OUTPUT_QUERY
@@ -100,10 +99,7 @@ pub const CREATE_OUTPUTS_QUERY: &str = r#"
         o.outputIndex = out.outputIndex,
         o.amount = out.amount,
         o.scriptPubKey = out.scriptPubKey,
-        o.scriptType = out.scriptType,
-        o.isSpent = false,
-        o.spentInTxid = null,
-        o.spentAtHeight = null
+        o.scriptType = out.scriptType
     ON MATCH SET
         o.outputIndex = out.outputIndex,
         o.amount = out.amount,
@@ -165,11 +161,8 @@ pub const CREATE_INPUTS_QUERY: &str = r#"
     MERGE (t)-[:HAS_INPUT]->(i)
     WITH i, inp
     WHERE inp.previousOutputIndex <> 4294967295
-    MATCH (o:Output {outputId: inp.previousTxid + ':' + toString(inp.previousOutputIndex)})
+    MATCH (o:Output {outputId: inp.previousOutputId})
     MERGE (i)-[:SPENDS]->(o)
-    SET o.isSpent = true,
-        o.spentInTxid = inp.txid,
-        o.spentAtHeight = inp.blockHeight
 "#;
 
 // =============================================================================
@@ -364,26 +357,13 @@ pub const LOOKUP_BLOCK_HASH_QUERY: &str = r#"
 // =============================================================================
 //
 // Rollback deletes all data associated with a block at a given height.
-// Must be called in order: revert spent → delete inputs → delete outputs →
+// Must be called in order: delete inputs → delete outputs →
 // delete transactions → delete block.
 //
 // IMPORTANT: Only call on the current chain tip. Rolling back from the middle
 // would leave orphaned data from later blocks.
 
-/// Step 1: Revert spent status on outputs that were spent by this block's transactions
-///
-/// These outputs belong to EARLIER blocks and were marked as spent during
-/// ingestion of the block being rolled back. Resetting them to unspent
-/// restores their correct state.
-///
-/// Parameters:
-/// - $height: Block height to roll back
-pub const ROLLBACK_REVERT_SPENT_QUERY: &str = r#"
-    MATCH (:Block {height: $height})<-[:INCLUDED_IN]-(:Transaction)-[:HAS_INPUT]->(:Input)-[:SPENDS]->(o:Output)
-    SET o.isSpent = false, o.spentInTxid = null, o.spentAtHeight = null
-"#;
-
-/// Step 2: Delete all Input nodes created by this block's transactions
+/// Step 1: Delete all Input nodes created by this block's transactions
 ///
 /// DETACH DELETE removes the Input node and all its relationships
 /// (HAS_INPUT from Transaction, SPENDS to Output).
@@ -395,7 +375,7 @@ pub const ROLLBACK_DELETE_INPUTS_QUERY: &str = r#"
     DETACH DELETE i
 "#;
 
-/// Step 3: Delete all Output nodes created by this block's transactions
+/// Step 2: Delete all Output nodes created by this block's transactions
 ///
 /// DETACH DELETE removes the Output node and all its relationships
 /// (HAS_OUTPUT from Transaction, LOCKED_TO to Address).
@@ -409,7 +389,7 @@ pub const ROLLBACK_DELETE_OUTPUTS_QUERY: &str = r#"
     DETACH DELETE o
 "#;
 
-/// Step 4: Delete all Transaction nodes in this block
+/// Step 3: Delete all Transaction nodes in this block
 ///
 /// DETACH DELETE removes Transaction nodes and all remaining relationships
 /// (INCLUDED_IN to Block, PERFORMS from Address, BENEFITS_TO to Address).
@@ -421,7 +401,7 @@ pub const ROLLBACK_DELETE_TRANSACTIONS_QUERY: &str = r#"
     DETACH DELETE t
 "#;
 
-/// Step 5: Delete the Block node itself
+/// Step 4: Delete the Block node itself
 ///
 /// DETACH DELETE removes the Block node and its NEXT_BLOCK relationships
 /// (both incoming from the previous block and outgoing to the next block).
@@ -520,10 +500,7 @@ pub const CREATE_OUTPUTS_WITH_LOCKED_TO_FAST_QUERY: &str = r#"
         outputIndex: out.outputIndex,
         amount: out.amount,
         scriptPubKey: out.scriptPubKey,
-        scriptType: out.scriptType,
-        isSpent: false,
-        spentInTxid: null,
-        spentAtHeight: null
+        scriptType: out.scriptType
     })
     WITH o, out
     WHERE out.address IS NOT NULL
@@ -550,11 +527,8 @@ pub const CREATE_INPUTS_FAST_QUERY: &str = r#"
     CREATE (t)-[:HAS_INPUT]->(i)
     WITH i, inp
     WHERE inp.previousOutputIndex <> 4294967295
-    MATCH (o:Output {outputId: inp.previousTxid + ':' + toString(inp.previousOutputIndex)})
+    MATCH (o:Output {outputId: inp.previousOutputId})
     CREATE (i)-[:SPENDS]->(o)
-    SET o.isSpent = true,
-        o.spentInTxid = inp.txid,
-        o.spentAtHeight = inp.blockHeight
 "#;
 
 /// Fast CREATE for HAS_OUTPUT relationships (no existence check)
