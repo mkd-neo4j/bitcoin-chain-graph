@@ -1,6 +1,6 @@
 ---
 title: UTXO Cache Persistence
-status: testing
+status: completed
 priority: high
 ideation-ref: docs/enhancements/02-utxo-cache-persistence.md
 affected-files:

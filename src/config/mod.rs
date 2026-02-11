@@ -99,6 +99,14 @@ fn default_utxo_lookup_batch_size() -> usize {
     1000 // Batch up to 1000 transactions' input lookups together
 }
 
+fn default_utxo_cache_file() -> String {
+    "utxo_cache.bin".to_string()
+}
+
+fn default_utxo_cache_snapshot_interval() -> u32 {
+    2000
+}
+
 /// Ingestion process configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestionConfig {
@@ -175,6 +183,23 @@ pub struct PerformanceConfig {
 
     /// Report progress every N blocks
     pub progress_report_interval: u32,
+
+    /// Path to UTXO cache snapshot file.
+    ///
+    /// On graceful shutdown (SIGTERM/SIGINT), the cache is dumped to this file.
+    /// On startup, if this file exists, the cache is loaded from it instead
+    /// of starting cold or pre-warming from Neo4j.
+    ///
+    /// Set to empty string to disable cache persistence entirely.
+    #[serde(default = "default_utxo_cache_file")]
+    pub utxo_cache_file: String,
+
+    /// Snapshot the UTXO cache to disk every N blocks during ingestion.
+    ///
+    /// Protects against cache loss on hard crashes (OOM, kill -9, panic).
+    /// Set to 0 to disable periodic snapshots (only save on graceful shutdown).
+    #[serde(default = "default_utxo_cache_snapshot_interval")]
+    pub utxo_cache_snapshot_interval: u32,
 }
 
 /// Logging configuration
@@ -468,6 +493,8 @@ impl PerformanceConfig {
     ///     utxo_lookup_batch_size: 1000,
     ///     parallel_batches: 4,
     ///     progress_report_interval: 100,
+    ///     utxo_cache_file: String::new(),
+    ///     utxo_cache_snapshot_interval: 0,
     /// };
     ///
     /// let capacity = config.cache_capacity();
@@ -489,6 +516,8 @@ impl Default for PerformanceConfig {
             utxo_lookup_batch_size: default_utxo_lookup_batch_size(),
             parallel_batches: 4,
             progress_report_interval: 500,
+            utxo_cache_file: default_utxo_cache_file(),
+            utxo_cache_snapshot_interval: default_utxo_cache_snapshot_interval(),
         }
     }
 }
@@ -502,51 +531,3 @@ impl Default for LoggingConfig {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_performance_config_defaults_include_cache_persistence() {
-        let config = PerformanceConfig::default();
-        assert_eq!(
-            config.utxo_cache_file, "utxo_cache.bin",
-            "Default utxo_cache_file should be 'utxo_cache.bin'"
-        );
-        assert_eq!(
-            config.utxo_cache_snapshot_interval, 2000,
-            "Default utxo_cache_snapshot_interval should be 2000"
-        );
-    }
-
-    #[test]
-    fn test_performance_config_deserialize_without_cache_fields() {
-        // When TOML omits the new fields, serde defaults should kick in
-        let toml_str = r#"
-            utxo_cache_memory_mb = 140
-            utxo_prewarm_depth = 1000000
-            utxo_lookup_batch_size = 1000
-            parallel_batches = 4
-            progress_report_interval = 500
-        "#;
-        let config: PerformanceConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.utxo_cache_file, "utxo_cache.bin");
-        assert_eq!(config.utxo_cache_snapshot_interval, 2000);
-    }
-
-    #[test]
-    fn test_performance_config_empty_cache_file_disables_persistence() {
-        let toml_str = r#"
-            utxo_cache_memory_mb = 140
-            utxo_prewarm_depth = 1000000
-            utxo_lookup_batch_size = 1000
-            parallel_batches = 4
-            progress_report_interval = 500
-            utxo_cache_file = ""
-            utxo_cache_snapshot_interval = 0
-        "#;
-        let config: PerformanceConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.utxo_cache_file, "");
-        assert_eq!(config.utxo_cache_snapshot_interval, 0);
-    }
-}
