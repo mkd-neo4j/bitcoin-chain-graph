@@ -10,3 +10,6 @@ mod full_pipeline;
 
 #[path = "integration/checkpoint_resume.rs"]
 mod checkpoint_resume;
+
+#[path = "integration/atomic_batch_transactions.rs"]
+mod atomic_batch_transactions;

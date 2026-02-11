@@ -27,6 +27,15 @@ struct MockStorage {
     benefits_to: Vec<BenefitsToData>,
     checkpoint: Option<CheckpointData>,
     schema_initialized: bool,
+    transaction_commit_count: u32,
+    in_transaction: bool,
+    checkpoint_written_in_txn: bool,
+    /// Configured failures: method_name -> error
+    failures: std::collections::HashMap<String, Option<WriterError>>,
+    /// Transient failures: method_name -> (error, remaining_failures)
+    transient_failures: std::collections::HashMap<String, (WriterError, u32)>,
+    /// Failures after N calls: method_name -> (succeed_count, error)
+    failure_after_n: std::collections::HashMap<String, (u32, u32, WriterError)>,
 }
 
 /// Mock implementation of GraphWriter for testing
@@ -129,6 +138,74 @@ impl MockWriter {
         storage.checkpoint = None;
         storage.schema_initialized = false;
     }
+
+    /// Get the number of committed transactions
+    pub async fn transaction_commit_count(&self) -> u32 {
+        let storage = self.storage.lock().unwrap();
+        storage.transaction_commit_count
+    }
+
+    /// Check if the checkpoint was written inside a transaction
+    pub async fn checkpoint_written_in_transaction(&self) -> bool {
+        let storage = self.storage.lock().unwrap();
+        storage.checkpoint_written_in_txn
+    }
+
+    /// Configure a permanent failure on a specific method
+    pub async fn set_failure_on(&self, method: &str, error: WriterError) {
+        let mut storage = self.storage.lock().unwrap();
+        storage.failures.insert(method.to_string(), Some(error));
+    }
+
+    /// Configure a transient failure that occurs N times then succeeds
+    pub async fn set_transient_failure_on(&self, method: &str, error: WriterError, times: u32) {
+        let mut storage = self.storage.lock().unwrap();
+        storage
+            .transient_failures
+            .insert(method.to_string(), (error, times));
+    }
+
+    /// Configure a failure that triggers after N successful calls
+    pub async fn set_failure_after_n_calls(&self, method: &str, n: u32, error: WriterError) {
+        let mut storage = self.storage.lock().unwrap();
+        storage
+            .failure_after_n
+            .insert(method.to_string(), (n, 0, error));
+    }
+
+    /// Clear all configured failures
+    pub async fn clear_failures(&self) {
+        let mut storage = self.storage.lock().unwrap();
+        storage.failures.clear();
+        storage.transient_failures.clear();
+        storage.failure_after_n.clear();
+    }
+
+    /// Check if a method should fail, and return the error if so
+    fn check_failure(storage: &mut MockStorage, method: &str) -> Option<WriterError> {
+        // Check permanent failures
+        if let Some(Some(err)) = storage.failures.get(method) {
+            return Some(err.clone());
+        }
+
+        // Check transient failures
+        if let Some((err, remaining)) = storage.transient_failures.get_mut(method) {
+            if *remaining > 0 {
+                *remaining -= 1;
+                return Some(err.clone());
+            }
+        }
+
+        // Check failure-after-N-calls
+        if let Some((threshold, count, err)) = storage.failure_after_n.get_mut(method) {
+            *count += 1;
+            if *count > *threshold {
+                return Some(err.clone());
+            }
+        }
+
+        None
+    }
 }
 
 impl Default for MockWriter {
@@ -147,18 +224,27 @@ impl GraphWriter for MockWriter {
 
     async fn write_blocks(&self, blocks: &[BlockData]) -> Result<()> {
         let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "write_blocks") {
+            return Err(err);
+        }
         storage.blocks.extend_from_slice(blocks);
         Ok(())
     }
 
     async fn write_transactions(&self, transactions: &[TransactionData]) -> Result<()> {
         let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "write_transactions") {
+            return Err(err);
+        }
         storage.transactions.extend_from_slice(transactions);
         Ok(())
     }
 
     async fn write_outputs(&self, outputs: &[OutputData]) -> Result<()> {
         let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "write_outputs") {
+            return Err(err);
+        }
         storage.outputs.extend_from_slice(outputs);
         Ok(())
     }
@@ -171,6 +257,9 @@ impl GraphWriter for MockWriter {
 
     async fn write_inputs(&self, inputs: &[InputData]) -> Result<()> {
         let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "write_inputs") {
+            return Err(err);
+        }
         storage.inputs.extend_from_slice(inputs);
 
         // Update spent status on referenced outputs
@@ -198,12 +287,18 @@ impl GraphWriter for MockWriter {
 
     async fn write_performs(&self, performs: &[PerformsData]) -> Result<()> {
         let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "write_performs") {
+            return Err(err);
+        }
         storage.performs.extend_from_slice(performs);
         Ok(())
     }
 
     async fn write_benefits_to(&self, benefits_to: &[BenefitsToData]) -> Result<()> {
         let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "write_benefits_to") {
+            return Err(err);
+        }
         storage.benefits_to.extend_from_slice(benefits_to);
         Ok(())
     }
@@ -271,6 +366,12 @@ impl GraphWriter for MockWriter {
 
     async fn update_checkpoint(&self, checkpoint: &CheckpointData) -> Result<()> {
         let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "update_checkpoint") {
+            return Err(err);
+        }
+        if storage.in_transaction {
+            storage.checkpoint_written_in_txn = true;
+        }
         storage.checkpoint = Some(checkpoint.clone());
         Ok(())
     }
@@ -345,6 +446,75 @@ impl GraphWriter for MockWriter {
     async fn get_max_block_height(&self) -> Result<Option<u32>> {
         let storage = self.storage.lock().unwrap();
         Ok(storage.blocks.iter().map(|b| b.height).max())
+    }
+
+    async fn write_blocks_fast(&self, blocks: &[BlockData]) -> Result<()> {
+        {
+            let mut storage = self.storage.lock().unwrap();
+            if let Some(err) = Self::check_failure(&mut storage, "write_blocks_fast") {
+                return Err(err);
+            }
+        }
+        self.write_blocks(blocks).await
+    }
+
+    async fn write_transactions_fast(&self, transactions: &[TransactionData]) -> Result<()> {
+        {
+            let mut storage = self.storage.lock().unwrap();
+            if let Some(err) = Self::check_failure(&mut storage, "write_transactions_fast") {
+                return Err(err);
+            }
+        }
+        self.write_transactions(transactions).await
+    }
+
+    async fn write_outputs_fast(&self, outputs: &[OutputData]) -> Result<()> {
+        {
+            let mut storage = self.storage.lock().unwrap();
+            if let Some(err) = Self::check_failure(&mut storage, "write_outputs_fast") {
+                return Err(err);
+            }
+        }
+        self.write_outputs(outputs).await
+    }
+
+    async fn write_inputs_fast(&self, inputs: &[InputData]) -> Result<()> {
+        {
+            let mut storage = self.storage.lock().unwrap();
+            if let Some(err) = Self::check_failure(&mut storage, "write_inputs_fast") {
+                return Err(err);
+            }
+        }
+        self.write_inputs(inputs).await
+    }
+
+    async fn begin_transaction(&self) -> Result<()> {
+        let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "begin_transaction") {
+            return Err(err);
+        }
+        storage.in_transaction = true;
+        Ok(())
+    }
+
+    async fn commit_transaction(&self) -> Result<()> {
+        let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "commit_transaction") {
+            storage.in_transaction = false;
+            return Err(err);
+        }
+        storage.in_transaction = false;
+        storage.transaction_commit_count += 1;
+        Ok(())
+    }
+
+    async fn rollback_transaction(&self) -> Result<()> {
+        let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "rollback_transaction") {
+            return Err(err);
+        }
+        storage.in_transaction = false;
+        Ok(())
     }
 
     async fn check_block_complete(&self, height: u32) -> Result<(u32, u32)> {
