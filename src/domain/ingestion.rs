@@ -45,13 +45,13 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 /// Estimated bytes per block node in a Neo4j transaction.
-pub const BYTES_PER_BLOCK: usize = 500;
+pub(crate) const BYTES_PER_BLOCK: usize = 500;
 /// Estimated bytes per transaction node in a Neo4j transaction.
-pub const BYTES_PER_TX: usize = 400;
+pub(crate) const BYTES_PER_TX: usize = 400;
 /// Estimated bytes per output node in a Neo4j transaction.
-pub const BYTES_PER_OUTPUT: usize = 550;
+pub(crate) const BYTES_PER_OUTPUT: usize = 550;
 /// Estimated bytes per input node in a Neo4j transaction.
-pub const BYTES_PER_INPUT: usize = 550;
+pub(crate) const BYTES_PER_INPUT: usize = 550;
 
 /// Estimate the Neo4j transaction memory for a single bitcoin block.
 ///
