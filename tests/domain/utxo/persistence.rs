@@ -444,10 +444,6 @@ fn test_performance_config_defaults_include_cache_persistence() {
         config.utxo_cache_file, "utxo_cache.bin",
         "Default utxo_cache_file should be 'utxo_cache.bin'"
     );
-    assert_eq!(
-        config.utxo_cache_snapshot_interval, 2000,
-        "Default utxo_cache_snapshot_interval should be 2000"
-    );
 }
 
 /// AC8: TOML deserialization without new fields uses serde defaults
@@ -463,7 +459,6 @@ fn test_performance_config_deserialize_without_cache_fields() {
     let config: bitcoin_chain_graph::config::PerformanceConfig =
         toml::from_str(toml_str).unwrap();
     assert_eq!(config.utxo_cache_file, "utxo_cache.bin");
-    assert_eq!(config.utxo_cache_snapshot_interval, 2000);
 }
 
 /// AC12: empty string disables cache persistence
@@ -476,10 +471,8 @@ fn test_performance_config_empty_cache_file_disables_persistence() {
         parallel_batches = 4
         progress_report_interval = 500
         utxo_cache_file = ""
-        utxo_cache_snapshot_interval = 0
     "#;
     let config: bitcoin_chain_graph::config::PerformanceConfig =
         toml::from_str(toml_str).unwrap();
     assert_eq!(config.utxo_cache_file, "");
-    assert_eq!(config.utxo_cache_snapshot_interval, 0);
 }
