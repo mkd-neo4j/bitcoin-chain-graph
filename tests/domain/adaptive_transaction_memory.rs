@@ -431,16 +431,16 @@ async fn test_orchestrator_uses_configured_max_transaction_memory_mb() {
     // --- Orchestrator 2: 1 MB budget ---
     let writer2 = MockWriter::new();
     let orch2 = IngestionOrchestrator::new(writer2.clone(), Network::Bitcoin, 100_000)
-        .with_max_transaction_memory_mb(1);
+        .with_max_transaction_memory_bytes(5000);
     orch2.init_schema().await.unwrap();
 
     orch2.ingest_blocks_batch(&blocks).await.unwrap();
     let commits_1mb = writer2.transaction_commit_count().await;
 
-    // With a 1 MB budget, blocks should be split into more chunks than with 600 MB.
+    // With a 5000 bytes budget, blocks should be split into more chunks than with 600 MB.
     assert!(
         commits_1mb > commits_600mb,
-        "1 MB budget orchestrator should produce more transaction commits ({}) \
+        "5000 bytes budget orchestrator should produce more transaction commits ({}) \
          than 600 MB budget orchestrator ({}). This means the config value is not \
          wired to the orchestrator — max_transaction_memory_mb is hardcoded to 600.",
         commits_1mb,

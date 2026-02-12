@@ -160,8 +160,8 @@ pub struct IngestionOrchestrator<W: GraphWriter> {
     writer: Arc<W>,
     network: Network,
     utxo_cache: UtxoCache,
-    /// Maximum Neo4j transaction memory budget in megabytes
-    max_transaction_memory_mb: usize,
+    /// Maximum Neo4j transaction memory budget in bytes
+    max_transaction_memory_bytes: usize,
     /// Optional path for saving UTXO cache snapshots after each committed batch
     cache_snapshot_path: Mutex<Option<PathBuf>>,
 }
@@ -187,7 +187,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             writer: writer_arc,
             network,
             utxo_cache,
-            max_transaction_memory_mb: 600,
+            max_transaction_memory_bytes: 600 * 1024 * 1024,
             cache_snapshot_path: Mutex::new(None),
         }
     }
@@ -200,7 +200,18 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// # Arguments
     /// * `mb` - Memory budget in megabytes
     pub fn with_max_transaction_memory_mb(mut self, mb: usize) -> Self {
-        self.max_transaction_memory_mb = mb;
+        self.max_transaction_memory_bytes = mb * 1024 * 1024;
+        self
+    }
+
+    /// Set the maximum transaction memory budget in bytes.
+    ///
+    /// This is useful for testing with small budgets that are below 1 MB.
+    ///
+    /// # Arguments
+    /// * `bytes` - Memory budget in bytes
+    pub fn with_max_transaction_memory_bytes(mut self, bytes: usize) -> Self {
+        self.max_transaction_memory_bytes = bytes;
         self
     }
 
@@ -686,8 +697,8 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         blocks: &[(u32, Block, String)],
     ) -> Result<()> {
         let total_blocks = blocks.len();
-        let max_memory_bytes = self.max_transaction_memory_mb * 1024 * 1024;
-        tracing::info!(total_blocks, max_memory_mb = self.max_transaction_memory_mb, "Starting adaptive batch ingestion");
+        let max_memory_bytes = self.max_transaction_memory_bytes;
+        tracing::info!(total_blocks, max_memory_mb = self.max_transaction_memory_bytes / (1024 * 1024), "Starting adaptive batch ingestion");
 
         // Estimate memory for each block
         let block_memories: Vec<usize> = blocks.iter().map(|(_, b, _)| estimate_block_memory(b)).collect();
