@@ -4,7 +4,7 @@
 //! bulk operations, retry logic, and configuration-driven performance tuning.
 
 use async_trait::async_trait;
-use neo4rs::{query, BoltType, ConfigBuilder, Graph};
+use neo4rs::{query, BoltType, ConfigBuilder, Graph, Query, Txn};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,11 +31,16 @@ const CHECKPOINT_INITIAL_HEIGHT: i64 = -999;
 /// Connects to Neo4j database and implements all blockchain ingestion operations
 /// with bulk writes, connection pooling, retry with exponential backoff, and
 /// configurable performance settings.
+///
+/// The `active_txn` field uses `tokio::sync::Mutex` (not `std::sync::Mutex`)
+/// because `Txn::run(&mut self)` is async and the guard must be held across
+/// `.await` points.
 pub struct Neo4jWriter {
     graph: Arc<Graph>,
     batch_size: usize,
     max_retries: usize,
     query_timeout: Duration,
+    active_txn: tokio::sync::Mutex<Option<Txn>>,
 }
 
 impl Neo4jWriter {
@@ -57,6 +62,7 @@ impl Neo4jWriter {
             batch_size: config.write_batch_size,
             max_retries: config.max_retries,
             query_timeout: Duration::from_secs(config.query_timeout_secs),
+            active_txn: tokio::sync::Mutex::new(None),
         };
 
         // Verify the connection is alive
@@ -129,6 +135,10 @@ impl Neo4jWriter {
             return Ok(());
         }
 
+        // Check once whether a transaction is active (safe: only ingestion loop
+        // controls transaction lifecycle via single-threaded begin/commit/rollback)
+        let use_txn = self.active_txn.lock().await.is_some();
+
         let total_batches = items.len().div_ceil(self.batch_size);
 
         for (i, chunk) in items.chunks(self.batch_size).enumerate() {
@@ -147,17 +157,35 @@ impl Neo4jWriter {
 
             let start = std::time::Instant::now();
 
-            self.run_with_retry(
-                operation_name,
-                || {
-                    let q = query(query_str).param(param_name, bolt_data.as_slice());
-                    async { self.graph.run(q).await }
-                },
-                batch_num,
-                total_batches,
-                chunk.len(),
-            )
-            .await?;
+            if use_txn {
+                // Transaction path: no retry, no timeout wrapping
+                let q = query(query_str).param(param_name, bolt_data.as_slice());
+                let mut guard = self.active_txn.lock().await;
+                let txn = guard.as_mut().ok_or_else(|| {
+                    WriterError::TransactionFailed(
+                        "transaction was unexpectedly closed".to_string(),
+                    )
+                })?;
+                txn.run(q).await.map_err(|e| {
+                    WriterError::TransactionFailed(format!(
+                        "{} failed in transaction (batch {}/{}): {}",
+                        operation_name, batch_num, total_batches, e
+                    ))
+                })?;
+            } else {
+                // Auto-commit path: existing run_with_retry with timeout + backoff
+                self.run_with_retry(
+                    operation_name,
+                    || {
+                        let q = query(query_str).param(param_name, bolt_data.as_slice());
+                        async { self.graph.run(q).await }
+                    },
+                    batch_num,
+                    total_batches,
+                    chunk.len(),
+                )
+                .await?;
+            }
 
             tracing::debug!(
                 operation = operation_name,
@@ -241,6 +269,24 @@ impl Neo4jWriter {
                     }
                 }
             }
+        }
+    }
+
+    /// Route a single query through the active transaction or fall back to direct `graph.run()`.
+    ///
+    /// Used by `update_checkpoint` and `mark_output_spent` which execute single queries
+    /// outside of `execute_batched`.
+    async fn run_query_single(&self, q: Query, operation_name: &str) -> Result<()> {
+        let mut guard = self.active_txn.lock().await;
+        if let Some(txn) = guard.as_mut() {
+            txn.run(q).await.map_err(|e| {
+                WriterError::TransactionFailed(format!("{} failed in transaction: {}", operation_name, e))
+            })
+        } else {
+            drop(guard);
+            self.graph.run(q).await.map_err(|e| {
+                WriterError::QueryFailed(format!("{} failed: {}", operation_name, e))
+            })
         }
     }
 
@@ -486,17 +532,11 @@ impl GraphWriter for Neo4jWriter {
         spent_in_txid: &str,
         spent_at_height: u32,
     ) -> Result<()> {
-        self.graph
-            .run(
-                query(queries::MARK_OUTPUT_SPENT_QUERY)
-                    .param("outputId", output_id)
-                    .param("spentInTxid", spent_in_txid)
-                    .param("spentAtHeight", spent_at_height),
-            )
-            .await
-            .map_err(|e| WriterError::QueryFailed(format!("mark_output_spent failed: {}", e)))?;
-
-        Ok(())
+        let q = query(queries::MARK_OUTPUT_SPENT_QUERY)
+            .param("outputId", output_id)
+            .param("spentInTxid", spent_in_txid)
+            .param("spentAtHeight", spent_at_height);
+        self.run_query_single(q, "mark_output_spent").await
     }
 
     async fn create_checkpoint(&self) -> Result<()> {
@@ -516,30 +556,16 @@ impl GraphWriter for Neo4jWriter {
     }
 
     async fn update_checkpoint(&self, checkpoint: &CheckpointData) -> Result<()> {
-        tokio::time::timeout(
-            self.query_timeout,
-            self.graph.run(
-                query(queries::UPDATE_CHECKPOINT_QUERY)
-                    .param("height", checkpoint.last_processed_height)
-                    .param("hash", checkpoint.last_processed_hash.clone())
-                    .param("file", checkpoint.last_processed_file.clone())
-                    .param(
-                        "offset",
-                        checkpoint.last_processed_file_offset.unwrap_or(0) as i64,
-                    )
-                    .param("status", checkpoint.status.clone()),
-            ),
-        )
-        .await
-        .map_err(|_| {
-            WriterError::CheckpointError(format!(
-                "update_checkpoint timed out after {}s",
-                self.query_timeout.as_secs()
-            ))
-        })?
-        .map_err(|e| WriterError::CheckpointError(format!("update_checkpoint failed: {}", e)))?;
-
-        Ok(())
+        let q = query(queries::UPDATE_CHECKPOINT_QUERY)
+            .param("height", checkpoint.last_processed_height)
+            .param("hash", checkpoint.last_processed_hash.clone())
+            .param("file", checkpoint.last_processed_file.clone())
+            .param(
+                "offset",
+                checkpoint.last_processed_file_offset.unwrap_or(0) as i64,
+            )
+            .param("status", checkpoint.status.clone());
+        self.run_query_single(q, "update_checkpoint").await
     }
 
     async fn get_checkpoint(&self) -> Result<Option<CheckpointData>> {
@@ -768,15 +794,37 @@ impl GraphWriter for Neo4jWriter {
     }
 
     async fn begin_transaction(&self) -> Result<()> {
-        todo!("Neo4jWriter::begin_transaction — wrap batch in explicit neo4rs transaction")
+        let mut guard = self.active_txn.lock().await;
+        if guard.is_some() {
+            return Err(WriterError::TransactionFailed(
+                "transaction already active".to_string(),
+            ));
+        }
+        let txn = self.graph.start_txn().await.map_err(|e| {
+            WriterError::TransactionFailed(format!("failed to begin transaction: {}", e))
+        })?;
+        *guard = Some(txn);
+        Ok(())
     }
 
     async fn commit_transaction(&self) -> Result<()> {
-        todo!("Neo4jWriter::commit_transaction — commit explicit neo4rs transaction")
+        let mut guard = self.active_txn.lock().await;
+        let txn = guard.take().ok_or_else(|| {
+            WriterError::TransactionFailed("no active transaction".to_string())
+        })?;
+        txn.commit().await.map_err(|e| {
+            WriterError::TransactionFailed(format!("commit failed: {}", e))
+        })
     }
 
     async fn rollback_transaction(&self) -> Result<()> {
-        todo!("Neo4jWriter::rollback_transaction — rollback explicit neo4rs transaction")
+        let mut guard = self.active_txn.lock().await;
+        let txn = guard.take().ok_or_else(|| {
+            WriterError::TransactionFailed("no active transaction".to_string())
+        })?;
+        txn.rollback().await.map_err(|e| {
+            WriterError::TransactionFailed(format!("rollback failed: {}", e))
+        })
     }
 }
 
