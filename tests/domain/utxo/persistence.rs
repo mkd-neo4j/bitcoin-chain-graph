@@ -4,7 +4,6 @@
 //! utxo-cache-persistence feature doc.
 
 use bitcoin_chain_graph::domain::utxo::{CachedOutput, ScriptTypeTag, UtxoCache, UtxoKey};
-use bitcoin_chain_graph::writer::MockWriter;
 use std::sync::Arc;
 
 /// Helper to create a test key from simple integers
@@ -25,10 +24,9 @@ fn test_output(amount: u64) -> CachedOutput {
 }
 
 /// AC1+AC2: Save cache to file and load it back; all entries restored correctly.
-#[tokio::test]
-async fn test_save_and_load_roundtrip() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer.clone());
+#[test]
+fn test_save_and_load_roundtrip() {
+    let cache = UtxoCache::new(1000);
 
     // Insert entries with varied script types and optional addresses
     let mut keys = Vec::new();
@@ -69,7 +67,7 @@ async fn test_save_and_load_roundtrip() {
     assert_eq!(saved, 50);
 
     // Load into fresh cache
-    let cache2 = UtxoCache::new(1000, writer);
+    let cache2 = UtxoCache::new(1000);
     let loaded = cache2.load_from_file(&path, Some(12345)).unwrap();
     assert_eq!(loaded, 50);
     assert_eq!(cache2.len(), 50);
@@ -79,8 +77,8 @@ async fn test_save_and_load_roundtrip() {
         assert!(cache2.contains(key), "Entry should exist after load");
     }
 
-    // Spot-check a specific entry's amount via async get
-    let entry = cache2.get(&keys[1]).await.unwrap();
+    // Spot-check a specific entry's amount
+    let entry = cache2.get(&keys[1]).unwrap();
     assert_eq!(entry.amount, 2_000_000);
 
     std::fs::remove_dir_all(&dir).ok();
@@ -89,8 +87,7 @@ async fn test_save_and_load_roundtrip() {
 /// AC1: save_to_file returns Ok(entry_count)
 #[test]
 fn test_save_returns_entry_count() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer);
+    let cache = UtxoCache::new(1000);
 
     let dir = std::env::temp_dir().join("utxo_persist_count");
     std::fs::create_dir_all(&dir).unwrap();
@@ -113,8 +110,7 @@ fn test_save_returns_entry_count() {
 /// AC3: load_from_file with nonexistent path returns Ok(0)
 #[test]
 fn test_load_file_not_found_returns_zero() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer);
+    let cache = UtxoCache::new(1000);
 
     let path = std::env::temp_dir().join("utxo_persist_nonexistent.bin");
     std::fs::remove_file(&path).ok();
@@ -127,8 +123,7 @@ fn test_load_file_not_found_returns_zero() {
 /// AC4: corrupted CRC returns Err(InvalidData) with CRC info, cache stays empty
 #[test]
 fn test_load_corrupted_crc_returns_error() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer.clone());
+    let cache = UtxoCache::new(1000);
     cache.insert(test_key(1, 0), test_output(5_000_000));
 
     let dir = std::env::temp_dir().join("utxo_persist_crc");
@@ -144,7 +139,7 @@ fn test_load_corrupted_crc_returns_error() {
     }
     std::fs::write(&path, &data).unwrap();
 
-    let cache2 = UtxoCache::new(1000, writer);
+    let cache2 = UtxoCache::new(1000);
     let result = cache2.load_from_file(&path, Some(100));
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -173,8 +168,7 @@ fn test_load_invalid_magic_returns_error() {
     data[0..4].copy_from_slice(b"NOPE");
     std::fs::write(&path, &data).unwrap();
 
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer);
+    let cache = UtxoCache::new(1000);
     let result = cache.load_from_file(&path, None);
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -191,8 +185,7 @@ fn test_load_invalid_magic_returns_error() {
 /// AC6: height mismatch warns but still loads successfully
 #[test]
 fn test_load_stale_cache_height_mismatch_still_loads() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer.clone());
+    let cache = UtxoCache::new(1000);
     cache.insert(test_key(1, 0), test_output(100));
 
     let dir = std::env::temp_dir().join("utxo_persist_stale");
@@ -202,7 +195,7 @@ fn test_load_stale_cache_height_mismatch_still_loads() {
     cache.save_to_file(&path, 100).unwrap();
 
     // Load with different checkpoint height — should still succeed
-    let cache2 = UtxoCache::new(1000, writer);
+    let cache2 = UtxoCache::new(1000);
     let loaded = cache2.load_from_file(&path, Some(200)).unwrap();
     assert_eq!(loaded, 1);
     assert_eq!(cache2.len(), 1);
@@ -213,8 +206,7 @@ fn test_load_stale_cache_height_mismatch_still_loads() {
 /// AC7: save writes to .tmp first, then renames atomically
 #[test]
 fn test_save_uses_atomic_rename() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer);
+    let cache = UtxoCache::new(1000);
     cache.insert(test_key(1, 0), test_output(100));
 
     let dir = std::env::temp_dir().join("utxo_persist_atomic");
@@ -236,8 +228,7 @@ fn test_save_uses_atomic_rename() {
 /// AC1: 24-byte header with magic "UTXO", version 1, entry count, height, CRC32
 #[test]
 fn test_save_header_format() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer);
+    let cache = UtxoCache::new(1000);
 
     for i in 0..5u8 {
         cache.insert(test_key(i, 0), test_output(100));
@@ -280,8 +271,7 @@ fn test_save_header_format() {
 /// Edge: truncated file (filesystem corruption) fails gracefully
 #[test]
 fn test_load_truncated_file_returns_error() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer.clone());
+    let cache = UtxoCache::new(1000);
     cache.insert(test_key(1, 0), test_output(100));
 
     let dir = std::env::temp_dir().join("utxo_persist_truncated");
@@ -294,7 +284,7 @@ fn test_load_truncated_file_returns_error() {
     let data = std::fs::read(&path).unwrap();
     std::fs::write(&path, &data[..28]).unwrap();
 
-    let cache2 = UtxoCache::new(1000, writer);
+    let cache2 = UtxoCache::new(1000);
     let result = cache2.load_from_file(&path, None);
     assert!(result.is_err(), "Truncated file should fail");
     assert!(cache2.is_empty(), "Cache should remain empty");
@@ -305,8 +295,7 @@ fn test_load_truncated_file_returns_error() {
 /// Edge: reduced capacity between save and load — entries evicted by LRU
 #[test]
 fn test_load_with_reduced_capacity_evicts_lru() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer.clone());
+    let cache = UtxoCache::new(1000);
 
     for i in 0..100u8 {
         let mut txid = [0u8; 32];
@@ -320,7 +309,7 @@ fn test_load_with_reduced_capacity_evicts_lru() {
 
     cache.save_to_file(&path, 0).unwrap();
 
-    let small_cache = UtxoCache::new(32, writer);
+    let small_cache = UtxoCache::new(32);
     let loaded = small_cache.load_from_file(&path, None).unwrap();
     assert_eq!(loaded, 100, "Should report all entries were loaded");
     assert!(
@@ -334,8 +323,7 @@ fn test_load_with_reduced_capacity_evicts_lru() {
 /// AC2: load uses direct shard.put(), does not inflate stats counters
 #[test]
 fn test_load_does_not_inflate_stats() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer.clone());
+    let cache = UtxoCache::new(1000);
 
     for i in 0..10u8 {
         cache.insert(test_key(i, 0), test_output(100));
@@ -346,7 +334,7 @@ fn test_load_does_not_inflate_stats() {
     let path = dir.join("cache.bin");
     cache.save_to_file(&path, 0).unwrap();
 
-    let cache2 = UtxoCache::new(1000, writer);
+    let cache2 = UtxoCache::new(1000);
     cache2.load_from_file(&path, None).unwrap();
 
     let stats = cache2.stats();
@@ -362,10 +350,9 @@ fn test_load_does_not_inflate_stats() {
 }
 
 /// Edge: entries with address = None roundtrip correctly
-#[tokio::test]
-async fn test_save_load_with_no_address_entries() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer.clone());
+#[test]
+fn test_save_load_with_no_address_entries() {
+    let cache = UtxoCache::new(1000);
 
     for i in 0..10u8 {
         cache.insert(
@@ -385,11 +372,11 @@ async fn test_save_load_with_no_address_entries() {
 
     cache.save_to_file(&path, 0).unwrap();
 
-    let cache2 = UtxoCache::new(1000, writer);
+    let cache2 = UtxoCache::new(1000);
     let loaded = cache2.load_from_file(&path, None).unwrap();
     assert_eq!(loaded, 10);
 
-    let entry = cache2.get(&test_key(0, 0)).await.unwrap();
+    let entry = cache2.get(&test_key(0, 0)).unwrap();
     assert!(
         entry.address.is_none(),
         "Address should be None after roundtrip"
@@ -399,10 +386,9 @@ async fn test_save_load_with_no_address_entries() {
 }
 
 /// Edge: long bech32m address (~90 bytes) roundtrips via u16 length prefix
-#[tokio::test]
-async fn test_save_load_with_long_address() {
-    let writer = Arc::new(MockWriter::new());
-    let cache = UtxoCache::new(1000, writer.clone());
+#[test]
+fn test_save_load_with_long_address() {
+    let cache = UtxoCache::new(1000);
 
     let long_addr = "bc1p".to_string() + &"q".repeat(86);
     cache.insert(
@@ -421,10 +407,10 @@ async fn test_save_load_with_long_address() {
 
     cache.save_to_file(&path, 0).unwrap();
 
-    let cache2 = UtxoCache::new(1000, writer);
+    let cache2 = UtxoCache::new(1000);
     cache2.load_from_file(&path, None).unwrap();
 
-    let entry = cache2.get(&test_key(1, 0)).await.unwrap();
+    let entry = cache2.get(&test_key(1, 0)).unwrap();
     assert_eq!(
         entry.address.as_deref(),
         Some(long_addr.as_str()),

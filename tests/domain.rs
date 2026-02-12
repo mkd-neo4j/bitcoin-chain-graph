@@ -11,5 +11,6 @@ mod ingestion;
 #[path = "domain/utxo"]
 mod utxo {
     mod cache;
+    mod no_neo4j_fallback;
     mod persistence;
 }

@@ -79,7 +79,7 @@ const BIP30_DUPLICATE_HEIGHTS: [u32; 2] = [91842, 91880];
 pub struct IngestionOrchestrator<W: GraphWriter> {
     writer: Arc<W>,
     network: Network,
-    utxo_cache: UtxoCache<W>,
+    utxo_cache: UtxoCache,
 }
 
 impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
@@ -97,7 +97,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// - Ultra performance (128GB RAM): 10,000,000 entries (~720MB)
     pub fn new(writer: W, network: Network, cache_size: usize) -> Self {
         let writer_arc = Arc::new(writer);
-        let utxo_cache = UtxoCache::new(cache_size, Arc::clone(&writer_arc));
+        let utxo_cache = UtxoCache::new(cache_size);
 
         Self {
             writer: writer_arc,
@@ -195,7 +195,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     /// loader.prewarm_cache(orchestrator.get_cache(), start_height, 50).await?;
     /// cache.disable_prewarm_mode();
     /// ```
-    pub fn get_cache(&self) -> &UtxoCache<W> {
+    pub fn get_cache(&self) -> &UtxoCache {
         &self.utxo_cache
     }
 
@@ -784,11 +784,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 }
             }
 
-            // Phase 3b: Single batched lookup for ALL input keys (1 Neo4j query for all cache misses)
+            // Phase 3b: Single batched lookup for ALL input keys from cache
             let all_outputs = self
                 .utxo_cache
-                .get_many_with_fallback(&all_input_keys)
-                .await?;
+                .get_many_or_fail(&all_input_keys)?;
 
             tracing::debug!(
                 total_keys = all_input_keys.len(),
@@ -1115,11 +1114,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             tx_key_ranges.push(start..all_input_keys.len());
         }
 
-        // Phase 3b: Single batched lookup for ALL input keys (1 Neo4j query for all cache misses)
+        // Phase 3b: Single batched lookup for ALL input keys from cache
         let all_outputs = self
             .utxo_cache
-            .get_many_with_fallback(&all_input_keys)
-            .await?;
+            .get_many_or_fail(&all_input_keys)?;
 
         // Phase 3c: Process each transaction using pre-fetched outputs
         let mut transactions: Vec<TransactionData> = Vec::with_capacity(block.txdata.len());

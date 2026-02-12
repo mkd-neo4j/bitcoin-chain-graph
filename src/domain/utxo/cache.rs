@@ -1,7 +1,8 @@
 //! Enterprise-grade UTXO Cache Implementation
 //!
 //! Sharded LRU cache with compact binary keys, lock-free statistics,
-//! and batch operations. Provides Neo4j fallback on cache misses.
+//! and batch operations. Cache misses are treated as hard errors since
+//! the cache is persisted to disk and restored on startup.
 //!
 //! # Performance Characteristics
 //!
@@ -11,7 +12,7 @@
 //! - **Statistics**: Lock-free atomic counters
 //! - **Batch ops**: `get_many`/`remove_many` acquire each shard lock once
 
-use crate::writer::{GraphWriter, Result};
+use crate::writer::WriterError;
 use bitcoin::hashes::Hash;
 use lru::LruCache;
 use std::collections::HashMap;
@@ -285,7 +286,11 @@ impl UtxoCacheStats {
 /// contention by ~16x compared to a single mutex.
 const NUM_SHARDS: usize = 16;
 
-/// Enterprise-grade sharded UTXO cache with LRU eviction and Neo4j fallback.
+/// Enterprise-grade sharded UTXO cache with LRU eviction.
+///
+/// Cache is persisted to disk and restored on startup. Cache misses are
+/// treated as hard errors — all required UTXOs must be in cache before
+/// transaction amount calculation.
 ///
 /// # Architecture
 ///
@@ -301,10 +306,6 @@ const NUM_SHARDS: usize = 16;
 /// │  ┌──┴────────┴────────────┴──┐           │
 /// │  │  AtomicUtxoCacheStats     │  (no lock)│
 /// │  └───────────────────────────┘           │
-/// │                                          │
-/// │  ┌───────────────────────────┐           │
-/// │  │  Neo4j fallback (writer)  │           │
-/// │  └───────────────────────────┘           │
 /// └─────────────────────────────────────────┘
 /// ```
 ///
@@ -319,18 +320,16 @@ const NUM_SHARDS: usize = 16;
 /// - 100,000 entries ≈ 7 MB
 /// - 1,000,000 entries ≈ 72 MB
 /// - 10,000,000 entries ≈ 720 MB
-pub struct UtxoCache<W: GraphWriter> {
+pub struct UtxoCache {
     /// Sharded LRU caches — each shard is independently locked
     shards: Vec<Mutex<LruCache<UtxoKey, CachedOutput>>>,
-    /// GraphWriter for Neo4j fallback on cache miss
-    writer: Arc<W>,
     /// Lock-free cache statistics
     stats: AtomicUtxoCacheStats,
     /// Pre-warming mode flag (prevents eviction during backward loading)
     prewarm_mode: AtomicBool,
 }
 
-impl<W: GraphWriter> UtxoCache<W> {
+impl UtxoCache {
     /// Create a new sharded UTXO cache with specified total capacity.
     ///
     /// Capacity is divided evenly across 16 shards. Each shard uses
@@ -339,12 +338,11 @@ impl<W: GraphWriter> UtxoCache<W> {
     /// # Arguments
     ///
     /// * `capacity` - Total maximum number of outputs across all shards
-    /// * `writer` - GraphWriter implementation for Neo4j fallback
     ///
     /// # Panics
     ///
     /// Panics if capacity is 0 or less than `NUM_SHARDS`
-    pub fn new(capacity: usize, writer: Arc<W>) -> Self {
+    pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0, "UTXO cache capacity must be > 0");
 
         let per_shard = std::cmp::max(1, capacity / NUM_SHARDS);
@@ -354,7 +352,6 @@ impl<W: GraphWriter> UtxoCache<W> {
 
         Self {
             shards,
-            writer,
             stats: AtomicUtxoCacheStats::new(),
             prewarm_mode: AtomicBool::new(false),
         }
@@ -390,48 +387,26 @@ impl<W: GraphWriter> UtxoCache<W> {
         self.stats.record_insert();
     }
 
-    /// Lookup output by key (cache-first, then Neo4j fallback).
+    /// Lookup output by key.
     ///
     /// On cache hit, returns a clone of the cached output (cheap — only
     /// bumps `Arc<str>` refcount for the address field).
     ///
-    /// On cache miss, queries Neo4j via `writer.lookup_output()`, inserts
-    /// the result into cache for future hits, and returns it.
-    pub async fn get(&self, key: &UtxoKey) -> Result<CachedOutput> {
-        // Try cache first
-        {
-            let idx = Self::shard_index(key);
-            let mut shard = self.shards[idx].lock().expect("UTXO shard mutex poisoned");
-            if let Some(output) = shard.get(key) {
-                self.stats.record_hit();
-                return Ok(output.clone());
-            }
+    /// On cache miss, returns an error. The cache is persisted to disk
+    /// and restored on startup, so all required UTXOs should be present.
+    pub fn get(&self, key: &UtxoKey) -> Result<CachedOutput, WriterError> {
+        let idx = Self::shard_index(key);
+        let mut shard = self.shards[idx].lock().expect("UTXO shard mutex poisoned");
+        if let Some(output) = shard.get(key) {
+            self.stats.record_hit();
+            return Ok(output.clone());
         }
 
-        // Cache miss — query Neo4j
         self.stats.record_miss();
-        let output = self.fetch_from_neo4j(key).await?;
-
-        // Insert into cache for future lookups
-        self.insert(*key, output.clone());
-
-        Ok(output)
-    }
-
-    /// Fetch output from Neo4j (fallback for cache misses).
-    async fn fetch_from_neo4j(&self, key: &UtxoKey) -> Result<CachedOutput> {
-        let output_id_str = key.to_output_id_string();
-        let output_data = self.writer.lookup_output(&output_id_str).await?;
-
-        Ok(CachedOutput {
-            output_index: output_data.output_index,
-            amount: output_data.amount,
-            script_type: output_data
-                .script_type
-                .parse()
-                .unwrap_or(ScriptTypeTag::Unknown),
-            address: output_data.address.map(|a| Arc::from(a.as_str())),
-        })
+        Err(WriterError::QueryFailed(format!(
+            "UTXO cache miss for {} — cache is persisted, this should not happen",
+            key.to_output_id_string()
+        )))
     }
 
     /// Remove output from cache (mark as spent).
@@ -486,57 +461,33 @@ impl<W: GraphWriter> UtxoCache<W> {
         (found, misses)
     }
 
-    /// Batch get with Neo4j fallback: get many keys, then batch-lookup misses in Neo4j.
+    /// Batch get all keys from cache. Returns error if any keys are missing.
     ///
-    /// Combines `get_many()` (cache hits) with `lookup_outputs_batch()` (Neo4j fallback
-    /// for misses). Returns all found outputs keyed by UtxoKey. Reduces N Neo4j
-    /// round-trips to 1 UNWIND query for all cache misses.
+    /// Since the cache is persisted to disk and restored on startup, all
+    /// required UTXOs should be present. Missing UTXOs indicate a bug
+    /// in cache population or persistence.
     ///
     /// # Errors
-    /// Returns an error if any requested UTXOs cannot be found in cache or Neo4j.
+    /// Returns an error if any requested UTXOs are not in cache.
     /// Missing UTXOs would produce incorrect amount/fee calculations, so this is
     /// treated as a hard failure rather than silently producing wrong data.
-    pub async fn get_many_with_fallback(
+    pub fn get_many_or_fail(
         &self,
         keys: &[UtxoKey],
-    ) -> Result<HashMap<UtxoKey, CachedOutput>> {
-        let (mut found, misses) = self.get_many(keys);
+    ) -> Result<HashMap<UtxoKey, CachedOutput>, WriterError> {
+        let (found, misses) = self.get_many(keys);
 
         if !misses.is_empty() {
-            // Convert missed keys to output_id strings for Neo4j batch lookup
-            let output_ids: Vec<String> = misses.iter().map(|k| k.to_output_id_string()).collect();
-
-            let fallback_outputs = self.writer.lookup_outputs_batch(&output_ids).await?;
-
-            // Convert OutputData back to CachedOutput and add to results
-            for output in &fallback_outputs {
-                if let Some(key) = UtxoKey::from_hex_txid(&output.txid, output.output_index) {
-                    let cached = CachedOutput {
-                        output_index: output.output_index,
-                        amount: output.amount,
-                        script_type: output.script_type.parse().unwrap_or(ScriptTypeTag::Unknown),
-                        address: output.address.as_deref().map(Arc::from),
-                    };
-                    // Also insert into cache for future lookups
-                    self.insert(key, cached.clone());
-                    found.insert(key, cached);
-                }
-            }
-        }
-
-        if found.len() < keys.len() {
-            let missing_count = keys.len() - found.len();
-            let missing_ids: Vec<String> = keys
+            let missing_ids: Vec<String> = misses
                 .iter()
-                .filter(|k| !found.contains_key(k))
                 .take(5)
                 .map(|k| k.to_output_id_string())
                 .collect();
-            return Err(crate::writer::WriterError::QueryFailed(format!(
-                "Missing {} of {} UTXOs (not in cache or Neo4j). \
-                 Amount/fee calculations would be incorrect. \
+            return Err(WriterError::QueryFailed(format!(
+                "Missing {} of {} UTXOs in cache. \
+                 Cache is persisted — this indicates a bug in cache population. \
                  Sample missing IDs: {:?}",
-                missing_count,
+                misses.len(),
                 keys.len(),
                 missing_ids,
             )));
@@ -711,7 +662,7 @@ const CACHE_FILE_MAGIC: &[u8; 4] = b"UTXO";
 /// Current cache file format version.
 const CACHE_FILE_VERSION: u32 = 1;
 
-impl<W: GraphWriter> UtxoCache<W> {
+impl UtxoCache {
     /// Save entire cache contents to a binary file (atomic via temp + rename).
     ///
     /// Iterates all shards and writes every entry. The file can be loaded
@@ -1006,11 +957,11 @@ impl<W: GraphWriter> UtxoCache<W> {
     }
 }
 
-impl<W: GraphWriter> Clone for UtxoCache<W> {
+impl Clone for UtxoCache {
     fn clone(&self) -> Self {
         // Clone shares the same shards, writer, and stats via Arc
         // This is safe because all fields are already Arc-wrapped or atomic
-        panic!("UtxoCache should be shared via reference, not cloned. Use Arc<UtxoCache<W>> or pass by reference.");
+        panic!("UtxoCache should be shared via reference, not cloned. Use Arc<UtxoCache> or pass by reference.");
     }
 }
 
@@ -1024,7 +975,7 @@ impl<W: GraphWriter> Clone for UtxoCache<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::writer::{MockWriter, WriterError};
+    use crate::writer::WriterError;
 
     /// Helper to create a test key from simple integers
     fn test_key(tx_id: u8, vout: u32) -> UtxoKey {
@@ -1045,8 +996,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_cache() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(100, writer);
+        let cache = UtxoCache::new(100);
 
         assert!(cache.capacity() >= 96); // 100/16 * 16 = 96 (rounding)
         assert_eq!(cache.len(), 0);
@@ -1055,8 +1005,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_insert_and_get() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(100, writer);
+        let cache = UtxoCache::new(100);
 
         let key = test_key(1, 0);
         let output = CachedOutput {
@@ -1069,21 +1018,20 @@ mod tests {
         cache.insert(key, output);
         assert_eq!(cache.len(), 1);
 
-        let retrieved = cache.get(&key).await.unwrap();
+        let retrieved = cache.get(&key).unwrap();
         assert_eq!(retrieved.amount, 5_000_000_000);
         assert_eq!(retrieved.script_type, ScriptTypeTag::P2PKH);
     }
 
     #[tokio::test]
     async fn test_cache_hit_stats() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(100, writer);
+        let cache = UtxoCache::new(100);
 
         let key = test_key(1, 0);
         cache.insert(key, test_output(5_000_000_000));
 
         // Cache hit
-        cache.get(&key).await.unwrap();
+        cache.get(&key).unwrap();
 
         let stats = cache.stats();
         assert_eq!(stats.hits, 1);
@@ -1094,8 +1042,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(100, writer);
+        let cache = UtxoCache::new(100);
 
         let key = test_key(1, 0);
         cache.insert(key, test_output(5_000_000_000));
@@ -1111,9 +1058,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_lru_eviction() {
-        let writer = Arc::new(MockWriter::new());
         // Small capacity — all keys must hash to same shard for deterministic test
-        let cache = UtxoCache::new(32, writer); // 2 per shard
+        let cache = UtxoCache::new(32); // 2 per shard
 
         // Keys that hash to the same shard (same last byte, different vout)
         let key1 = test_key(0, 0);
@@ -1129,45 +1075,24 @@ mod tests {
         cache.insert(key2, test_output(200));
 
         // Access key1 to make it more recently used
-        cache.get(&key1).await.unwrap();
+        cache.get(&key1).unwrap();
 
         // Insert key3 — should evict key2 (least recently used in shard 0)
         cache.insert(key3, test_output(300));
 
         // key1 and key3 should be in cache
-        assert!(cache.get(&key1).await.is_ok());
-        assert!(cache.get(&key3).await.is_ok());
+        assert!(cache.get(&key1).is_ok());
+        assert!(cache.get(&key3).is_ok());
     }
 
-    #[tokio::test]
-    async fn test_cache_miss_neo4j_fallback() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(100, Arc::clone(&writer));
+    #[test]
+    fn test_cache_miss_returns_error() {
+        let cache = UtxoCache::new(100);
 
-        // Write output to MockWriter (simulating Neo4j)
-        let output_data = crate::domain::OutputData {
-            output_id: "fallback_tx:5".to_string(),
-            output_index: 5,
-            txid: "fallback_tx".to_string(),
-            amount: 12345678,
-            script_pubkey: "76a914...88ac".to_string(),
-            script_type: "P2PKH".to_string(),
-            address: Some("1FallbackAddress".to_string()),
-        };
-        writer.write_outputs(&[output_data]).await.unwrap();
-
-        // Construct key matching the output_id "fallback_tx:5"
-        // For MockWriter lookup, we need the string form to match
-        let _key = UtxoKey::from_hex_txid("fallback_tx", 5);
-        // MockWriter uses string-based lookup, so we need the key that
-        // produces "fallback_tx:5" via to_output_id_string().
-        // Since "fallback_tx" is not a valid hex txid, we test via direct
-        // string-based MockWriter. Let's test the stats path instead.
-
-        // Test stats tracking on miss
+        // Cache miss should return an error (no Neo4j fallback)
         let key = test_key(99, 0);
-        let result = cache.get(&key).await;
-        assert!(result.is_err()); // Not in cache or MockWriter
+        let result = cache.get(&key);
+        assert!(result.is_err());
 
         let stats = cache.stats();
         assert_eq!(stats.misses, 1);
@@ -1176,8 +1101,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_statistics_comprehensive() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(100, writer);
+        let cache = UtxoCache::new(100);
 
         // Initial stats should be zero
         let stats = cache.stats();
@@ -1196,11 +1120,11 @@ mod tests {
         assert_eq!(stats.inserts, 3);
 
         // 2 cache hits
-        cache.get(&test_key(0, 0)).await.unwrap();
-        cache.get(&test_key(1, 0)).await.unwrap();
+        cache.get(&test_key(0, 0)).unwrap();
+        cache.get(&test_key(1, 0)).unwrap();
 
         // 1 cache miss
-        let _ = cache.get(&test_key(99, 0)).await;
+        let _ = cache.get(&test_key(99, 0));
 
         // Remove 1 output
         assert!(cache.remove(&test_key(2, 0)));
@@ -1217,16 +1141,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_miss_output_not_found() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(100, writer);
+        let cache = UtxoCache::new(100);
 
         let key = test_key(99, 99);
-        let result = cache.get(&key).await;
+        let result = cache.get(&key);
 
         assert!(result.is_err());
         match result {
-            Err(WriterError::OutputNotFound(_)) => {} // expected
-            _ => panic!("Expected OutputNotFound error"),
+            Err(WriterError::QueryFailed(_)) => {} // expected — cache miss is now a hard error
+            _ => panic!("Expected QueryFailed error for cache miss"),
         }
 
         let stats = cache.stats();
@@ -1237,8 +1160,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_large_transaction_many_inputs() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer);
+        let cache = UtxoCache::new(1000);
 
         // Insert 150 outputs
         for i in 0..150u8 {
@@ -1250,7 +1172,7 @@ mod tests {
         let mut total_amount = 0u64;
 
         for i in 0..150u8 {
-            let output = cache.get(&test_key(i, 0)).await.unwrap();
+            let output = cache.get(&test_key(i, 0)).unwrap();
             total_amount += output.amount;
         }
 
@@ -1267,8 +1189,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_cache_access() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = Arc::new(UtxoCache::new(1000, writer));
+        let cache = Arc::new(UtxoCache::new(1000));
 
         // Pre-populate cache with 100 outputs
         for i in 0..100u8 {
@@ -1292,7 +1213,7 @@ mod tests {
                 let mut sum = 0u64;
                 for i in 0..50u8 {
                     let idx = ((task_id as usize * 5 + i as usize) % 100) as u8;
-                    if let Ok(output) = cache_clone.get(&test_key(idx, 0)).await {
+                    if let Ok(output) = cache_clone.get(&test_key(idx, 0)) {
                         sum += output.amount;
                     }
                 }
@@ -1315,9 +1236,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_eviction_under_pressure() {
-        let writer = Arc::new(MockWriter::new());
         let cache_size = 1000;
-        let cache = UtxoCache::new(cache_size, writer);
+        let cache = UtxoCache::new(cache_size);
 
         // Insert 5000 outputs (5x cache capacity) to force evictions
         for i in 0..5000u32 {
@@ -1335,8 +1255,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prewarm_mode_basic() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(160, writer); // 10 per shard
+        let cache = UtxoCache::new(160); // 10 per shard
 
         cache.enable_prewarm_mode();
 
@@ -1362,14 +1281,13 @@ mod tests {
         // Normal insert should work (with eviction)
         let key = test_key(255, 0);
         cache.insert(key, test_output(11_000_000));
-        assert!(cache.get(&key).await.is_ok());
+        assert!(cache.get(&key).is_ok());
     }
 
     #[tokio::test]
     async fn test_fill_percentage_tracking() {
-        let writer = Arc::new(MockWriter::new());
         // Use large capacity so per-shard rounding doesn't dominate
-        let cache = UtxoCache::new(16_000, writer); // 1000 per shard
+        let cache = UtxoCache::new(16_000); // 1000 per shard
 
         assert_eq!(cache.fill_percentage(), 0.0);
         assert!(cache.has_capacity());
@@ -1399,8 +1317,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_get_many() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer);
+        let cache = UtxoCache::new(1000);
 
         // Insert 50 outputs
         let keys: Vec<UtxoKey> = (0..50u8)
@@ -1429,8 +1346,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_remove_many() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer);
+        let cache = UtxoCache::new(1000);
 
         let keys: Vec<UtxoKey> = (0..50u8)
             .map(|i| {
@@ -1452,8 +1368,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_contains_without_promotion() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(100, writer);
+        let cache = UtxoCache::new(100);
 
         let key = test_key(1, 0);
         assert!(!cache.contains(&key));
@@ -1499,8 +1414,7 @@ mod tests {
 
     #[test]
     fn test_save_and_load_roundtrip() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer.clone());
+        let cache = UtxoCache::new(1000);
 
         // Insert entries with varied data
         let entries: Vec<(UtxoKey, CachedOutput)> = (0..50u8)
@@ -1542,14 +1456,14 @@ mod tests {
         assert_eq!(saved, 50);
 
         // Load into fresh cache
-        let cache2 = UtxoCache::new(1000, writer);
+        let cache2 = UtxoCache::new(1000);
         let loaded = cache2.load_from_file(&path, Some(12345)).unwrap();
         assert_eq!(loaded, 50);
         assert_eq!(cache2.len(), 50);
 
         // Verify all entries match
         for (key, expected) in &entries {
-            let idx = UtxoCache::<MockWriter>::shard_index(key);
+            let idx = UtxoCache::shard_index(key);
             let shard = cache2.shards[idx].lock().unwrap();
             let actual = shard.peek(key).expect("entry should exist after load");
             assert_eq!(actual.output_index, expected.output_index);
@@ -1567,8 +1481,7 @@ mod tests {
 
     #[test]
     fn test_save_returns_entry_count() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer);
+        let cache = UtxoCache::new(1000);
 
         // Empty cache
         let dir = std::env::temp_dir().join("utxo_cache_test_count");
@@ -1590,8 +1503,7 @@ mod tests {
 
     #[test]
     fn test_load_file_not_found_returns_zero() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer);
+        let cache = UtxoCache::new(1000);
 
         let path = std::env::temp_dir().join("utxo_cache_nonexistent_file.bin");
         // Ensure it doesn't exist
@@ -1604,8 +1516,7 @@ mod tests {
 
     #[test]
     fn test_load_corrupted_crc_returns_error() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer.clone());
+        let cache = UtxoCache::new(1000);
 
         cache.insert(test_key(1, 0), test_output(5_000_000));
 
@@ -1623,7 +1534,7 @@ mod tests {
         std::fs::write(&path, &data).unwrap();
 
         // Load should fail with InvalidData
-        let cache2 = UtxoCache::new(1000, writer);
+        let cache2 = UtxoCache::new(1000);
         let result = cache2.load_from_file(&path, Some(100));
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1647,8 +1558,7 @@ mod tests {
         data[0..4].copy_from_slice(b"NOPE"); // wrong magic
         std::fs::write(&path, &data).unwrap();
 
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer);
+        let cache = UtxoCache::new(1000);
         let result = cache.load_from_file(&path, None);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1660,8 +1570,7 @@ mod tests {
 
     #[test]
     fn test_load_stale_cache_height_mismatch_still_loads() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer.clone());
+        let cache = UtxoCache::new(1000);
 
         cache.insert(test_key(1, 0), test_output(100));
 
@@ -1673,7 +1582,7 @@ mod tests {
         cache.save_to_file(&path, 100).unwrap();
 
         // Load with different checkpoint height (200) — should still succeed
-        let cache2 = UtxoCache::new(1000, writer);
+        let cache2 = UtxoCache::new(1000);
         let loaded = cache2.load_from_file(&path, Some(200)).unwrap();
         assert_eq!(loaded, 1);
         assert_eq!(cache2.len(), 1);
@@ -1683,8 +1592,7 @@ mod tests {
 
     #[test]
     fn test_save_uses_atomic_rename() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer);
+        let cache = UtxoCache::new(1000);
         cache.insert(test_key(1, 0), test_output(100));
 
         let dir = std::env::temp_dir().join("utxo_cache_test_atomic");
@@ -1704,8 +1612,7 @@ mod tests {
 
     #[test]
     fn test_save_header_format() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer);
+        let cache = UtxoCache::new(1000);
 
         for i in 0..5u8 {
             cache.insert(test_key(i, 0), test_output(100));
@@ -1737,8 +1644,7 @@ mod tests {
 
     #[test]
     fn test_load_truncated_file_returns_error() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer.clone());
+        let cache = UtxoCache::new(1000);
         cache.insert(test_key(1, 0), test_output(100));
 
         let dir = std::env::temp_dir().join("utxo_cache_test_truncated");
@@ -1751,7 +1657,7 @@ mod tests {
         let data = std::fs::read(&path).unwrap();
         std::fs::write(&path, &data[..28]).unwrap(); // 24-byte header + 4 bytes
 
-        let cache2 = UtxoCache::new(1000, writer);
+        let cache2 = UtxoCache::new(1000);
         let result = cache2.load_from_file(&path, None);
         assert!(result.is_err());
         // Should be UnexpectedEof from read_exact
@@ -1762,8 +1668,7 @@ mod tests {
 
     #[test]
     fn test_load_with_reduced_capacity_evicts_lru() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer.clone());
+        let cache = UtxoCache::new(1000);
 
         // Insert 100 entries (only set txid[31] so shard_index = i%16 spreads across shards)
         for i in 0..100u8 {
@@ -1779,7 +1684,7 @@ mod tests {
         cache.save_to_file(&path, 0).unwrap();
 
         // Load into a cache with much smaller capacity
-        let small_cache = UtxoCache::new(32, writer); // 2 per shard
+        let small_cache = UtxoCache::new(32); // 2 per shard
         let loaded = small_cache.load_from_file(&path, None).unwrap();
         // Should load all 100 but only keep up to capacity (32)
         assert_eq!(loaded, 100);
@@ -1790,8 +1695,7 @@ mod tests {
 
     #[test]
     fn test_load_does_not_inflate_stats() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer.clone());
+        let cache = UtxoCache::new(1000);
 
         for i in 0..10u8 {
             cache.insert(test_key(i, 0), test_output(100));
@@ -1803,7 +1707,7 @@ mod tests {
         cache.save_to_file(&path, 0).unwrap();
 
         // Load into fresh cache — stats should remain zero
-        let cache2 = UtxoCache::new(1000, writer);
+        let cache2 = UtxoCache::new(1000);
         cache2.load_from_file(&path, None).unwrap();
 
         let stats = cache2.stats();
@@ -1817,8 +1721,7 @@ mod tests {
 
     #[test]
     fn test_save_load_with_no_address_entries() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer.clone());
+        let cache = UtxoCache::new(1000);
 
         // All entries have address = None
         for i in 0..10u8 {
@@ -1839,13 +1742,13 @@ mod tests {
 
         cache.save_to_file(&path, 0).unwrap();
 
-        let cache2 = UtxoCache::new(1000, writer);
+        let cache2 = UtxoCache::new(1000);
         let loaded = cache2.load_from_file(&path, None).unwrap();
         assert_eq!(loaded, 10);
 
         // Verify addresses are None
         let key = test_key(0, 0);
-        let idx = UtxoCache::<MockWriter>::shard_index(&key);
+        let idx = UtxoCache::shard_index(&key);
         let shard = cache2.shards[idx].lock().unwrap();
         let entry = shard.peek(&key).unwrap();
         assert!(entry.address.is_none());
@@ -1855,8 +1758,7 @@ mod tests {
 
     #[test]
     fn test_save_load_with_long_address() {
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer.clone());
+        let cache = UtxoCache::new(1000);
 
         // Use a long bech32m-style address (~90 chars)
         let long_addr = "bc1p".to_string() + &"q".repeat(86);
@@ -1876,11 +1778,11 @@ mod tests {
 
         cache.save_to_file(&path, 0).unwrap();
 
-        let cache2 = UtxoCache::new(1000, writer);
+        let cache2 = UtxoCache::new(1000);
         cache2.load_from_file(&path, None).unwrap();
 
         let key = test_key(1, 0);
-        let idx = UtxoCache::<MockWriter>::shard_index(&key);
+        let idx = UtxoCache::shard_index(&key);
         let shard = cache2.shards[idx].lock().unwrap();
         let entry = shard.peek(&key).unwrap();
         assert_eq!(entry.address.as_deref(), Some(long_addr.as_str()));
@@ -1891,8 +1793,7 @@ mod tests {
     #[test]
     fn test_unknown_script_type_tag_deserialized_as_unknown() {
         // Verify that ScriptTypeTag values > 7 map to Unknown
-        let writer = Arc::new(MockWriter::new());
-        let cache = UtxoCache::new(1000, writer.clone());
+        let cache = UtxoCache::new(1000);
         cache.insert(test_key(1, 0), test_output(100));
 
         let dir = std::env::temp_dir().join("utxo_cache_test_unknown_tag");

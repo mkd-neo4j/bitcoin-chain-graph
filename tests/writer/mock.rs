@@ -235,37 +235,6 @@ mod mock_writer_tests {
     }
 
     #[tokio::test]
-    async fn test_lookup_output_success() {
-        let writer = MockWriter::new();
-
-        let output = OutputData {
-            output_id: String::from("genesis:0"),
-            output_index: 0,
-            txid: String::from("genesis"),
-            amount: 5000000000,
-            script_pubkey: String::from("4104...ac"),
-            script_type: String::from("P2PK"),
-            address: Some(String::from("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")),
-        };
-
-        writer.write_outputs(&[output]).await.unwrap();
-
-        // Lookup should succeed
-        let found = writer.lookup_output("genesis:0").await.unwrap();
-        assert_eq!(found.output_id, "genesis:0");
-        assert_eq!(found.amount, 5000000000);
-    }
-
-    #[tokio::test]
-    async fn test_lookup_output_not_found() {
-        let writer = MockWriter::new();
-
-        // Lookup non-existent output should fail
-        let result = writer.lookup_output("nonexistent:0").await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
     async fn test_mark_output_spent() {
         let writer = MockWriter::new();
 

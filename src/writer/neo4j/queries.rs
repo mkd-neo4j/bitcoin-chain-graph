@@ -214,40 +214,6 @@ pub const CREATE_BENEFITS_TO_BULK_QUERY: &str = r#"
 // UTXO OPERATIONS
 // =============================================================================
 
-/// Lookup output by ID (for UTXO cache misses)
-///
-/// Parameters:
-/// - $outputId: Output identifier in format "txid:index"
-pub const LOOKUP_OUTPUT_QUERY: &str = r#"
-    MATCH (o:Output {outputId: $outputId})
-    OPTIONAL MATCH (o)-[:LOCKED_TO]->(a:Address)
-    RETURN o.outputId AS outputId,
-           o.outputIndex AS outputIndex,
-           o.amount AS amount,
-           o.scriptPubKey AS scriptPubKey,
-           o.scriptType AS scriptType,
-           a.address AS address
-"#;
-
-/// Batch lookup multiple outputs by ID (for UTXO cache batch misses)
-///
-/// Uses UNWIND to look up N outputs in a single query instead of N round-trips.
-/// Outputs that don't exist are silently skipped (MATCH filters them out).
-///
-/// Parameters:
-/// - $outputIds: List of output identifiers in format "txid:index"
-pub const LOOKUP_OUTPUTS_BATCH_QUERY: &str = r#"
-    UNWIND $outputIds AS oid
-    MATCH (o:Output {outputId: oid})
-    OPTIONAL MATCH (o)-[:LOCKED_TO]->(a:Address)
-    RETURN o.outputId AS outputId,
-           o.outputIndex AS outputIndex,
-           o.amount AS amount,
-           o.scriptPubKey AS scriptPubKey,
-           o.scriptType AS scriptType,
-           a.address AS address
-"#;
-
 /// Mark output as spent
 ///
 /// Parameters:

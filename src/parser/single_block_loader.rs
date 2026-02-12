@@ -31,7 +31,6 @@ use std::path::PathBuf;
 
 use super::block_index::{BlockIndexReader, IndexError};
 use crate::domain::utxo::{CachedOutput, ScriptTypeTag, UtxoCache, UtxoKey};
-use crate::writer::GraphWriter;
 use std::sync::Arc;
 
 /// Result type for single block loading operations
@@ -422,9 +421,9 @@ impl SingleBlockLoader {
     /// cache.disable_prewarm_mode();
     /// println!("Pre-warmed cache with {} blocks", loaded);
     /// ```
-    pub async fn prewarm_cache<W: GraphWriter>(
+    pub async fn prewarm_cache(
         &mut self,
-        cache: &UtxoCache<W>,
+        cache: &UtxoCache,
         start_height: u32,
         max_blocks: u32,
     ) -> Result<u32> {
@@ -574,9 +573,9 @@ impl SingleBlockLoader {
     ///
     /// # Returns
     /// Tuple of (blocks_scanned_forward, blocks_loaded_backward, utxos_found)
-    pub async fn prewarm_cache_targeted<W: GraphWriter>(
+    pub async fn prewarm_cache_targeted(
         &mut self,
-        cache: &UtxoCache<W>,
+        cache: &UtxoCache,
         start_height: u32,
         scan_ahead: u32,
         max_backward: u32,

@@ -7,7 +7,7 @@
 //! # Performance Impact
 //!
 //! - **Before**: 3 expensive Neo4j queries per block (calculate amounts + simplified layer)
-//! - **After**: In-memory cache lookups with ~1-5% Neo4j fallback for cache misses
+//! - **After**: In-memory cache lookups with disk persistence across restarts
 //! - **Expected speedup**: 10-100x for ingestion pipeline
 //!
 //! # Cache Strategy
@@ -15,8 +15,8 @@
 //! - 16-shard LRU with lock-free atomic statistics
 //! - Compact 36-byte binary keys (UtxoKey) — zero allocation on lookup
 //! - Configurable capacity (default: 100,000 entries ≈ 7MB)
-//! - Neo4j fallback for cache misses (dormant UTXOs)
-//! - Exploit temporal locality: most inputs spend recent outputs
+//! - Persisted to disk on shutdown, restored on startup
+//! - Cache misses are hard errors (all UTXOs must be in cache)
 
 mod cache;
 

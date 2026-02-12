@@ -317,28 +317,6 @@ impl GraphWriter for MockWriter {
         Ok(())
     }
 
-    async fn lookup_outputs_batch(&self, output_ids: &[String]) -> Result<Vec<OutputData>> {
-        let storage = self.storage.lock().unwrap();
-        let mut results = Vec::with_capacity(output_ids.len());
-        for id in output_ids {
-            if let Some(output) = storage.outputs.iter().find(|o| o.output_id == *id) {
-                results.push(output.clone());
-            }
-            // Silently skip outputs not found (matches Neo4j MATCH behavior)
-        }
-        Ok(results)
-    }
-
-    async fn lookup_output(&self, output_id: &str) -> Result<OutputData> {
-        let storage = self.storage.lock().unwrap();
-        storage
-            .outputs
-            .iter()
-            .find(|o| o.output_id == output_id)
-            .cloned()
-            .ok_or_else(|| WriterError::OutputNotFound(output_id.to_string()))
-    }
-
     async fn mark_output_spent(
         &self,
         output_id: &str,
@@ -660,33 +638,4 @@ mod tests {
         assert_eq!(checkpoint.status, "completed");
     }
 
-    #[tokio::test]
-    async fn test_lookup_output() {
-        let writer = MockWriter::new();
-
-        let output = OutputData {
-            output_id: String::from("tx1:0"),
-            output_index: 0,
-            txid: String::from("tx1"),
-            amount: 5000000000,
-            script_pubkey: String::from("76a914...88ac"),
-            script_type: String::from("P2PKH"),
-            address: Some(String::from("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")),
-        };
-
-        writer.write_outputs(&[output.clone()]).await.unwrap();
-
-        // Lookup existing output
-        let found = writer.lookup_output("tx1:0").await.unwrap();
-        assert_eq!(found.output_id, "tx1:0");
-        assert_eq!(found.amount, 5000000000);
-
-        // Lookup non-existent output
-        let result = writer.lookup_output("tx2:0").await;
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            WriterError::OutputNotFound(_)
-        ));
-    }
 }

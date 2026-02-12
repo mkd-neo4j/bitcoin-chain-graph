@@ -24,7 +24,7 @@ Business logic and type-safe models bridging Parser (bitcoin crate types) and Wr
 pub struct IngestionOrchestrator<W: GraphWriter> {
     writer: Arc<W>,
     network: Network,
-    utxo_cache: UtxoCache<W>,
+    utxo_cache: UtxoCache,
 }
 ```
 
@@ -45,7 +45,7 @@ Phases 2 and 3 are SWAPPED because Bitcoin allows transactions to spend outputs 
 - **UtxoKey**: 36 bytes stack-allocated (32-byte txid + 4-byte vout index) — no heap allocation
 - **CachedOutput**: ~36 bytes with ScriptTypeTag enum and optional `Arc<str>` for address sharing
 - **Atomic counters**: Lock-free statistics for hits/misses
-- **Neo4j fallback**: `lookup_outputs_batch()` on cache miss (1-5% for recent blocks)
+- **Persisted to disk**: saved on shutdown, restored on startup (no Neo4j fallback)
 - **Batch operations**: `get_many_with_fallback()`, `remove_many()`
 
 ## Adding a New Domain Model

@@ -18,7 +18,7 @@ The trait requires `Send + Sync` and uses `#[async_trait]`. Key method groups:
 
 1. **Schema**: `init_schema()`
 2. **Phase writes**: `write_blocks()`, `write_outputs()`, `write_transactions()`, `write_has_output_relationships()`, `write_inputs()`, `write_performs()`, `write_benefits_to()`
-3. **UTXO ops**: `lookup_output()`, `lookup_outputs_batch()`, `mark_output_spent()`
+3. **UTXO ops**: `mark_output_spent()`
 4. **Checkpoint**: `create_checkpoint()`, `update_checkpoint()`, `get_checkpoint()`, `mark_checkpoint_complete()`, `set_checkpoint_status()`
 5. **Block lookup**: `lookup_block_hash()`
 6. **Rollback**: `rollback_block()`
