@@ -1,6 +1,6 @@
 ---
 title: Neo4jWriter Transaction Methods
-status: review
+status: completed
 priority: high
 ideation-ref: feature-docs/ideation/neo4j-writer-transactions/
 affected-files:
