@@ -38,6 +38,16 @@ Updated by agents after each stage transition.
 - **Branch**: feat/utxo-cache-shutdown-height
 - **Review**: APPROVED — all 5 ACs verified, main.rs integration correct, no convention violations
 
+## drop-isspent-precompute-outputid — completed
+- **Agent**: code-reviewer (approved)
+- **Branch**: feat/drop-isspent-precompute-outputid
+- **Review**: APPROVED — pre-dates STATUS.md tracking
+
+## utxo-cache-persistence — completed
+- **Agent**: code-reviewer (approved)
+- **Branch**: feat/utxo-cache-persistence
+- **Review**: APPROVED — pre-dates STATUS.md tracking
+
 ## neo4j-atomic-batch-transactions — completed
 - **Agent**: code-reviewer (approved)
 - **Tests**: 12/12 passing
