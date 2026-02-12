@@ -61,14 +61,14 @@ mod tests {
         assert!(config.validate().is_ok());
         assert_eq!(config.neo4j.uri, "bolt://localhost:7687");
         assert_eq!(config.neo4j.max_connections, 20);
-        assert_eq!(config.ingestion.batch_size, 5000);
+        assert_eq!(config.ingestion.max_transaction_memory_mb, 600);
         assert_eq!(config.performance.utxo_cache_memory_mb, 140);
     }
 
     #[test]
-    fn test_validation_rejects_zero_batch_size() {
+    fn test_validation_rejects_zero_max_transaction_memory() {
         let mut config = Config::default();
-        config.ingestion.batch_size = 0;
+        config.ingestion.max_transaction_memory_mb = 0;
         assert!(config.validate().is_err());
     }
 
@@ -90,12 +90,11 @@ mod tests {
         );
         let config = config.unwrap();
         assert_eq!(config.bitcoin.blocks_dir, "/data/bitcoin/blocks");
-        assert_eq!(config.ingestion.batch_size, 5000);
+        assert_eq!(config.ingestion.max_transaction_memory_mb, 600);
         assert_eq!(config.neo4j.max_connections, 20);
         assert_eq!(config.performance.utxo_cache_memory_mb, 140);
         assert_eq!(config.performance.utxo_prewarm_depth, 1_000_000);
         assert_eq!(config.performance.progress_report_interval, 500);
-        assert_eq!(config.ingestion.checkpoint_interval, 10);
         assert_eq!(config.ingestion.validate_every_n_blocks, 10000);
     }
 }

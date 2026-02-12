@@ -59,7 +59,7 @@ async fn test_snapshot_saved_after_batch_commit() {
     }
 
     // Ingest as batch (batch_size=5 means one chunk of 5 blocks)
-    orchestrator.ingest_blocks_batch(&blocks, 5).await.unwrap();
+    orchestrator.ingest_blocks_batch(&blocks).await.unwrap();
 
     // Snapshot file should exist after commit
     assert!(
@@ -100,7 +100,7 @@ async fn test_snapshot_saved_after_each_chunk_commit() {
     }
 
     // batch_size=5 means two chunks: [0..4] and [5..9]
-    orchestrator.ingest_blocks_batch(&blocks, 5).await.unwrap();
+    orchestrator.ingest_blocks_batch(&blocks).await.unwrap();
 
     // After second chunk, snapshot height should be 9 (last block)
     assert!(snapshot_path.exists(), "Snapshot file should exist");
@@ -137,7 +137,7 @@ async fn test_no_snapshot_when_path_is_none() {
     }
 
     // This should succeed without attempting any snapshot save
-    orchestrator.ingest_blocks_batch(&blocks, 5).await.unwrap();
+    orchestrator.ingest_blocks_batch(&blocks).await.unwrap();
 
     // Verify blocks were ingested (the batch itself works fine)
     assert_eq!(writer.get_blocks().await.len(), 5);
@@ -168,7 +168,7 @@ async fn test_snapshot_save_failure_is_nonfatal() {
     }
 
     // Ingestion should succeed even though snapshot save will fail
-    let result = orchestrator.ingest_blocks_batch(&blocks, 5).await;
+    let result = orchestrator.ingest_blocks_batch(&blocks).await;
     assert!(
         result.is_ok(),
         "Ingestion should succeed even when snapshot save fails: {:?}",
@@ -229,7 +229,7 @@ async fn test_set_cache_snapshot_path_empty_string_means_none() {
         let block = reader.next_block().unwrap().expect("Block should exist");
         blocks.push((height, block, "blk00000.dat".to_string()));
     }
-    orchestrator.ingest_blocks_batch(&blocks, 3).await.unwrap();
+    orchestrator.ingest_blocks_batch(&blocks).await.unwrap();
     assert_eq!(writer.get_blocks().await.len(), 3);
 }
 
@@ -260,7 +260,7 @@ async fn test_catchup_batch_saves_snapshot() {
     }
 
     // batch_size=10 → two chunks
-    orchestrator.ingest_blocks_batch(&blocks, 10).await.unwrap();
+    orchestrator.ingest_blocks_batch(&blocks).await.unwrap();
 
     assert!(
         snapshot_path.exists(),
@@ -296,7 +296,7 @@ async fn test_single_block_batch_saves_snapshot() {
     let genesis = reader.next_block().unwrap().expect("Genesis should exist");
     let blocks = vec![(0u32, genesis, "blk00000.dat".to_string())];
 
-    orchestrator.ingest_blocks_batch(&blocks, 1).await.unwrap();
+    orchestrator.ingest_blocks_batch(&blocks).await.unwrap();
 
     assert!(
         snapshot_path.exists(),
@@ -399,7 +399,7 @@ async fn test_empty_batch_no_snapshot_save() {
 
     // Empty batch
     let blocks: Vec<(u32, bitcoin::Block, String)> = Vec::new();
-    orchestrator.ingest_blocks_batch(&blocks, 10).await.unwrap();
+    orchestrator.ingest_blocks_batch(&blocks).await.unwrap();
 
     assert!(
         !snapshot_path.exists(),
@@ -430,7 +430,7 @@ async fn test_first_batch_creates_snapshot_file() {
     let genesis = reader.next_block().unwrap().unwrap();
     let blocks = vec![(0u32, genesis, "blk00000.dat".to_string())];
 
-    orchestrator.ingest_blocks_batch(&blocks, 1).await.unwrap();
+    orchestrator.ingest_blocks_batch(&blocks).await.unwrap();
 
     assert!(
         snapshot_path.exists(),

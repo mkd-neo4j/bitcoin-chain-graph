@@ -105,7 +105,7 @@ async fn test_ingest_first_4_files() {
     let batch_size = 1000;
     let ingest_start = Instant::now();
 
-    match orchestrator.ingest_blocks_batch(&blocks, batch_size).await {
+    match orchestrator.ingest_blocks_batch(&blocks).await {
         Ok(_) => {
             let ingest_duration = ingest_start.elapsed();
             let blocks_per_sec = blocks.len() as f64 / ingest_duration.as_secs_f64();

@@ -133,7 +133,7 @@ async fn test_adaptive_chunking_oversized_block_own_chunk() {
 
     // AC4: A single block whose estimated memory exceeds the budget should be placed
     // alone in its own chunk (minimum 1 block per chunk)
-    let oversized = BYTES_PER_BLOCK + 50000 * BYTES_PER_TX + 100000 * BYTES_PER_OUTPUT + 80000 * BYTES_PER_INPUT;
+    let oversized = BYTES_PER_BLOCK + 500000 * BYTES_PER_TX + 1000000 * BYTES_PER_OUTPUT + 800000 * BYTES_PER_INPUT;
     let small = BYTES_PER_BLOCK + 1 * BYTES_PER_TX + 1 * BYTES_PER_OUTPUT + 0 * BYTES_PER_INPUT;
     let max_memory_bytes = 600 * 1024 * 1024;
 
