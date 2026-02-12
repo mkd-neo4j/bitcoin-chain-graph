@@ -12,7 +12,6 @@ use bitcoin_chain_graph::domain::ShutdownHeightTracker;
 // THEN shutdown save uses height 207799 (batch_end), not 207599
 
 #[test]
-#[ignore = "awaiting ShutdownHeightTracker implementation"]
 fn rpc_catchup_single_batch_uses_batch_end() {
     let mut tracker = ShutdownHeightTracker::new();
     tracker.record_batch_commit(207799);
@@ -30,7 +29,6 @@ fn rpc_catchup_single_batch_uses_batch_end() {
 // THEN shutdown save uses height 300005
 
 #[test]
-#[ignore = "awaiting ShutdownHeightTracker implementation"]
 fn zmq_single_block_commit_uses_block_height() {
     let mut tracker = ShutdownHeightTracker::new();
     tracker.record_block_commit(300005);
@@ -47,7 +45,6 @@ fn zmq_single_block_commit_uses_block_height() {
 // THEN save_to_file is NOT called (save_height returns None)
 
 #[test]
-#[ignore = "awaiting ShutdownHeightTracker implementation"]
 fn no_commits_returns_none() {
     let tracker = ShutdownHeightTracker::new();
 
@@ -64,7 +61,6 @@ fn no_commits_returns_none() {
 // THEN shutdown save uses height 399
 
 #[test]
-#[ignore = "awaiting ShutdownHeightTracker implementation"]
 fn multiple_rpc_batches_uses_last_committed_batch_end() {
     let mut tracker = ShutdownHeightTracker::new();
     tracker.record_batch_commit(199);
@@ -84,7 +80,6 @@ fn multiple_rpc_batches_uses_last_committed_batch_end() {
 // THEN shutdown save uses height 503
 
 #[test]
-#[ignore = "awaiting ShutdownHeightTracker implementation"]
 fn zmq_sequential_blocks_uses_last_committed() {
     let mut tracker = ShutdownHeightTracker::new();
     tracker.record_block_commit(500);
@@ -103,7 +98,6 @@ fn zmq_sequential_blocks_uses_last_committed() {
 // last_committed_height retains value from prior batch (or None if first)
 
 #[test]
-#[ignore = "awaiting ShutdownHeightTracker implementation"]
 fn sigterm_during_fetch_retains_prior_batch_height() {
     let mut tracker = ShutdownHeightTracker::new();
     tracker.record_batch_commit(199);
@@ -120,7 +114,6 @@ fn sigterm_during_fetch_retains_prior_batch_height() {
 // Failed batch does NOT update tracker — save uses prior committed height
 
 #[test]
-#[ignore = "awaiting ShutdownHeightTracker implementation"]
 fn failed_batch_does_not_update_height() {
     let mut tracker = ShutdownHeightTracker::new();
     tracker.record_batch_commit(199);
@@ -137,7 +130,6 @@ fn failed_batch_does_not_update_height() {
 // Tracker works across both paths
 
 #[test]
-#[ignore = "awaiting ShutdownHeightTracker implementation"]
 fn rpc_catchup_then_zmq_realtime() {
     let mut tracker = ShutdownHeightTracker::new();
     // RPC catchup batches

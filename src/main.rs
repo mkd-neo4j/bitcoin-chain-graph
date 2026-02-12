@@ -32,7 +32,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use bitcoin_chain_graph::config::{Config, ConfigLoader};
-use bitcoin_chain_graph::domain::IngestionOrchestrator;
+use bitcoin_chain_graph::domain::{IngestionOrchestrator, ShutdownHeightTracker};
 use bitcoin_chain_graph::parser::{RpcBlockProvider, SingleBlockLoader, ZmqBlockListener};
 use bitcoin_chain_graph::writer::{Neo4jWriter, WriterError};
 
@@ -719,6 +719,7 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
     let start_time = Instant::now();
     let mut current_height = resume_height;
     let mut blocks_processed: u64 = 0;
+    let mut shutdown_tracker = ShutdownHeightTracker::new();
 
     println!("\n📊 Live Mode Configuration:");
     println!("   Resume from block: {}", resume_height);
@@ -830,6 +831,8 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
                 format!("Failed to ingest batch {}-{}", current_height, batch_end)
             });
         }
+
+        shutdown_tracker.record_batch_commit(batch_end);
 
         // Check for shutdown after batch completes (batch can take a long time)
         if shutdown_token.is_cancelled() {
@@ -971,6 +974,7 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
                 if let Some(block_tuple) = block_data {
                     match orchestrator.ingest_blocks_batch(&[block_tuple]).await {
                         Ok(()) => {
+                            shutdown_tracker.record_block_commit(height);
                             blocks_processed += 1;
                             tracing::info!(
                                 height,
@@ -1067,23 +1071,26 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         }
     }
 
-    // Graceful shutdown: save cache to disk
+    // Graceful shutdown: save cache to disk using tracked commit height
     if !cache_file.is_empty() {
-        let save_height = current_height.saturating_sub(1);
-        match orchestrator
-            .get_cache()
-            .save_to_file(cache_file, save_height)
-        {
-            Ok(saved) => {
-                tracing::info!(
-                    entries = saved,
-                    height = save_height,
-                    "UTXO cache saved on shutdown"
-                );
+        if let Some(save_height) = shutdown_tracker.save_height() {
+            match orchestrator
+                .get_cache()
+                .save_to_file(cache_file, save_height)
+            {
+                Ok(saved) => {
+                    tracing::info!(
+                        entries = saved,
+                        height = save_height,
+                        "UTXO cache saved on shutdown"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to save UTXO cache on shutdown");
+                }
             }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to save UTXO cache on shutdown");
-            }
+        } else {
+            tracing::info!("No blocks committed this session — preserving existing cache file");
         }
     }
 
