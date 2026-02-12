@@ -16,7 +16,9 @@
 /// for shutdown saves.
 #[derive(Debug, Clone)]
 pub struct ShutdownHeightTracker {
-    _private: (),
+    /// The height of the last successfully committed block, or `None` if no
+    /// blocks have been committed this session.
+    last_committed_height: Option<u32>,
 }
 
 impl Default for ShutdownHeightTracker {
@@ -28,7 +30,9 @@ impl Default for ShutdownHeightTracker {
 impl ShutdownHeightTracker {
     /// Creates a new tracker with no committed height.
     pub fn new() -> Self {
-        todo!("Implement ShutdownHeightTracker::new")
+        Self {
+            last_committed_height: None,
+        }
     }
 
     /// Records a successful RPC catchup batch commit.
@@ -36,8 +40,8 @@ impl ShutdownHeightTracker {
     /// # Arguments
     ///
     /// * `batch_end` - The height of the last block in the committed batch
-    pub fn record_batch_commit(&mut self, _batch_end: u32) {
-        todo!("Implement record_batch_commit")
+    pub fn record_batch_commit(&mut self, batch_end: u32) {
+        self.last_committed_height = Some(batch_end);
     }
 
     /// Records a successful single-block commit (ZMQ real-time path).
@@ -45,14 +49,14 @@ impl ShutdownHeightTracker {
     /// # Arguments
     ///
     /// * `height` - The height of the committed block
-    pub fn record_block_commit(&mut self, _height: u32) {
-        todo!("Implement record_block_commit")
+    pub fn record_block_commit(&mut self, height: u32) {
+        self.last_committed_height = Some(height);
     }
 
     /// Returns the height to use for shutdown cache save, or `None` if no
     /// blocks were committed this session (in which case the existing cache
     /// file should be preserved).
     pub fn save_height(&self) -> Option<u32> {
-        todo!("Implement save_height")
+        self.last_committed_height
     }
 }
