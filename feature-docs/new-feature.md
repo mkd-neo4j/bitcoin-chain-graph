@@ -71,17 +71,42 @@ Ask me: "Based on what I found, does this align with how you see this feature wo
 
 ## Step 5 — Iterative Exploration
 
-This is the open-ended phase. Tell me:
+This is the open-ended phase. Before showing the menu, **check what has already been done**:
 
-> We're now in the exploration phase. Here's what we can do:
+1. List files in the `feature-docs/ideation/<feature-name>/` folder
+2. Read the `## Progress` section of the README.md
+
+Use the artifacts present to determine which activities are completed:
+
+| Activity | Completed when |
+|---|---|
+| Review code | `code-review.md` exists |
+| Research approaches | `research.md` or `spike-results.md` exists |
+| Design | Design artifacts exist (e.g., `api-design.md`, `component-analysis.md`, `state-management-notes.md`) |
+
+Then present a **status-aware menu**. Show completed activities as a summary, and only offer the remaining options:
+
+> **Completed so far:**
+> - <for each completed activity, show a one-line summary from the most recent relevant progress entry>
 >
-> - **Review code**: Ask me to analyse specific files or patterns
-> - **Research approaches**: I can look at how something could be implemented
-> - **Design**: We can sketch out data flows, component structures, or API contracts
+> **What's next?**
+> - <only list uncompleted activities from the table above>
 > - **Write notes**: I'll save anything important to the ideation folder
 > - **Create the feature**: When you're ready, say "create the feature" and I'll distill everything into a ready file
 >
 > What would you like to explore?
+
+If **all three activities** (review code, research, design) are completed, skip the uncompleted list and just show:
+
+> **Completed so far:**
+> - <summaries>
+>
+> **What's next?**
+> - **Write notes**: I'll save anything important to the ideation folder
+> - **Create the feature**: When you're ready, say "create the feature" and I'll distill everything into a ready file
+> - Or ask me to dive deeper into any of the completed areas
+>
+> What would you like to do?
 
 During this phase:
 
@@ -93,6 +118,7 @@ During this phase:
   - **Decisions made**: <any conclusions reached>
   - **Open questions**: <what's still unresolved>
   ```
+- **Re-check artifacts** each time you show this menu — the completed list should always reflect the current state
 - **Stay in this phase** until I say "create the feature" or indicate I'm ready to proceed
 
 ## Step 6 — Resume (If Picking Up an In-Progress Feature)
