@@ -106,6 +106,18 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         }
     }
 
+    /// Set the path for UTXO cache snapshots after each committed batch.
+    ///
+    /// When set to `Some(path)`, the cache is saved to disk after each
+    /// successful `commit_transaction()` in `ingest_blocks_batch`.
+    /// When `None`, no snapshot is saved.
+    ///
+    /// # Arguments
+    /// * `path` - Optional path to the snapshot file, or `None` to disable
+    pub fn set_cache_snapshot_path(&self, _path: Option<std::path::PathBuf>) {
+        todo!("snapshot-resilience: store cache_snapshot_path on orchestrator")
+    }
+
     /// Initialize database schema and checkpoint
     ///
     /// Creates all required constraints and indexes, and initializes the

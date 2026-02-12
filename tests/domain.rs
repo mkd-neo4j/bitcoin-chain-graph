@@ -11,6 +11,9 @@ mod ingestion;
 #[path = "domain/bip30.rs"]
 mod bip30;
 
+#[path = "domain/snapshot_resilience.rs"]
+mod snapshot_resilience;
+
 #[path = "domain/utxo"]
 mod utxo {
     mod cache;

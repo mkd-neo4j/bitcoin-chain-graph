@@ -16,6 +16,11 @@ Updated by agents after each stage transition.
 - **Branch**: feat/bip30-duplicate-coinbase
 - **Review**: APPROVED — all 8 ACs covered, verify.sh passes, CLAUDE.md compliant
 
+## snapshot-resilience — testing
+- **Agent**: test-writer
+- **Tests**: 13 tests written, all failing (expected — `set_cache_snapshot_path` not implemented)
+- **Criteria covered**: 9/9 acceptance, 4/4 edge cases
+
 ## neo4j-atomic-batch-transactions — completed
 - **Agent**: code-reviewer (approved)
 - **Tests**: 12/12 passing
