@@ -1,7 +1,6 @@
 //! Tests for Adaptive Transaction Memory Control feature
 //!
 //! Tests all 17 acceptance criteria from the feature doc.
-//! These tests are expected to FAIL until the implementation is complete.
 
 use bitcoin::Network;
 use bitcoin_chain_graph::config::IngestionConfig;
@@ -41,7 +40,7 @@ async fn test_adaptive_chunking_large_blocks_produce_multiple_chunks() {
     // We can't fabricate blocks with 3000 txs easily, but we CAN test
     // compute_adaptive_chunks() directly with the memory estimator.
     use bitcoin_chain_graph::domain::ingestion::{
-        compute_adaptive_chunks, estimate_block_memory, BYTES_PER_BLOCK, BYTES_PER_INPUT,
+        compute_adaptive_chunks, BYTES_PER_BLOCK, BYTES_PER_INPUT,
         BYTES_PER_OUTPUT, BYTES_PER_TX,
     };
 

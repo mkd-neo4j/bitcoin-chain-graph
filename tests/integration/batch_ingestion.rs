@@ -102,7 +102,6 @@ async fn test_ingest_first_4_files() {
     );
 
     // Ingest blocks in batches
-    let batch_size = 1000;
     let ingest_start = Instant::now();
 
     match orchestrator.ingest_blocks_batch(&blocks).await {

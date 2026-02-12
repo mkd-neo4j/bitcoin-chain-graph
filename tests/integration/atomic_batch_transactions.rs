@@ -474,7 +474,7 @@ async fn test_multiple_chunks_each_get_own_transaction() {
         batch.push((height, block, "blk00000.dat".to_string()));
     }
 
-    // Use batch_size=3 so we get 2 chunks
+    // With adaptive chunking, all 6 tiny blocks fit in one chunk
     orchestrator.ingest_blocks_batch(&batch).await.unwrap();
 
     // With adaptive chunking, all 6 tiny early blocks fit in a single chunk
