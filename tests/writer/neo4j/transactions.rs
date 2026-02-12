@@ -75,7 +75,11 @@ async fn ac1_begin_transaction_no_active_returns_ok() {
         .expect("Failed to create writer");
 
     let result = writer.begin_transaction().await;
-    assert!(result.is_ok(), "begin_transaction should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "begin_transaction should succeed: {:?}",
+        result.err()
+    );
 
     // Clean up: rollback the transaction we just opened
     let _ = writer.rollback_transaction().await;
@@ -93,7 +97,10 @@ async fn ac2_begin_transaction_already_active_returns_error() {
         .await
         .expect("Failed to create writer");
 
-    writer.begin_transaction().await.expect("First begin should succeed");
+    writer
+        .begin_transaction()
+        .await
+        .expect("First begin should succeed");
 
     let result = writer.begin_transaction().await;
     assert!(result.is_err(), "Second begin should fail");
@@ -129,11 +136,17 @@ async fn ac3_commit_transaction_with_active_returns_ok() {
 
     writer.init_schema().await.expect("Failed to init schema");
 
-    writer.begin_transaction().await.expect("begin should succeed");
+    writer
+        .begin_transaction()
+        .await
+        .expect("begin should succeed");
 
     // Write something inside the transaction
     let blocks = vec![test_block(9990)];
-    writer.write_blocks_fast(&blocks).await.expect("write should succeed in txn");
+    writer
+        .write_blocks_fast(&blocks)
+        .await
+        .expect("write should succeed in txn");
 
     let result = writer.commit_transaction().await;
     assert!(result.is_ok(), "commit should succeed: {:?}", result.err());
@@ -189,10 +202,17 @@ async fn ac5_rollback_transaction_with_active_returns_ok() {
         .await
         .expect("Failed to create writer");
 
-    writer.begin_transaction().await.expect("begin should succeed");
+    writer
+        .begin_transaction()
+        .await
+        .expect("begin should succeed");
 
     let result = writer.rollback_transaction().await;
-    assert!(result.is_ok(), "rollback should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "rollback should succeed: {:?}",
+        result.err()
+    );
 
     // After rollback, active_txn should be None — verify by calling begin again
     let result = writer.begin_transaction().await;
@@ -245,7 +265,10 @@ async fn ac7_commit_failure_clears_active_txn() {
         .await
         .expect("Failed to create writer");
 
-    writer.begin_transaction().await.expect("begin should succeed");
+    writer
+        .begin_transaction()
+        .await
+        .expect("begin should succeed");
 
     // Force a transaction failure by running an invalid query that puts the
     // server-side txn in a failed state, then try to commit.
@@ -283,7 +306,10 @@ async fn ac8_write_methods_execute_within_transaction() {
     writer.init_schema().await.expect("Failed to init schema");
 
     // Begin transaction
-    writer.begin_transaction().await.expect("begin should succeed");
+    writer
+        .begin_transaction()
+        .await
+        .expect("begin should succeed");
 
     // Write blocks inside transaction
     let blocks = vec![test_block(9991)];
@@ -295,10 +321,16 @@ async fn ac8_write_methods_execute_within_transaction() {
     );
 
     // Rollback — if writes went through txn.run(), the block should NOT be persisted
-    writer.rollback_transaction().await.expect("rollback should succeed");
+    writer
+        .rollback_transaction()
+        .await
+        .expect("rollback should succeed");
 
     // Verify the block was NOT persisted (rollback undid the write)
-    let hash = writer.lookup_block_hash(9991).await.expect("lookup should succeed");
+    let hash = writer
+        .lookup_block_hash(9991)
+        .await
+        .expect("lookup should succeed");
     assert!(
         hash.is_none(),
         "Block should not exist after rollback — writes must go through txn.run()"
@@ -329,11 +361,11 @@ async fn ac9_write_methods_use_retry_without_transaction() {
     );
 
     // Verify the block IS persisted (auto-commit)
-    let hash = writer.lookup_block_hash(9992).await.expect("lookup should succeed");
-    assert!(
-        hash.is_some(),
-        "Block should exist after auto-commit write"
-    );
+    let hash = writer
+        .lookup_block_hash(9992)
+        .await
+        .expect("lookup should succeed");
+    assert!(hash.is_some(), "Block should exist after auto-commit write");
 }
 
 // =========================================================================
@@ -352,7 +384,10 @@ async fn ac10_update_checkpoint_routes_through_transaction() {
     writer.create_checkpoint().await.expect("create checkpoint");
 
     // Begin transaction
-    writer.begin_transaction().await.expect("begin should succeed");
+    writer
+        .begin_transaction()
+        .await
+        .expect("begin should succeed");
 
     // Update checkpoint inside transaction
     let checkpoint = CheckpointData {
@@ -363,13 +398,23 @@ async fn ac10_update_checkpoint_routes_through_transaction() {
         timestamp: chrono::Utc::now().timestamp(),
         status: "in_progress".to_string(),
     };
-    writer.update_checkpoint(&checkpoint).await.expect("update should succeed");
+    writer
+        .update_checkpoint(&checkpoint)
+        .await
+        .expect("update should succeed");
 
     // Rollback — checkpoint update should be undone
-    writer.rollback_transaction().await.expect("rollback should succeed");
+    writer
+        .rollback_transaction()
+        .await
+        .expect("rollback should succeed");
 
     // Verify checkpoint was NOT updated (rollback undid it)
-    let cp = writer.get_checkpoint().await.expect("get checkpoint").expect("checkpoint exists");
+    let cp = writer
+        .get_checkpoint()
+        .await
+        .expect("get checkpoint")
+        .expect("checkpoint exists");
     assert_ne!(
         cp.last_processed_height, 9999,
         "Checkpoint height should NOT be 9999 after rollback — update_checkpoint must route through txn"
@@ -392,13 +437,22 @@ async fn ac11_mark_output_spent_routes_through_transaction() {
 
     // Create a block and output outside any transaction (auto-commit)
     let blocks = vec![test_block(9993)];
-    writer.write_blocks_fast(&blocks).await.expect("write block");
+    writer
+        .write_blocks_fast(&blocks)
+        .await
+        .expect("write block");
 
     let output = test_output("txn_test_tx_9993", 0);
-    writer.write_outputs_fast(&[output]).await.expect("write output");
+    writer
+        .write_outputs_fast(&[output])
+        .await
+        .expect("write output");
 
     // Begin transaction
-    writer.begin_transaction().await.expect("begin should succeed");
+    writer
+        .begin_transaction()
+        .await
+        .expect("begin should succeed");
 
     // Mark output spent inside transaction
     writer
@@ -407,7 +461,10 @@ async fn ac11_mark_output_spent_routes_through_transaction() {
         .expect("mark_output_spent should succeed");
 
     // Rollback — the spent marking should be undone
-    writer.rollback_transaction().await.expect("rollback should succeed");
+    writer
+        .rollback_transaction()
+        .await
+        .expect("rollback should succeed");
 
     // We can't easily verify the output's isSpent status without a custom query,
     // but the key assertion is that mark_output_spent doesn't error inside a txn.
@@ -429,12 +486,18 @@ async fn ac12_query_failure_in_transaction_returns_transaction_failed() {
     writer.init_schema().await.expect("Failed to init schema");
 
     // Begin transaction
-    writer.begin_transaction().await.expect("begin should succeed");
+    writer
+        .begin_transaction()
+        .await
+        .expect("begin should succeed");
 
     // Force a constraint violation inside the transaction by writing
     // a block, then writing the same block again (unique constraint on hash).
     let blocks = vec![test_block(9994)];
-    writer.write_blocks_fast(&blocks).await.expect("first write should succeed");
+    writer
+        .write_blocks_fast(&blocks)
+        .await
+        .expect("first write should succeed");
 
     // Second write of same block should fail with constraint violation
     let result = writer.write_blocks_fast(&blocks).await;

@@ -39,11 +39,7 @@ async fn test_successful_batch_commits_atomically() {
         5,
         "All transactions committed"
     );
-    assert_eq!(
-        writer.get_outputs().await.len(),
-        5,
-        "All outputs committed"
-    );
+    assert_eq!(writer.get_outputs().await.len(), 5, "All outputs committed");
     assert_eq!(writer.get_inputs().await.len(), 5, "All inputs committed");
 
     // AC1: Verify that the writer recorded exactly 1 transaction boundary per batch chunk
@@ -63,7 +59,10 @@ async fn test_failed_phase_rolls_back_entire_batch() {
 
     // Configure MockWriter to fail on Phase 4 (write_inputs)
     writer
-        .set_failure_on("write_inputs_fast", WriterError::QueryFailed("simulated failure".into()))
+        .set_failure_on(
+            "write_inputs_fast",
+            WriterError::QueryFailed("simulated failure".into()),
+        )
         .await;
 
     let orchestrator = IngestionOrchestrator::new(writer.clone(), Network::Bitcoin, 100_000);
@@ -195,7 +194,10 @@ async fn test_checkpoint_delete_and_create_are_atomic() {
 
     // Verify checkpoint exists at height 2
     let checkpoint = writer.get_checkpoint().await.unwrap();
-    assert!(checkpoint.is_some(), "Checkpoint should exist after first batch");
+    assert!(
+        checkpoint.is_some(),
+        "Checkpoint should exist after first batch"
+    );
     assert_eq!(checkpoint.unwrap().last_processed_height, 2);
 
     // Simulate a crash during the second batch's checkpoint update
@@ -423,10 +425,7 @@ async fn test_memory_pressure_fails_with_clear_error() {
                 msg
             );
         }
-        other => panic!(
-            "Expected QueryFailed with memory error, got: {:?}",
-            other
-        ),
+        other => panic!("Expected QueryFailed with memory error, got: {:?}", other),
     }
 
     // The error should be retryable (operator reduces batch size and retries)
@@ -523,12 +522,9 @@ async fn test_failure_in_single_chunk_rolls_back() {
         blocks.len(),
         0,
         "No blocks should be persisted after rollback"
-        );
+    );
 
     // No checkpoint should exist since the only chunk failed
     let txn_count = writer.transaction_commit_count().await;
-    assert_eq!(
-        txn_count, 0,
-        "No transactions should have been committed"
-    );
+    assert_eq!(txn_count, 0, "No transactions should have been committed");
 }

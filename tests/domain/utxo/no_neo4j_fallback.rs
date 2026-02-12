@@ -54,7 +54,10 @@ fn test_cache_get_returns_error_on_miss() {
     // Miss should return Err (not query Neo4j)
     let missing_key = test_key(99, 0);
     let result = cache.get(&missing_key);
-    assert!(result.is_err(), "Cache miss should return Err, not query Neo4j");
+    assert!(
+        result.is_err(),
+        "Cache miss should return Err, not query Neo4j"
+    );
 }
 
 // =========================================================================
@@ -84,7 +87,13 @@ fn test_get_many_cache_only() {
 
     // Batch get: 5 hits + 5 misses
     let keys: Vec<UtxoKey> = (0..10u8)
-        .map(|i| if i < 5 { test_key(i, 0) } else { test_key(i + 100, 0) })
+        .map(|i| {
+            if i < 5 {
+                test_key(i, 0)
+            } else {
+                test_key(i + 100, 0)
+            }
+        })
         .collect();
 
     let (found, misses) = cache.get_many(&keys);
@@ -110,7 +119,10 @@ fn test_get_many_or_fail_errors_on_missing() {
     // Some keys missing — should return error (no Neo4j fallback)
     let keys_with_misses: Vec<UtxoKey> = (0..10u8).map(|i| test_key(i, 0)).collect();
     let result = cache.get_many_or_fail(&keys_with_misses);
-    assert!(result.is_err(), "Should error when UTXOs missing from cache (no Neo4j fallback)");
+    assert!(
+        result.is_err(),
+        "Should error when UTXOs missing from cache (no Neo4j fallback)"
+    );
 }
 
 // =========================================================================

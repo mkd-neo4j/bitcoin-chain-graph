@@ -280,13 +280,17 @@ impl Neo4jWriter {
         let mut guard = self.active_txn.lock().await;
         if let Some(txn) = guard.as_mut() {
             txn.run(q).await.map_err(|e| {
-                WriterError::TransactionFailed(format!("{} failed in transaction: {}", operation_name, e))
+                WriterError::TransactionFailed(format!(
+                    "{} failed in transaction: {}",
+                    operation_name, e
+                ))
             })
         } else {
             drop(guard);
-            self.graph.run(q).await.map_err(|e| {
-                WriterError::QueryFailed(format!("{} failed: {}", operation_name, e))
-            })
+            self.graph
+                .run(q)
+                .await
+                .map_err(|e| WriterError::QueryFailed(format!("{} failed: {}", operation_name, e)))
         }
     }
 
@@ -809,22 +813,22 @@ impl GraphWriter for Neo4jWriter {
 
     async fn commit_transaction(&self) -> Result<()> {
         let mut guard = self.active_txn.lock().await;
-        let txn = guard.take().ok_or_else(|| {
-            WriterError::TransactionFailed("no active transaction".to_string())
-        })?;
-        txn.commit().await.map_err(|e| {
-            WriterError::TransactionFailed(format!("commit failed: {}", e))
-        })
+        let txn = guard
+            .take()
+            .ok_or_else(|| WriterError::TransactionFailed("no active transaction".to_string()))?;
+        txn.commit()
+            .await
+            .map_err(|e| WriterError::TransactionFailed(format!("commit failed: {}", e)))
     }
 
     async fn rollback_transaction(&self) -> Result<()> {
         let mut guard = self.active_txn.lock().await;
-        let txn = guard.take().ok_or_else(|| {
-            WriterError::TransactionFailed("no active transaction".to_string())
-        })?;
-        txn.rollback().await.map_err(|e| {
-            WriterError::TransactionFailed(format!("rollback failed: {}", e))
-        })
+        let txn = guard
+            .take()
+            .ok_or_else(|| WriterError::TransactionFailed("no active transaction".to_string()))?;
+        txn.rollback()
+            .await
+            .map_err(|e| WriterError::TransactionFailed(format!("rollback failed: {}", e)))
     }
 }
 

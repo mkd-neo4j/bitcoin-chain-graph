@@ -902,10 +902,9 @@ impl UtxoCache {
                 reader.read_exact(&mut addr_bytes)?;
                 hasher.update(&addr_bytes);
 
-                Some(Arc::from(
-                    std::str::from_utf8(&addr_bytes)
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-                ))
+                Some(Arc::from(std::str::from_utf8(&addr_bytes).map_err(
+                    |e| std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                )?))
             } else {
                 None
             };
@@ -1469,10 +1468,7 @@ mod tests {
             assert_eq!(actual.output_index, expected.output_index);
             assert_eq!(actual.amount, expected.amount);
             assert_eq!(actual.script_type, expected.script_type);
-            assert_eq!(
-                actual.address.as_deref(),
-                expected.address.as_deref(),
-            );
+            assert_eq!(actual.address.as_deref(), expected.address.as_deref(),);
         }
 
         // Cleanup
@@ -1711,7 +1707,10 @@ mod tests {
         cache2.load_from_file(&path, None).unwrap();
 
         let stats = cache2.stats();
-        assert_eq!(stats.inserts, 0, "load_from_file should not inflate insert stats");
+        assert_eq!(
+            stats.inserts, 0,
+            "load_from_file should not inflate insert stats"
+        );
         assert_eq!(stats.hits, 0);
         assert_eq!(stats.misses, 0);
         assert_eq!(stats.removals, 0);

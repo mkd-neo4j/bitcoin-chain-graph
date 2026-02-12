@@ -217,10 +217,7 @@ fn test_save_uses_atomic_rename() {
 
     assert!(path.exists(), "Final file should exist");
     let tmp_path = path.with_extension("bin.tmp");
-    assert!(
-        !tmp_path.exists(),
-        "Temp file should not exist after save"
-    );
+    assert!(!tmp_path.exists(), "Temp file should not exist after save");
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -241,10 +238,7 @@ fn test_save_header_format() {
     cache.save_to_file(&path, 42).unwrap();
 
     let data = std::fs::read(&path).unwrap();
-    assert!(
-        data.len() >= 24,
-        "File must have at least 24-byte header"
-    );
+    assert!(data.len() >= 24, "File must have at least 24-byte header");
 
     assert_eq!(&data[0..4], b"UTXO", "Magic bytes");
     assert_eq!(
@@ -456,8 +450,7 @@ fn test_performance_config_deserialize_without_cache_fields() {
         parallel_batches = 4
         progress_report_interval = 500
     "#;
-    let config: bitcoin_chain_graph::config::PerformanceConfig =
-        toml::from_str(toml_str).unwrap();
+    let config: bitcoin_chain_graph::config::PerformanceConfig = toml::from_str(toml_str).unwrap();
     assert_eq!(config.utxo_cache_file, "utxo_cache.bin");
 }
 
@@ -472,7 +465,6 @@ fn test_performance_config_empty_cache_file_disables_persistence() {
         progress_report_interval = 500
         utxo_cache_file = ""
     "#;
-    let config: bitcoin_chain_graph::config::PerformanceConfig =
-        toml::from_str(toml_str).unwrap();
+    let config: bitcoin_chain_graph::config::PerformanceConfig = toml::from_str(toml_str).unwrap();
     assert_eq!(config.utxo_cache_file, "");
 }
