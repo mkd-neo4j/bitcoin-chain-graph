@@ -1,6 +1,6 @@
 ---
 feature: utxo-cache-shutdown-height
-status: in-progress
+status: shipped
 created: 2026-02-12
 ---
 
