@@ -628,6 +628,18 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         _batch_idx: usize,
         blocks_in_batch: usize,
     ) -> Result<()> {
+            // Detect BIP30 duplicate-txid blocks in this chunk.
+            // If any block is a known BIP30 height, fall back to MERGE writes
+            // for the entire chunk to handle duplicate unique constraints safely.
+            let has_bip30 = chunk
+                .iter()
+                .any(|(h, _, _)| BIP30_DUPLICATE_HEIGHTS.contains(h));
+            if has_bip30 {
+                tracing::warn!(
+                    "BIP30 duplicate block detected in chunk — using MERGE write path"
+                );
+            }
+
             // Phase 1: Accumulate all block data
             let phase1_start = std::time::Instant::now();
             let mut block_data_batch = Vec::with_capacity(blocks_in_batch);
@@ -705,9 +717,15 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             // Write outputs to Neo4j AND populate cache concurrently.
             // Neo4j write is I/O-bound; cache population is CPU-bound.
             // tokio::join! overlaps the Neo4j network wait with cache inserts.
-            // Using fast CREATE for forward ingestion (no existence check).
+            // BIP30 chunks use MERGE (idempotent); normal chunks use fast CREATE.
             let write_start = std::time::Instant::now();
-            let write_future = self.writer.write_outputs_fast(&output_data_batch);
+            let write_future = async {
+                if has_bip30 {
+                    self.writer.write_outputs(&output_data_batch).await
+                } else {
+                    self.writer.write_outputs_fast(&output_data_batch).await
+                }
+            };
             let cache_future = async {
                 for output in &output_data_batch {
                     if let Some(key) = UtxoKey::from_hex_txid(&output.txid, output.output_index) {
@@ -850,11 +868,18 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 transaction_data_batch.push(tx_data);
             }
 
-            // Write transactions in one batch (fast CREATE for forward ingestion)
+            // Write transactions in one batch
+            // BIP30 chunks use MERGE (idempotent); normal chunks use fast CREATE.
             let write_start = std::time::Instant::now();
-            self.writer
-                .write_transactions_fast(&transaction_data_batch)
-                .await?;
+            if has_bip30 {
+                self.writer
+                    .write_transactions(&transaction_data_batch)
+                    .await?;
+            } else {
+                self.writer
+                    .write_transactions_fast(&transaction_data_batch)
+                    .await?;
+            }
             tracing::debug!(
                 phase = "3_transactions",
                 count = transaction_data_batch.len(),
@@ -891,9 +916,14 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 }
             }
 
-            // Write inputs in one batch (fast CREATE for forward ingestion)
+            // Write inputs in one batch
+            // BIP30 chunks use MERGE (idempotent); normal chunks use fast CREATE.
             let write_start = std::time::Instant::now();
-            self.writer.write_inputs_fast(&input_data_batch).await?;
+            if has_bip30 {
+                self.writer.write_inputs(&input_data_batch).await?;
+            } else {
+                self.writer.write_inputs_fast(&input_data_batch).await?;
+            }
             tracing::debug!(
                 phase = "4_inputs",
                 count = input_data_batch.len(),

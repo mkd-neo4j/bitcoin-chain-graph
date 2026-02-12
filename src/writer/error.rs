@@ -25,6 +25,12 @@ pub enum WriterError {
     #[error("Database error: {0}")]
     DatabaseError(String),
 
+    /// Schema constraint violation (e.g., duplicate unique property)
+    ///
+    /// Non-retryable: deterministic failures should not be retried.
+    #[error("Constraint violation: {0}")]
+    ConstraintViolation(String),
+
     #[error("Chain reorganization detected at height {height}: expected parent {expected}, got {actual}")]
     ReorgDetected {
         height: u32,

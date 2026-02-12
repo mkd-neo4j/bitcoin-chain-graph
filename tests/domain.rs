@@ -8,6 +8,9 @@ mod models;
 #[path = "domain/ingestion.rs"]
 mod ingestion;
 
+#[path = "domain/bip30.rs"]
+mod bip30;
+
 #[path = "domain/utxo"]
 mod utxo {
     mod cache;
