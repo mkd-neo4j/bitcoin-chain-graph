@@ -23,6 +23,7 @@ mod shutdown_height;
 #[path = "domain/utxo"]
 mod utxo {
     mod cache;
+    mod neo4j_fallback;
     mod no_neo4j_fallback;
     mod persistence;
 }
