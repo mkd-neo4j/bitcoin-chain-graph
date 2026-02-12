@@ -2,6 +2,12 @@
 
 Updated by agents after each stage transition.
 
+## bip30-duplicate-coinbase — testing
+- **Agent**: test-writer
+- **Tests**: 12 tests written, all failing (expected)
+- **Criteria covered**: 8/8 acceptance, 3/3 edge cases
+- **Branch**: feat/bip30-duplicate-coinbase
+
 ## neo4j-atomic-batch-transactions — completed
 - **Agent**: code-reviewer (approved)
 - **Tests**: 12/12 passing

@@ -1,6 +1,6 @@
 ---
 title: BIP30 Duplicate Coinbase Handling
-status: ready
+status: testing
 priority: high
 ideation-ref: feature-docs/ideation/bip30-duplicate-coinbase/
 affected-files:
