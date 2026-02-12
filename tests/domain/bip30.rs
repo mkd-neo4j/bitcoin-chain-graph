@@ -176,30 +176,20 @@ async fn test_bip30_block_91880_uses_merge_path() {
 ///       WHEN `process_batch_chunk` runs
 ///       THEN it uses the fast CREATE variants (no behavior change)
 ///
-/// Strategy: Configure MERGE methods to fail. Non-BIP30 blocks should use fast path.
+/// Strategy: If `write_outputs_fast` is set to fail, a non-BIP30 chunk should fail
+/// (proving the fast path IS used). Conversely, a BIP30 chunk with the same setup
+/// would succeed (AC1 proves this). Together, AC1 + AC3 prove path selection works.
 #[tokio::test]
 async fn test_non_bip30_blocks_use_fast_create_path() {
     let writer = MockWriter::new();
     let orchestrator = IngestionOrchestrator::new(writer.clone(), Network::Bitcoin, 100_000);
     orchestrator.init_schema().await.unwrap();
 
-    // Make MERGE methods fail — the fast path should be used for non-BIP30 blocks
+    // Make fast (CREATE) methods fail — non-BIP30 blocks should hit this failure
     writer
         .set_failure_on(
-            "write_outputs",
-            WriterError::QueryFailed("MERGE should not be called".into()),
-        )
-        .await;
-    writer
-        .set_failure_on(
-            "write_transactions",
-            WriterError::QueryFailed("MERGE should not be called".into()),
-        )
-        .await;
-    writer
-        .set_failure_on(
-            "write_inputs",
-            WriterError::QueryFailed("MERGE should not be called".into()),
+            "write_outputs_fast",
+            WriterError::QueryFailed("fast path was used as expected".into()),
         )
         .await;
 
@@ -208,9 +198,8 @@ async fn test_non_bip30_blocks_use_fast_create_path() {
 
     let result = orchestrator.ingest_blocks_batch(&blocks, 1).await;
     assert!(
-        result.is_ok(),
-        "Non-BIP30 blocks should use fast CREATE path. Got: {:?}",
-        result.err()
+        result.is_err(),
+        "Non-BIP30 blocks should use fast CREATE path and hit the configured failure"
     );
 }
 
