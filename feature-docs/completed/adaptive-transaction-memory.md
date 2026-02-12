@@ -1,6 +1,6 @@
 ---
 title: Adaptive Transaction Memory Control
-status: review
+status: completed
 priority: high
 ideation-ref: feature-docs/ideation/transaction-memory-control/
 affected-files:

@@ -23,11 +23,13 @@ Updated by agents after each stage transition.
 - **Branch**: feat/snapshot-resilience
 - **Review**: APPROVED — all 9 ACs verified, conventions compliant, out-of-scope items preserved
 
-## adaptive-transaction-memory — review
-- **Agent**: builder (done)
-- **Tests**: 110/110 passing
-- **Verify**: type check PASS, lint PASS, tests PASS
+## adaptive-transaction-memory — completed
+- **Agent**: code-reviewer (approved)
+- **Tests**: 17/17 AC tests + 248 total passing
+- **Verify**: type check PASS, lint PASS, tests PASS, verify.sh PASS
 - **Branch**: feat/adaptive-transaction-memory
+- **Review**: APPROVED — all 17 ACs verified, out-of-scope respected, conventions compliant
+- **Follow-up**: `max_transaction_memory_mb` config field not wired to orchestrator (hardcoded default 600 works correctly)
 
 ## neo4j-atomic-batch-transactions — completed
 - **Agent**: code-reviewer (approved)
