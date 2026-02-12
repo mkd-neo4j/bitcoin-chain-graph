@@ -1,6 +1,6 @@
 ---
 feature: transaction-memory-control
-status: in-progress
+status: complete
 created: 2026-02-12
 ---
 

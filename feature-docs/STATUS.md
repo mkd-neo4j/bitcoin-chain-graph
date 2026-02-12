@@ -31,6 +31,13 @@ Updated by agents after each stage transition.
 - **Review**: APPROVED — all 17 ACs verified, out-of-scope respected, conventions compliant
 - **Follow-up**: `max_transaction_memory_mb` config field not wired to orchestrator (hardcoded default 600 works correctly)
 
+## utxo-cache-shutdown-height — completed
+- **Agent**: code-reviewer (approved)
+- **Tests**: 8/8 passing
+- **Verify**: type check PASS, lint PASS, tests PASS
+- **Branch**: feat/utxo-cache-shutdown-height
+- **Review**: APPROVED — all 5 ACs verified, main.rs integration correct, no convention violations
+
 ## neo4j-atomic-batch-transactions — completed
 - **Agent**: code-reviewer (approved)
 - **Tests**: 12/12 passing
