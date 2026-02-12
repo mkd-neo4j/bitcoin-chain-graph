@@ -17,6 +17,9 @@ mod snapshot_resilience;
 #[path = "domain/adaptive_transaction_memory.rs"]
 mod adaptive_transaction_memory;
 
+#[path = "domain/shutdown_height.rs"]
+mod shutdown_height;
+
 #[path = "domain/utxo"]
 mod utxo {
     mod cache;
