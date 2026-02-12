@@ -1,6 +1,6 @@
 ---
 title: Fix UTXO Cache Shutdown Save Height
-status: review
+status: completed
 priority: high
 ideation-ref: feature-docs/ideation/utxo-cache-shutdown-height/
 affected-files:
