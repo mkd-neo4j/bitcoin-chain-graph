@@ -6,6 +6,30 @@ Source this file (`@feature-docs/implement-feature.md`) to pick up and implement
 
 You are helping me kick off the agent teams pipeline for an existing feature. Follow these instructions carefully.
 
+## Coordinator Role — Read-Only for Code
+
+You are the **coordinator**. Your job is to orchestrate the pipeline — scan for work, run pre-flight checks, invoke agents, and verify lifecycle compliance between stages. You **NEVER** write implementation or test code yourself.
+
+### What You MUST NOT Do
+
+- **NEVER** use Write, Edit, or sed on implementation or test files
+- **NEVER** use Write, Edit, or sed on any file listed in a feature doc's `affected-files`
+- **NEVER** edit the same files an agent is working on
+- **NEVER** implement a fix directly — even a one-line change. All code changes go through test-writer → builder. TDD is the workflow, not a suggestion.
+- **NEVER** launch the next agent for a feature until the current agent has completed. The pipeline is **per-feature sequential**: test-writer must finish before builder starts, builder must finish before reviewer starts. Cross-feature parallelism is fine if `affected-files` don't overlap.
+- If code needs fixing — re-invoke the responsible agent with specific error details
+- If tests are wrong — report to the user or re-invoke the test-writer with the issue
+
+### What You May Do
+
+- **Read, Grep, Glob** on any file (read-only inspection is always fine)
+- **Task** to invoke agents (`@test-writer`, `@builder`, `@code-reviewer`)
+- **sed** on feature doc `status:` frontmatter field only (lifecycle housekeeping)
+- **mv** to move feature docs between lifecycle directories
+- **Write/Edit** on `feature-docs/STATUS.md` only (progress dashboard)
+
+When you encounter a problem with code — wrong implementation, failing tests, missing files — your response is always to **send the agent back with specific instructions**, never to fix it yourself.
+
 ## Step 1 — Scan for Ready Features
 
 Scan `feature-docs/ready/` for `.md` files (excluding example-feature.md). For each feature doc found, read its YAML frontmatter to get the `title`, `priority`, and `affected-files`.
@@ -60,19 +84,33 @@ Check if a feature branch `feat/<feature-name>` already exists (run `git branch 
 
 ## Step 4 — Kickoff
 
-Show me what will happen:
+**If pre-flight checks passed with no warnings** (no missing sections, no file ownership conflicts, no existing branch from a previous attempt), skip confirmation and go straight to the kickoff command:
+
+> **Kicking off:**
+>
+> - **Feature**: <title>
+> - **Agent**: @test-writer
+> - **Branch**: `feat/<feature-name>` (will be created)
+> - **Affected files**: <list from frontmatter>
+>
+> ```
+> @test-writer Pick up feature-docs/ready/<filename>.md
+> ```
+
+**If any warnings were raised** (missing sections, file conflicts, or branch already exists), show the plan and ask for confirmation before providing the kickoff command:
 
 > **Implementation Plan**
 >
 > - **Feature**: <title>
 > - **Agent**: @test-writer
 > - **Action**: Write failing tests for all acceptance criteria
-> - **Branch**: `feat/<feature-name>` (exists / will be created)
+> - **Branch**: `feat/<feature-name>` (exists — previous attempt?)
 > - **Affected files**: <list from frontmatter>
+> - **Warnings**: <list warnings from Steps 2–3>
 >
 > Ready to kick off?
 
-On confirmation, output the exact kickoff command for me to run:
+On confirmation, output the kickoff command:
 
 ```
 @test-writer Pick up feature-docs/ready/<filename>.md
@@ -102,7 +140,11 @@ After I kick off the agent, explain:
 
 Whether the pipeline runs via TeammateIdle hooks or manual orchestration, **verify lifecycle compliance between every stage**. Agents sometimes skip the doc-move and STATUS.md update steps. The `task-completed.sh` hook enforces this deterministically, but if you are orchestrating manually, check before launching the next agent.
 
+**Critical: Per-feature sequential.** Within a single feature, only one agent works at a time. Do NOT launch the next agent until the current agent has **completed its task and gone idle**. Launching the builder while the test-writer is still running causes file conflicts. Multiple features may run in parallel if their `affected-files` don't overlap.
+
 ### Between test-writer and builder
+
+**Wait for the test-writer to complete its task before proceeding.** If the test-writer is still running, do not launch the builder — both agents will edit overlapping files and cause conflicts.
 
 After the test-writer finishes, verify before invoking the builder:
 
@@ -117,6 +159,8 @@ After the test-writer finishes, verify before invoking the builder:
 3. **Then launch**: `@builder Pick up feature-docs/testing/<filename>.md`
 
 ### Between builder and reviewer
+
+**Wait for the builder to complete its task before proceeding.**
 
 After the builder finishes, verify before invoking the reviewer:
 
@@ -134,7 +178,84 @@ After the builder finishes, verify before invoking the reviewer:
 
 1. **Verify doc moved to completed**: `ls feature-docs/completed/<filename>.md`
 2. **Update STATUS.md** if the reviewer did not
-3. The feature branch is now ready for PR
+3. **Check for non-blocking issues** in the review report. If the reviewer flagged follow-ups, present them to the user:
+
+> The reviewer approved the feature but flagged these non-blocking issues:
+>
+> 1. [issue from review report]
+> 2. [issue from review report]
+>
+> Would you like to:
+> - **Create follow-ups** — route each through the TDD pipeline
+> - **Skip** — ship as-is and track them separately
+> - **Mark as blocking** — move the doc back to `ready/` and route through the full TDD pipeline
+
+4. The feature branch is ready for PR (unless the user chose to fix follow-ups first)
+
+### If the reviewer flags blocking issues
+
+The reviewer reports issues back to the coordinator — it **never fixes code itself**. The coordinator reads the review report and determines the routing. This triggers an automatic rework loop — no human intervention needed unless it stalls.
+
+**Determine the routing:**
+
+Read the review report and classify each issue:
+
+- **Implementation issues** (wrong logic, missing error handling, convention violations, dead code, unused imports): route to the **builder**
+- **Test gaps** (missing test coverage, wrong test expectations, missing edge case tests): route to the **test-writer** first, then the **builder**, then back to the reviewer — the full TDD cycle
+
+**Implementation-only rework cycle** (builder → reviewer):
+
+1. **Verify the doc location**: `ls feature-docs/building/<filename>.md`
+   - If the reviewer didn't move it back, move it: `sed` the status to `building`, `mv` to `feature-docs/building/`
+2. **Check STATUS.md** reflects `building` status — update if the reviewer did not
+3. **Re-invoke the builder** with the specific issues:
+   ```
+   @builder The reviewer found issues with feature-docs/building/<filename>.md:
+   - [specific issue 1 from review]
+   - [specific issue 2 from review]
+   Fix these and move the doc back to review/ when tests pass.
+   ```
+4. **Wait for the builder to complete**, then re-invoke the reviewer (follow the "Between builder and reviewer" steps above)
+
+**Test-gap rework cycle** (test-writer → builder → reviewer):
+
+1. Move the doc back to `ready/`: `sed` the status to `ready`, `mv` to `feature-docs/ready/`
+2. **Update STATUS.md** to reflect `ready` status
+3. **Re-invoke the test-writer** with the specific gaps:
+   ```
+   @test-writer The reviewer found test gaps in feature-docs/ready/<filename>.md:
+   - [missing test coverage for X]
+   - [wrong expectation in Y test]
+   Add or fix failing tests for these issues.
+   ```
+4. **Wait for the test-writer to complete**, then invoke the builder, then the reviewer — full pipeline
+
+**Do NOT fix the code yourself** — the coordinator routes, the agents fix.
+
+**Circuit breaker:** Track the number of rework cycles. After **3 round-trips**, stop and escalate to the user:
+
+> The builder and reviewer have cycled 3 times on **<feature title>**. Remaining issues:
+>
+> - [issue from latest review]
+>
+> This may indicate a spec ambiguity or a problem the builder cannot resolve alone. How would you like to proceed?
+
+### Follow-up issues after pipeline completes
+
+When the user or reviewer identifies an issue after the feature is in `completed/` — even a "small" one-line fix:
+
+1. **NEVER fix it directly** — this is the most common way the coordinator breaks TDD
+2. **Ask the user** how to handle it:
+
+> Follow-up issue identified: [description]
+>
+> Options:
+> - **New feature doc** — create a separate doc in `ready/` for this fix
+> - **Amend existing** — move the completed doc back to `ready/`, add acceptance criteria for the fix
+> - **Skip** — note it as a known issue, ship without fixing
+
+3. **Route through the full pipeline**: `@test-writer` → `@builder` → `@code-reviewer`
+4. Even for trivial fixes — a failing test proves the bug exists, implementation proves it's fixed, review proves it's correct
 
 ### If the pipeline stalls mid-stage
 
