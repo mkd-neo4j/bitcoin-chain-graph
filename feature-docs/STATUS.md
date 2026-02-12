@@ -2,6 +2,12 @@
 
 Updated by agents after each stage transition.
 
+## neo4j-writer-transactions — testing
+- **Agent**: test-writer
+- **Tests**: 15 tests written, all failing or ignored (expected — no implementation yet)
+- **Criteria covered**: 15/15 acceptance, 7/7 edge cases
+- **Branch**: feat/neo4j-writer-transactions
+
 ## bip30-duplicate-coinbase — completed
 - **Agent**: code-reviewer (approved)
 - **Tests**: 12/12 passing
