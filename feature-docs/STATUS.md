@@ -23,10 +23,10 @@ Updated by agents after each stage transition.
 - **Branch**: feat/snapshot-resilience
 - **Review**: APPROVED — all 9 ACs verified, conventions compliant, out-of-scope items preserved
 
-## adaptive-transaction-memory — testing
-- **Agent**: test-writer
-- **Tests**: 17 tests written, all failing (expected — no implementation yet)
-- **Criteria covered**: 17/17 acceptance, 4/5 edge cases (BIP30 covered by existing tests)
+## adaptive-transaction-memory — review
+- **Agent**: builder (done)
+- **Tests**: 110/110 passing
+- **Verify**: type check PASS, lint PASS, tests PASS
 - **Branch**: feat/adaptive-transaction-memory
 
 ## neo4j-atomic-batch-transactions — completed

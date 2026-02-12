@@ -41,7 +41,86 @@ use crate::writer::{GraphWriter, Result, WriterError};
 use bitcoin::{Block, Network};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
+
+/// Estimated bytes per block node in a Neo4j transaction.
+pub const BYTES_PER_BLOCK: usize = 500;
+/// Estimated bytes per transaction node in a Neo4j transaction.
+pub const BYTES_PER_TX: usize = 400;
+/// Estimated bytes per output node in a Neo4j transaction.
+pub const BYTES_PER_OUTPUT: usize = 550;
+/// Estimated bytes per input node in a Neo4j transaction.
+pub const BYTES_PER_INPUT: usize = 550;
+
+/// Estimate the Neo4j transaction memory for a single bitcoin block.
+///
+/// Returns `BYTES_PER_BLOCK + T*BYTES_PER_TX + O*BYTES_PER_OUTPUT + I*BYTES_PER_INPUT`
+/// where T = transaction count, O = total outputs, I = total inputs.
+pub fn estimate_block_memory(block: &Block) -> usize {
+    let tx_count = block.txdata.len();
+    let output_count: usize = block.txdata.iter().map(|tx| tx.output.len()).sum();
+    let input_count: usize = block.txdata.iter().map(|tx| tx.input.len()).sum();
+    BYTES_PER_BLOCK + tx_count * BYTES_PER_TX + output_count * BYTES_PER_OUTPUT + input_count * BYTES_PER_INPUT
+}
+
+/// Compute adaptive chunk ranges for a batch of blocks.
+///
+/// Given per-block memory estimates and a memory budget, returns index ranges
+/// that partition the blocks into chunks fitting within the budget.
+/// Each chunk's total estimated memory is at most `max_memory_bytes`.
+/// A single block that exceeds the budget is placed alone in its own chunk
+/// with a warning logged.
+///
+/// # Arguments
+/// * `block_memories` - Estimated memory for each block (indexed by position)
+/// * `max_memory_bytes` - Maximum memory budget per chunk in bytes
+///
+/// # Returns
+/// Vec of Range<usize> index ranges into the original blocks slice
+pub fn compute_adaptive_chunks(
+    block_memories: &[usize],
+    max_memory_bytes: usize,
+) -> Vec<Range<usize>> {
+    if block_memories.is_empty() {
+        return Vec::new();
+    }
+
+    let mut chunks = Vec::new();
+    let mut chunk_start = 0;
+    let mut chunk_memory = 0usize;
+
+    for (i, &mem) in block_memories.iter().enumerate() {
+        if chunk_memory + mem > max_memory_bytes && i > chunk_start {
+            // Current block would exceed budget — close the current chunk
+            chunks.push(chunk_start..i);
+            chunk_start = i;
+            chunk_memory = 0;
+        }
+
+        chunk_memory += mem;
+
+        // If a single block exceeds budget, it gets its own chunk (minimum 1 block)
+        if mem > max_memory_bytes && i == chunk_start {
+            tracing::warn!(
+                block_index = i,
+                estimated_mb = mem / (1024 * 1024),
+                budget_mb = max_memory_bytes / (1024 * 1024),
+                "Single block exceeds memory budget, placing in its own chunk"
+            );
+            chunks.push(chunk_start..i + 1);
+            chunk_start = i + 1;
+            chunk_memory = 0;
+        }
+    }
+
+    // Close the final chunk if there are remaining blocks
+    if chunk_start < block_memories.len() {
+        chunks.push(chunk_start..block_memories.len());
+    }
+
+    chunks
+}
 
 /// Known BIP30 duplicate transaction block heights.
 ///
@@ -81,6 +160,8 @@ pub struct IngestionOrchestrator<W: GraphWriter> {
     writer: Arc<W>,
     network: Network,
     utxo_cache: UtxoCache,
+    /// Maximum Neo4j transaction memory budget in megabytes
+    max_transaction_memory_mb: usize,
     /// Optional path for saving UTXO cache snapshots after each committed batch
     cache_snapshot_path: Mutex<Option<PathBuf>>,
 }
@@ -106,6 +187,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             writer: writer_arc,
             network,
             utxo_cache,
+            max_transaction_memory_mb: 600,
             cache_snapshot_path: Mutex::new(None),
         }
     }
@@ -584,60 +666,66 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     ///
     /// # Arguments
     /// * `blocks` - Slice of (height, block, file_name) tuples in blockchain height order
-    /// * `batch_size` - Number of blocks to accumulate before writing to database
-    ///
-    /// # Performance
-    /// - Backlog mode: Use batch_size = 100-1000 for maximum throughput
-    /// - Real-time mode: Use batch_size = 10-100 for lower latency
     ///
     /// # Errors
     /// Returns error if any database write fails or UTXO lookup fails
     pub async fn ingest_blocks_batch(
         &self,
         blocks: &[(u32, Block, String)],
-        batch_size: usize,
     ) -> Result<()> {
         let total_blocks = blocks.len();
-        tracing::info!(total_blocks, batch_size, "Starting batch ingestion");
+        let max_memory_bytes = self.max_transaction_memory_mb * 1024 * 1024;
+        tracing::info!(total_blocks, max_memory_mb = self.max_transaction_memory_mb, "Starting adaptive batch ingestion");
 
-        for (batch_idx, chunk) in blocks.chunks(batch_size).enumerate() {
+        // Estimate memory for each block
+        let block_memories: Vec<usize> = blocks.iter().map(|(_, b, _)| estimate_block_memory(b)).collect();
+
+        // Compute adaptive chunks based on memory budget
+        let chunk_ranges = compute_adaptive_chunks(&block_memories, max_memory_bytes);
+        let total_chunks = chunk_ranges.len();
+
+        for (chunk_idx, chunk_range) in chunk_ranges.iter().enumerate() {
+            let chunk = &blocks[chunk_range.clone()];
             let start_height = chunk.first().map(|(h, _, _)| *h).unwrap_or(0);
             let end_height = chunk.last().map(|(h, _, _)| *h).unwrap_or(0);
             let blocks_in_batch = chunk.len();
+            let estimated_bytes: usize = block_memories[chunk_range.clone()].iter().sum();
+            let estimated_mb = estimated_bytes / (1024 * 1024);
 
             // Validate parent hash of the first block in each chunk.
-            // This catches reorgs that occur at any chunk boundary, not just
-            // the very first block of the entire batch.
             if let Some((height, block, _)) = chunk.first() {
                 self.validate_parent_hash(block, *height).await?;
             }
 
             tracing::info!(
-                batch = batch_idx + 1,
+                chunk = chunk_idx + 1,
+                total_chunks,
+                blocks = blocks_in_batch,
+                estimated_mb,
                 start_height,
                 end_height,
-                blocks_in_batch,
-                "Processing batch"
+                "Processing adaptive chunk"
             );
 
             // Begin atomic transaction for this chunk
             self.writer.begin_transaction().await?;
 
             let chunk_result = self
-                .process_batch_chunk(chunk, batch_idx, blocks_in_batch)
+                .process_batch_chunk(chunk, chunk_idx, blocks_in_batch)
                 .await;
 
             match chunk_result {
                 Ok(()) => {
                     self.writer.commit_transaction().await?;
                     self.try_save_snapshot(end_height);
-                    tracing::info!(batch = batch_idx + 1, "Batch complete");
+                    tracing::info!(chunk = chunk_idx + 1, total_chunks, "Chunk complete");
                 }
                 Err(e) => {
                     tracing::error!(
-                        batch = batch_idx + 1,
+                        chunk = chunk_idx + 1,
+                        total_chunks,
                         error = %e,
-                        "Batch chunk failed — rolling back transaction"
+                        "Chunk failed — rolling back transaction"
                     );
                     if let Err(rollback_err) = self.writer.rollback_transaction().await {
                         tracing::error!(
@@ -650,7 +738,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             }
         }
 
-        tracing::info!(total_blocks, "Batch ingestion complete");
+        tracing::info!(total_blocks, total_chunks, "Adaptive batch ingestion complete");
         Ok(())
     }
 

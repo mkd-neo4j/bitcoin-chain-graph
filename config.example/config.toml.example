@@ -56,13 +56,12 @@ max_retries = 3
 write_batch_size = 5000
 
 [ingestion]
-# Number of blocks per processing batch
-#   Low resource: 10-50    Default: 5000    High/Ultra: 5000-10000
-batch_size = 5000
-
-# Maximum memory budget per batch (MB)
-#   Low resource: 128    Default: 512    High: 2048    Ultra: 4096
-max_batch_memory_mb = 512
+# Maximum Neo4j transaction memory budget in megabytes.
+# The orchestrator dynamically sizes each transaction's block count based on
+# estimated entity counts. Early blocks batch thousands together while modern
+# blocks batch ~60-75. Lower this if you hit Neo4j OOM errors.
+#   Low resource: 200    Default: 600    High: 1200
+max_transaction_memory_mb = 600
 
 # Data integrity validation
 enable_validation = true
@@ -70,10 +69,6 @@ enable_validation = true
 # Run validation queries every N blocks (higher = less overhead)
 #   Low resource: 10000    Default: 10000    Aggressive: 1000
 validate_every_n_blocks = 10000
-
-# Save checkpoint every N batches (higher = faster, but more re-work on crash)
-#   Safe: 1    Balanced: 10    Aggressive: 50
-checkpoint_interval = 10
 
 # Resume behavior
 auto_resume = true
