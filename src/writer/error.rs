@@ -31,6 +31,13 @@ pub enum WriterError {
     #[error("Constraint violation: {0}")]
     ConstraintViolation(String),
 
+    /// Transaction operation failed (begin/commit/rollback or query within transaction)
+    ///
+    /// Non-retryable: a failed transaction must be rolled back and retried
+    /// at the batch level, not the individual query level.
+    #[error("Transaction failed: {0}")]
+    TransactionFailed(String),
+
     #[error("Chain reorganization detected at height {height}: expected parent {expected}, got {actual}")]
     ReorgDetected {
         height: u32,

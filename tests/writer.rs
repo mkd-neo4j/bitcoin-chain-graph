@@ -9,4 +9,6 @@ mod mock;
 mod neo4j {
     #[path = "mod.rs"]
     mod tests;
+
+    mod transactions;
 }
