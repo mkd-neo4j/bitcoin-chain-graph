@@ -27,6 +27,8 @@ You are the **coordinator**. Your job is to orchestrate the pipeline — scan fo
 - **sed** on feature doc `status:` frontmatter field only (lifecycle housekeeping)
 - **mv** to move feature docs between lifecycle directories
 - **Write/Edit** on `feature-docs/STATUS.md` only (progress dashboard)
+- **sed** on ideation README `status:` frontmatter field (lifecycle housekeeping — same scope as feature doc status updates)
+- **Write/Edit** on `feature-docs/ideation/*/README.md` (lifecycle housekeeping — progress entries at pipeline completion)
 
 When you encounter a problem with code — wrong implementation, failing tests, missing files — your response is always to **send the agent back with specific instructions**, never to fix it yourself.
 
@@ -74,6 +76,14 @@ After I select a feature:
 > - Proceed anyway (only if you're sure the files won't conflict)
 >
 > What would you like to do?
+
+4. **Check ideation README** — if the feature doc has an `ideation-ref` field, read the ideation README. If its status is still `in-progress` (meaning the distillation step forgot to update it), notify and fix:
+
+   > The ideation README for this feature still shows `in-progress` but a ready feature doc exists. Updating to `complete`.
+
+   ```bash
+   sed -i '' 's/status: in-progress/status: complete/' feature-docs/ideation/<feature-name>/README.md
+   ```
 
 ## Step 3 — Check Branch
 
@@ -190,7 +200,20 @@ After the builder finishes, verify before invoking the reviewer:
 > - **Skip** — ship as-is and track them separately
 > - **Mark as blocking** — move the doc back to `ready/` and route through the full TDD pipeline
 
-4. The feature branch is ready for PR (unless the user chose to fix follow-ups first)
+4. **Update ideation README** (if applicable): Read the feature doc's `ideation-ref` frontmatter field. If it points to an ideation folder with a README, update it:
+   ```bash
+   sed -i '' 's/status: complete/status: shipped/' feature-docs/ideation/<feature-name>/README.md
+   ```
+   Then append a progress entry to the README's `## Progress` section:
+   ```markdown
+   ### <today's date> — Pipeline complete
+   - **Result**: Feature shipped through agent teams pipeline (test-writer → builder → reviewer)
+   - **Feature doc**: `feature-docs/completed/<filename>.md`
+   - **Branch**: `feat/<feature-name>`
+   ```
+   If no `ideation-ref` field or no ideation folder, skip this step silently.
+
+5. The feature branch is ready for PR (unless the user chose to fix follow-ups first)
 
 ### If the reviewer flags blocking issues
 

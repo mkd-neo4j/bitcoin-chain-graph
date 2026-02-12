@@ -146,6 +146,7 @@ This prevents a builder from independently arriving at the same "obvious" optimi
 - **Moving files IS the status transition** — the `status` field in frontmatter and the directory must stay in sync. This is not optional. The `task-completed.sh` hook blocks task completion if a feature doc's `status:` field does not match its directory.
 - **Progress dashboard**: Update `feature-docs/STATUS.md` after every stage transition. This is the only way the next agent (or the orchestrator) can orient without reading every directory.
 - **Ideation reference**: Feature docs may include `ideation-ref` in frontmatter pointing to the ideation folder for additional context.
+- **Ideation README lifecycle**: Ideation READMEs track three statuses: `in-progress` (exploring), `complete` (distilled into a ready feature doc), `shipped` (feature completed the full pipeline). The coordinator updates ideation README status to `shipped` when the reviewer approves.
 
 ### Lifecycle Compliance Checklist
 

@@ -30,13 +30,14 @@ Each folder's `README.md` has YAML frontmatter with status:
 ```yaml
 ---
 feature: feature-name
-status: in-progress       # or: complete
+status: in-progress       # or: complete, shipped
 created: 2025-01-15
 ---
 ```
 
 - **in-progress**: Still being explored. The `new-feature.md` prompt will offer to resume this.
 - **complete**: Distilled into a feature doc in `feature-docs/ready/`. This folder is now an archive.
+- **shipped**: Feature completed the full agent teams pipeline (testing → building → review → completed). Implementation is merged or ready for PR.
 
 ## Progress Log
 
