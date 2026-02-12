@@ -40,18 +40,18 @@ use crate::domain::{
 use crate::writer::{GraphWriter, Result, WriterError};
 use bitcoin::{Block, Network};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// Estimated bytes per block node in a Neo4j transaction.
-pub(crate) const BYTES_PER_BLOCK: usize = 500;
+pub const BYTES_PER_BLOCK: usize = 500;
 /// Estimated bytes per transaction node in a Neo4j transaction.
-pub(crate) const BYTES_PER_TX: usize = 400;
+pub const BYTES_PER_TX: usize = 400;
 /// Estimated bytes per output node in a Neo4j transaction.
-pub(crate) const BYTES_PER_OUTPUT: usize = 550;
+pub const BYTES_PER_OUTPUT: usize = 550;
 /// Estimated bytes per input node in a Neo4j transaction.
-pub(crate) const BYTES_PER_INPUT: usize = 550;
+pub const BYTES_PER_INPUT: usize = 550;
 
 /// Estimate the Neo4j transaction memory for a single bitcoin block.
 ///
@@ -61,7 +61,10 @@ pub fn estimate_block_memory(block: &Block) -> usize {
     let tx_count = block.txdata.len();
     let output_count: usize = block.txdata.iter().map(|tx| tx.output.len()).sum();
     let input_count: usize = block.txdata.iter().map(|tx| tx.input.len()).sum();
-    BYTES_PER_BLOCK + tx_count * BYTES_PER_TX + output_count * BYTES_PER_OUTPUT + input_count * BYTES_PER_INPUT
+    BYTES_PER_BLOCK
+        + tx_count * BYTES_PER_TX
+        + output_count * BYTES_PER_OUTPUT
+        + input_count * BYTES_PER_INPUT
 }
 
 /// Compute adaptive chunk ranges for a batch of blocks.
@@ -692,16 +695,20 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     ///
     /// # Errors
     /// Returns error if any database write fails or UTXO lookup fails
-    pub async fn ingest_blocks_batch(
-        &self,
-        blocks: &[(u32, Block, String)],
-    ) -> Result<()> {
+    pub async fn ingest_blocks_batch(&self, blocks: &[(u32, Block, String)]) -> Result<()> {
         let total_blocks = blocks.len();
         let max_memory_bytes = self.max_transaction_memory_bytes;
-        tracing::info!(total_blocks, max_memory_mb = self.max_transaction_memory_bytes / (1024 * 1024), "Starting adaptive batch ingestion");
+        tracing::info!(
+            total_blocks,
+            max_memory_mb = self.max_transaction_memory_bytes / (1024 * 1024),
+            "Starting adaptive batch ingestion"
+        );
 
         // Estimate memory for each block
-        let block_memories: Vec<usize> = blocks.iter().map(|(_, b, _)| estimate_block_memory(b)).collect();
+        let block_memories: Vec<usize> = blocks
+            .iter()
+            .map(|(_, b, _)| estimate_block_memory(b))
+            .collect();
 
         // Compute adaptive chunks based on memory budget
         let chunk_ranges = compute_adaptive_chunks(&block_memories, max_memory_bytes);
@@ -761,7 +768,11 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             }
         }
 
-        tracing::info!(total_blocks, total_chunks, "Adaptive batch ingestion complete");
+        tracing::info!(
+            total_blocks,
+            total_chunks,
+            "Adaptive batch ingestion complete"
+        );
         Ok(())
     }
 
@@ -775,398 +786,384 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         _batch_idx: usize,
         blocks_in_batch: usize,
     ) -> Result<()> {
-            // Detect BIP30 duplicate-txid blocks in this chunk.
-            // If any block is a known BIP30 height, fall back to MERGE writes
-            // for the entire chunk to handle duplicate unique constraints safely.
-            let has_bip30 = chunk
-                .iter()
-                .any(|(h, _, _)| BIP30_DUPLICATE_HEIGHTS.contains(h));
-            if has_bip30 {
-                tracing::warn!(
-                    "BIP30 duplicate block detected in chunk — using MERGE write path"
-                );
-            }
+        // Detect BIP30 duplicate-txid blocks in this chunk.
+        // If any block is a known BIP30 height, fall back to MERGE writes
+        // for the entire chunk to handle duplicate unique constraints safely.
+        let has_bip30 = chunk
+            .iter()
+            .any(|(h, _, _)| BIP30_DUPLICATE_HEIGHTS.contains(h));
+        if has_bip30 {
+            tracing::warn!("BIP30 duplicate block detected in chunk — using MERGE write path");
+        }
 
-            // Phase 1: Accumulate all block data
-            let phase1_start = std::time::Instant::now();
-            let mut block_data_batch = Vec::with_capacity(blocks_in_batch);
-            for (height, block, _file_name) in chunk {
-                block_data_batch.push(BlockData::from_block(block, *height));
-            }
+        // Phase 1: Accumulate all block data
+        let phase1_start = std::time::Instant::now();
+        let mut block_data_batch = Vec::with_capacity(blocks_in_batch);
+        for (height, block, _file_name) in chunk {
+            block_data_batch.push(BlockData::from_block(block, *height));
+        }
 
-            // Write blocks in one batch (fast CREATE for forward ingestion)
-            let write_start = std::time::Instant::now();
-            self.writer.write_blocks_fast(&block_data_batch).await?;
-            tracing::debug!(
-                phase = "1_blocks",
-                count = block_data_batch.len(),
-                accumulate_secs = format!("{:.2}", phase1_start.elapsed().as_secs_f64()),
-                write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
-                "Phase complete"
-            );
+        // Write blocks in one batch (fast CREATE for forward ingestion)
+        let write_start = std::time::Instant::now();
+        self.writer.write_blocks_fast(&block_data_batch).await?;
+        tracing::debug!(
+            phase = "1_blocks",
+            count = block_data_batch.len(),
+            accumulate_secs = format!("{:.2}", phase1_start.elapsed().as_secs_f64()),
+            write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
+            "Phase complete"
+        );
 
-            // Pre-count totals for capacity pre-allocation
-            let total_txs: usize = chunk.iter().map(|(_, b, _)| b.txdata.len()).sum();
-            let total_outputs: usize = chunk
-                .iter()
-                .flat_map(|(_, b, _)| b.txdata.iter())
-                .map(|tx| tx.output.len())
-                .sum();
-            let total_inputs: usize = chunk
-                .iter()
-                .flat_map(|(_, b, _)| b.txdata.iter())
-                .map(|tx| tx.input.len())
-                .sum();
+        // Pre-count totals for capacity pre-allocation
+        let total_txs: usize = chunk.iter().map(|(_, b, _)| b.txdata.len()).sum();
+        let total_outputs: usize = chunk
+            .iter()
+            .flat_map(|(_, b, _)| b.txdata.iter())
+            .map(|tx| tx.output.len())
+            .sum();
+        let total_inputs: usize = chunk
+            .iter()
+            .flat_map(|(_, b, _)| b.txdata.iter())
+            .map(|tx| tx.input.len())
+            .sum();
 
-            // Pre-build simplified layer accumulators (populated during Phases 2 and 3
-            // to avoid redundant address derivation and cache lookups in Phase 6)
-            let mut all_performs_data: Vec<PerformsData> = Vec::with_capacity(total_txs);
-            let mut all_benefits_to_data: Vec<BenefitsToData> = Vec::with_capacity(total_txs);
+        // Pre-build simplified layer accumulators (populated during Phases 2 and 3
+        // to avoid redundant address derivation and cache lookups in Phase 6)
+        let mut all_performs_data: Vec<PerformsData> = Vec::with_capacity(total_txs);
+        let mut all_benefits_to_data: Vec<BenefitsToData> = Vec::with_capacity(total_txs);
 
-            // Phase 2: Accumulate outputs, populate cache, AND build BENEFITS_TO (BEFORE transactions!)
-            let phase2_start = std::time::Instant::now();
-            let mut output_data_batch = Vec::with_capacity(total_outputs);
-            for (_height, block, _file_name) in chunk {
-                for tx in &block.txdata {
-                    let txid = tx.txid().to_string();
-                    let mut benefits_map: HashMap<String, (u32, u64)> = HashMap::new();
+        // Phase 2: Accumulate outputs, populate cache, AND build BENEFITS_TO (BEFORE transactions!)
+        let phase2_start = std::time::Instant::now();
+        let mut output_data_batch = Vec::with_capacity(total_outputs);
+        for (_height, block, _file_name) in chunk {
+            for tx in &block.txdata {
+                let txid = tx.txid().to_string();
+                let mut benefits_map: HashMap<String, (u32, u64)> = HashMap::new();
 
-                    for (output_index, output) in tx.output.iter().enumerate() {
-                        let output_data = OutputData::from_output(
-                            output,
-                            &txid,
-                            output_index as u32,
-                            self.network,
-                        );
+                for (output_index, output) in tx.output.iter().enumerate() {
+                    let output_data =
+                        OutputData::from_output(output, &txid, output_index as u32, self.network);
 
-                        // Build BENEFITS_TO aggregation (address already derived above)
-                        if let Some(ref address) = output_data.address {
-                            let entry = benefits_map.entry(address.clone()).or_insert((0, 0));
-                            entry.0 += 1;
-                            entry.1 += output.value.to_sat();
-                        }
-
-                        output_data_batch.push(output_data);
+                    // Build BENEFITS_TO aggregation (address already derived above)
+                    if let Some(ref address) = output_data.address {
+                        let entry = benefits_map.entry(address.clone()).or_insert((0, 0));
+                        entry.0 += 1;
+                        entry.1 += output.value.to_sat();
                     }
 
-                    // Convert benefits_map to BenefitsToData
-                    for (address, (output_count, amount_received)) in benefits_map {
-                        all_benefits_to_data.push(BenefitsToData {
-                            from_txid: txid.clone(),
-                            to_address: address,
-                            output_count,
-                            amount_received,
-                        });
-                    }
-                }
-            }
-
-            // Write outputs to Neo4j AND populate cache concurrently.
-            // Neo4j write is I/O-bound; cache population is CPU-bound.
-            // tokio::join! overlaps the Neo4j network wait with cache inserts.
-            // BIP30 chunks use MERGE (idempotent); normal chunks use fast CREATE.
-            let write_start = std::time::Instant::now();
-            let write_future = async {
-                if has_bip30 {
-                    self.writer.write_outputs(&output_data_batch).await
-                } else {
-                    self.writer.write_outputs_fast(&output_data_batch).await
-                }
-            };
-            let cache_future = async {
-                for output in &output_data_batch {
-                    if let Some(key) = UtxoKey::from_hex_txid(&output.txid, output.output_index) {
-                        let cached_output = CachedOutput {
-                            output_index: output.output_index,
-                            amount: output.amount,
-                            script_type: output
-                                .script_type
-                                .parse()
-                                .unwrap_or(ScriptTypeTag::Unknown),
-                            address: output.address.as_deref().map(Arc::from),
-                        };
-                        self.utxo_cache.insert(key, cached_output);
-                    }
-                }
-            };
-            let (write_result, _) = tokio::join!(write_future, cache_future);
-            write_result?;
-            tracing::debug!(
-                phase = "2_outputs",
-                count = output_data_batch.len(),
-                accumulate_secs = format!("{:.2}", phase2_start.elapsed().as_secs_f64()),
-                write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
-                "Phase complete"
-            );
-
-            // Phase 3: Accumulate transactions (with amounts calculated from cache) AND build PERFORMS
-            // Refactored to batch UTXO lookups across ALL transactions (1 Neo4j query instead of N)
-            let phase3_start = std::time::Instant::now();
-
-            // Helper struct for tracking pending transactions during batched UTXO lookup
-            struct PendingTx<'a> {
-                tx: &'a bitcoin::Transaction,
-                block_height: u32,
-                block_hash: String,
-                timestamp: i64,
-                key_range: std::ops::Range<usize>,
-            }
-
-            // Phase 3a: Collect all input keys from all non-coinbase transactions
-            let mut all_input_keys: Vec<UtxoKey> = Vec::with_capacity(total_inputs);
-            let mut pending_txs: Vec<PendingTx> = Vec::with_capacity(total_txs);
-
-            for (height, block, _file_name) in chunk {
-                let block_hash = block.block_hash().to_string();
-                let timestamp = block.header.time as i64;
-
-                // BIP30: Warn about known duplicate-txid blocks (once per block)
-                if BIP30_DUPLICATE_HEIGHTS.contains(height) {
-                    tracing::warn!(
-                        height,
-                        block_hash = %block_hash,
-                        "BIP30 duplicate txid block — coinbase txid in this block duplicates an earlier block's coinbase. \
-                         MERGE handles this correctly (last-write-wins)."
-                    );
+                    output_data_batch.push(output_data);
                 }
 
-                for tx in &block.txdata {
-                    let start = all_input_keys.len();
-                    if !tx.is_coinbase() {
-                        all_input_keys.extend(
-                            tx.input
-                                .iter()
-                                .map(|i| UtxoKey::from_outpoint(&i.previous_output)),
-                        );
-                    }
-                    pending_txs.push(PendingTx {
-                        tx,
-                        block_height: *height,
-                        block_hash: block_hash.clone(),
-                        timestamp,
-                        key_range: start..all_input_keys.len(),
+                // Convert benefits_map to BenefitsToData
+                for (address, (output_count, amount_received)) in benefits_map {
+                    all_benefits_to_data.push(BenefitsToData {
+                        from_txid: txid.clone(),
+                        to_address: address,
+                        output_count,
+                        amount_received,
                     });
                 }
             }
+        }
 
-            // Phase 3b: Single batched lookup for ALL input keys from cache
-            let all_outputs = self
-                .utxo_cache
-                .get_many_or_fail(&all_input_keys)?;
-
-            tracing::debug!(
-                total_keys = all_input_keys.len(),
-                total_txs = pending_txs.len(),
-                "Batched UTXO lookup complete"
-            );
-
-            // Phase 3c: Process each transaction using pre-fetched outputs
-            let mut transaction_data_batch = Vec::with_capacity(total_txs);
-            for pending in &pending_txs {
-                let mut tx_data = TransactionData::from_transaction(
-                    pending.tx,
-                    pending.block_height,
-                    &pending.block_hash,
-                    pending.timestamp,
-                );
-
-                let total_output: u64 =
-                    pending.tx.output.iter().map(|out| out.value.to_sat()).sum();
-
-                let total_input: u64 = if pending.tx.is_coinbase() {
-                    0
-                } else {
-                    // Get pre-fetched outputs for this transaction's inputs
-                    let tx_keys = &all_input_keys[pending.key_range.clone()];
-                    let mut performs_map: HashMap<String, (u32, u64)> = HashMap::new();
-                    let mut sum: u64 = 0;
-
-                    for key in tx_keys {
-                        if let Some(output) = all_outputs.get(key) {
-                            sum += output.amount;
-                            if let Some(ref address) = output.address {
-                                let addr_str: &str = address;
-                                let entry =
-                                    performs_map.entry(addr_str.to_string()).or_insert((0, 0));
-                                entry.0 += 1;
-                                entry.1 += output.amount;
-                            }
-                        }
-                    }
-
-                    // Convert performs_map to PerformsData
-                    let txid = pending.tx.txid().to_string();
-                    for (address, (input_count, amount_spent)) in performs_map {
-                        all_performs_data.push(PerformsData {
-                            from_address: address,
-                            to_txid: txid.clone(),
-                            input_count,
-                            amount_spent,
-                        });
-                    }
-
-                    sum
-                };
-
-                tx_data.total_input = Some(total_input);
-                tx_data.total_output = Some(total_output);
-                tx_data.fee = Some(total_input.saturating_sub(total_output));
-
-                transaction_data_batch.push(tx_data);
-            }
-
-            // Write transactions in one batch
-            // BIP30 chunks use MERGE (idempotent); normal chunks use fast CREATE.
-            let write_start = std::time::Instant::now();
+        // Write outputs to Neo4j AND populate cache concurrently.
+        // Neo4j write is I/O-bound; cache population is CPU-bound.
+        // tokio::join! overlaps the Neo4j network wait with cache inserts.
+        // BIP30 chunks use MERGE (idempotent); normal chunks use fast CREATE.
+        let write_start = std::time::Instant::now();
+        let write_future = async {
             if has_bip30 {
-                self.writer
-                    .write_transactions(&transaction_data_batch)
-                    .await?;
+                self.writer.write_outputs(&output_data_batch).await
             } else {
-                self.writer
-                    .write_transactions_fast(&transaction_data_batch)
-                    .await?;
+                self.writer.write_outputs_fast(&output_data_batch).await
             }
-            tracing::debug!(
-                phase = "3_transactions",
-                count = transaction_data_batch.len(),
-                accumulate_secs = format!("{:.2}", phase3_start.elapsed().as_secs_f64()),
-                write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
-                "Phase complete"
-            );
-
-            // Phase 3.5: Create HAS_OUTPUT relationships (Transaction -> Output)
-            // Must run AFTER Phase 3 so Transaction nodes exist
-            // Using fast CREATE for forward ingestion.
-            let phase35_start = std::time::Instant::now();
-            self.writer
-                .write_has_output_relationships_fast(&output_data_batch)
-                .await?;
-            tracing::debug!(
-                phase = "3.5_has_output",
-                count = output_data_batch.len(),
-                write_secs = format!("{:.2}", phase35_start.elapsed().as_secs_f64()),
-                "HAS_OUTPUT relationships created"
-            );
-
-            // Phase 4: Accumulate inputs (cache removal deferred to Phase 6)
-            let phase4_start = std::time::Instant::now();
-            let mut input_data_batch = Vec::with_capacity(total_inputs);
-            for (height, block, _file_name) in chunk {
-                for tx in &block.txdata {
-                    let txid = tx.txid().to_string();
-                    for (input_index, input) in tx.input.iter().enumerate() {
-                        let input_data =
-                            InputData::from_input(input, &txid, input_index as u32, *height);
-                        input_data_batch.push(input_data);
-                    }
+        };
+        let cache_future = async {
+            for output in &output_data_batch {
+                if let Some(key) = UtxoKey::from_hex_txid(&output.txid, output.output_index) {
+                    let cached_output = CachedOutput {
+                        output_index: output.output_index,
+                        amount: output.amount,
+                        script_type: output.script_type.parse().unwrap_or(ScriptTypeTag::Unknown),
+                        address: output.address.as_deref().map(Arc::from),
+                    };
+                    self.utxo_cache.insert(key, cached_output);
                 }
             }
+        };
+        let (write_result, _) = tokio::join!(write_future, cache_future);
+        write_result?;
+        tracing::debug!(
+            phase = "2_outputs",
+            count = output_data_batch.len(),
+            accumulate_secs = format!("{:.2}", phase2_start.elapsed().as_secs_f64()),
+            write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
+            "Phase complete"
+        );
 
-            // Write inputs in one batch
-            // BIP30 chunks use MERGE (idempotent); normal chunks use fast CREATE.
-            let write_start = std::time::Instant::now();
-            if has_bip30 {
-                self.writer.write_inputs(&input_data_batch).await?;
-            } else {
-                self.writer.write_inputs_fast(&input_data_batch).await?;
-            }
-            tracing::debug!(
-                phase = "4_inputs",
-                count = input_data_batch.len(),
-                accumulate_secs = format!("{:.2}", phase4_start.elapsed().as_secs_f64()),
-                write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
-                "Phase complete"
-            );
+        // Phase 3: Accumulate transactions (with amounts calculated from cache) AND build PERFORMS
+        // Refactored to batch UTXO lookups across ALL transactions (1 Neo4j query instead of N)
+        let phase3_start = std::time::Instant::now();
 
-            // Phase 6: Simplified layer (parallel writes using data accumulated in Phases 2-3)
-            let phase6_start = std::time::Instant::now();
+        // Helper struct for tracking pending transactions during batched UTXO lookup
+        struct PendingTx<'a> {
+            tx: &'a bitcoin::Transaction,
+            block_height: u32,
+            block_hash: String,
+            timestamp: i64,
+            key_range: std::ops::Range<usize>,
+        }
 
-            // Partition data by address hash to enable parallel writes without deadlocks
-            // 8 buckets provides good parallelism while staying within connection pool limits
-            const NUM_BUCKETS: usize = 8;
+        // Phase 3a: Collect all input keys from all non-coinbase transactions
+        let mut all_input_keys: Vec<UtxoKey> = Vec::with_capacity(total_inputs);
+        let mut pending_txs: Vec<PendingTx> = Vec::with_capacity(total_txs);
 
-            let performs_buckets =
-                Self::partition_performs_by_address(&all_performs_data, NUM_BUCKETS);
-            let benefits_buckets =
-                Self::partition_benefits_by_address(&all_benefits_to_data, NUM_BUCKETS);
+        for (height, block, _file_name) in chunk {
+            let block_hash = block.block_hash().to_string();
+            let timestamp = block.header.time as i64;
 
-            // Spawn parallel tasks (one per bucket)
-            let mut tasks = Vec::new();
-
-            for bucket_idx in 0..NUM_BUCKETS {
-                let performs = performs_buckets[bucket_idx].clone();
-                let benefits = benefits_buckets[bucket_idx].clone();
-                let writer = Arc::clone(&self.writer);
-
-                let task = tokio::spawn(async move {
-                    // Write PERFORMS first, then BENEFITS_TO (sequential within bucket)
-                    // This ensures same addresses are handled without deadlock
-                    if !performs.is_empty() {
-                        writer.write_performs(&performs).await?;
-                    }
-                    if !benefits.is_empty() {
-                        writer.write_benefits_to(&benefits).await?;
-                    }
-                    Ok::<_, WriterError>(())
-                });
-
-                tasks.push(task);
-            }
-
-            // Wait for all buckets to complete
-            for (idx, task) in tasks.into_iter().enumerate() {
-                task.await.map_err(|e| {
-                    WriterError::QueryFailed(format!("Bucket {} task panicked: {}", idx, e))
-                })??;
-            }
-
-            tracing::debug!(
-                phase = "6_simplified",
-                performs_count = all_performs_data.len(),
-                benefits_count = all_benefits_to_data.len(),
-                write_secs = format!("{:.2}", phase6_start.elapsed().as_secs_f64()),
-                "Phase complete"
-            );
-
-            // Phase 7: Remove spent outputs from cache (deferred from Phase 4)
-            // Must happen AFTER Phase 6 (which needs UTXO lookups for amounts and PERFORMS)
-            // Use batch remove for efficiency
-            let spent_keys: Vec<UtxoKey> = chunk
-                .iter()
-                .flat_map(|(_, block, _)| {
-                    block
-                        .txdata
-                        .iter()
-                        .filter(|tx| !tx.is_coinbase())
-                        .flat_map(|tx| {
-                            tx.input
-                                .iter()
-                                .map(|input| UtxoKey::from_outpoint(&input.previous_output))
-                        })
-                })
-                .collect();
-            self.utxo_cache.remove_many(&spent_keys);
-
-            // Update checkpoint after each batch
-            if let Some((height, block, file_name)) = chunk.last() {
-                let checkpoint = CheckpointData {
-                    last_processed_height: *height as i32,
-                    last_processed_hash: block.block_hash().to_string(),
-                    last_processed_file: file_name.clone(),
-                    last_processed_file_offset: None, // Not tracked in batch mode
-                    timestamp: chrono::Utc::now().timestamp(),
-                    status: "in_progress".to_string(),
-                };
-                self.writer.update_checkpoint(&checkpoint).await?;
-                tracing::info!(
-                    checkpoint_height = *height,
-                    checkpoint_file = %file_name,
-                    "Checkpoint updated"
+            // BIP30: Warn about known duplicate-txid blocks (once per block)
+            if BIP30_DUPLICATE_HEIGHTS.contains(height) {
+                tracing::warn!(
+                    height,
+                    block_hash = %block_hash,
+                    "BIP30 duplicate txid block — coinbase txid in this block duplicates an earlier block's coinbase. \
+                     MERGE handles this correctly (last-write-wins)."
                 );
             }
 
-            Ok(())
+            for tx in &block.txdata {
+                let start = all_input_keys.len();
+                if !tx.is_coinbase() {
+                    all_input_keys.extend(
+                        tx.input
+                            .iter()
+                            .map(|i| UtxoKey::from_outpoint(&i.previous_output)),
+                    );
+                }
+                pending_txs.push(PendingTx {
+                    tx,
+                    block_height: *height,
+                    block_hash: block_hash.clone(),
+                    timestamp,
+                    key_range: start..all_input_keys.len(),
+                });
+            }
+        }
+
+        // Phase 3b: Single batched lookup for ALL input keys from cache
+        let all_outputs = self.utxo_cache.get_many_or_fail(&all_input_keys)?;
+
+        tracing::debug!(
+            total_keys = all_input_keys.len(),
+            total_txs = pending_txs.len(),
+            "Batched UTXO lookup complete"
+        );
+
+        // Phase 3c: Process each transaction using pre-fetched outputs
+        let mut transaction_data_batch = Vec::with_capacity(total_txs);
+        for pending in &pending_txs {
+            let mut tx_data = TransactionData::from_transaction(
+                pending.tx,
+                pending.block_height,
+                &pending.block_hash,
+                pending.timestamp,
+            );
+
+            let total_output: u64 = pending.tx.output.iter().map(|out| out.value.to_sat()).sum();
+
+            let total_input: u64 = if pending.tx.is_coinbase() {
+                0
+            } else {
+                // Get pre-fetched outputs for this transaction's inputs
+                let tx_keys = &all_input_keys[pending.key_range.clone()];
+                let mut performs_map: HashMap<String, (u32, u64)> = HashMap::new();
+                let mut sum: u64 = 0;
+
+                for key in tx_keys {
+                    if let Some(output) = all_outputs.get(key) {
+                        sum += output.amount;
+                        if let Some(ref address) = output.address {
+                            let addr_str: &str = address;
+                            let entry = performs_map.entry(addr_str.to_string()).or_insert((0, 0));
+                            entry.0 += 1;
+                            entry.1 += output.amount;
+                        }
+                    }
+                }
+
+                // Convert performs_map to PerformsData
+                let txid = pending.tx.txid().to_string();
+                for (address, (input_count, amount_spent)) in performs_map {
+                    all_performs_data.push(PerformsData {
+                        from_address: address,
+                        to_txid: txid.clone(),
+                        input_count,
+                        amount_spent,
+                    });
+                }
+
+                sum
+            };
+
+            tx_data.total_input = Some(total_input);
+            tx_data.total_output = Some(total_output);
+            tx_data.fee = Some(total_input.saturating_sub(total_output));
+
+            transaction_data_batch.push(tx_data);
+        }
+
+        // Write transactions in one batch
+        // BIP30 chunks use MERGE (idempotent); normal chunks use fast CREATE.
+        let write_start = std::time::Instant::now();
+        if has_bip30 {
+            self.writer
+                .write_transactions(&transaction_data_batch)
+                .await?;
+        } else {
+            self.writer
+                .write_transactions_fast(&transaction_data_batch)
+                .await?;
+        }
+        tracing::debug!(
+            phase = "3_transactions",
+            count = transaction_data_batch.len(),
+            accumulate_secs = format!("{:.2}", phase3_start.elapsed().as_secs_f64()),
+            write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
+            "Phase complete"
+        );
+
+        // Phase 3.5: Create HAS_OUTPUT relationships (Transaction -> Output)
+        // Must run AFTER Phase 3 so Transaction nodes exist
+        // Using fast CREATE for forward ingestion.
+        let phase35_start = std::time::Instant::now();
+        self.writer
+            .write_has_output_relationships_fast(&output_data_batch)
+            .await?;
+        tracing::debug!(
+            phase = "3.5_has_output",
+            count = output_data_batch.len(),
+            write_secs = format!("{:.2}", phase35_start.elapsed().as_secs_f64()),
+            "HAS_OUTPUT relationships created"
+        );
+
+        // Phase 4: Accumulate inputs (cache removal deferred to Phase 6)
+        let phase4_start = std::time::Instant::now();
+        let mut input_data_batch = Vec::with_capacity(total_inputs);
+        for (height, block, _file_name) in chunk {
+            for tx in &block.txdata {
+                let txid = tx.txid().to_string();
+                for (input_index, input) in tx.input.iter().enumerate() {
+                    let input_data =
+                        InputData::from_input(input, &txid, input_index as u32, *height);
+                    input_data_batch.push(input_data);
+                }
+            }
+        }
+
+        // Write inputs in one batch
+        // BIP30 chunks use MERGE (idempotent); normal chunks use fast CREATE.
+        let write_start = std::time::Instant::now();
+        if has_bip30 {
+            self.writer.write_inputs(&input_data_batch).await?;
+        } else {
+            self.writer.write_inputs_fast(&input_data_batch).await?;
+        }
+        tracing::debug!(
+            phase = "4_inputs",
+            count = input_data_batch.len(),
+            accumulate_secs = format!("{:.2}", phase4_start.elapsed().as_secs_f64()),
+            write_secs = format!("{:.2}", write_start.elapsed().as_secs_f64()),
+            "Phase complete"
+        );
+
+        // Phase 6: Simplified layer (parallel writes using data accumulated in Phases 2-3)
+        let phase6_start = std::time::Instant::now();
+
+        // Partition data by address hash to enable parallel writes without deadlocks
+        // 8 buckets provides good parallelism while staying within connection pool limits
+        const NUM_BUCKETS: usize = 8;
+
+        let performs_buckets = Self::partition_performs_by_address(&all_performs_data, NUM_BUCKETS);
+        let benefits_buckets =
+            Self::partition_benefits_by_address(&all_benefits_to_data, NUM_BUCKETS);
+
+        // Spawn parallel tasks (one per bucket)
+        let mut tasks = Vec::new();
+
+        for bucket_idx in 0..NUM_BUCKETS {
+            let performs = performs_buckets[bucket_idx].clone();
+            let benefits = benefits_buckets[bucket_idx].clone();
+            let writer = Arc::clone(&self.writer);
+
+            let task = tokio::spawn(async move {
+                // Write PERFORMS first, then BENEFITS_TO (sequential within bucket)
+                // This ensures same addresses are handled without deadlock
+                if !performs.is_empty() {
+                    writer.write_performs(&performs).await?;
+                }
+                if !benefits.is_empty() {
+                    writer.write_benefits_to(&benefits).await?;
+                }
+                Ok::<_, WriterError>(())
+            });
+
+            tasks.push(task);
+        }
+
+        // Wait for all buckets to complete
+        for (idx, task) in tasks.into_iter().enumerate() {
+            task.await.map_err(|e| {
+                WriterError::QueryFailed(format!("Bucket {} task panicked: {}", idx, e))
+            })??;
+        }
+
+        tracing::debug!(
+            phase = "6_simplified",
+            performs_count = all_performs_data.len(),
+            benefits_count = all_benefits_to_data.len(),
+            write_secs = format!("{:.2}", phase6_start.elapsed().as_secs_f64()),
+            "Phase complete"
+        );
+
+        // Phase 7: Remove spent outputs from cache (deferred from Phase 4)
+        // Must happen AFTER Phase 6 (which needs UTXO lookups for amounts and PERFORMS)
+        // Use batch remove for efficiency
+        let spent_keys: Vec<UtxoKey> = chunk
+            .iter()
+            .flat_map(|(_, block, _)| {
+                block
+                    .txdata
+                    .iter()
+                    .filter(|tx| !tx.is_coinbase())
+                    .flat_map(|tx| {
+                        tx.input
+                            .iter()
+                            .map(|input| UtxoKey::from_outpoint(&input.previous_output))
+                    })
+            })
+            .collect();
+        self.utxo_cache.remove_many(&spent_keys);
+
+        // Update checkpoint after each batch
+        if let Some((height, block, file_name)) = chunk.last() {
+            let checkpoint = CheckpointData {
+                last_processed_height: *height as i32,
+                last_processed_hash: block.block_hash().to_string(),
+                last_processed_file: file_name.clone(),
+                last_processed_file_offset: None, // Not tracked in batch mode
+                timestamp: chrono::Utc::now().timestamp(),
+                status: "in_progress".to_string(),
+            };
+            self.writer.update_checkpoint(&checkpoint).await?;
+            tracing::info!(
+                checkpoint_height = *height,
+                checkpoint_file = %file_name,
+                "Checkpoint updated"
+            );
+        }
+
+        Ok(())
     }
 
     /// Phase 1: Create Block node
@@ -1292,9 +1289,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         }
 
         // Phase 3b: Single batched lookup for ALL input keys from cache
-        let all_outputs = self
-            .utxo_cache
-            .get_many_or_fail(&all_input_keys)?;
+        let all_outputs = self.utxo_cache.get_many_or_fail(&all_input_keys)?;
 
         // Phase 3c: Process each transaction using pre-fetched outputs
         let mut transactions: Vec<TransactionData> = Vec::with_capacity(block.txdata.len());

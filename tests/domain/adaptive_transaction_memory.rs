@@ -4,16 +4,13 @@
 
 use bitcoin::Network;
 use bitcoin_chain_graph::config::IngestionConfig;
-use bitcoin_chain_graph::domain::ingestion::{compute_adaptive_chunks, estimate_block_memory};
+use bitcoin_chain_graph::domain::ingestion::{
+    compute_adaptive_chunks, estimate_block_memory, BYTES_PER_BLOCK, BYTES_PER_INPUT,
+    BYTES_PER_OUTPUT, BYTES_PER_TX,
+};
 use bitcoin_chain_graph::domain::IngestionOrchestrator;
 use bitcoin_chain_graph::parser::BlockFileReader;
 use bitcoin_chain_graph::writer::MockWriter;
-
-// Mirror the pub(crate) constants from ingestion.rs for test assertions
-const BYTES_PER_BLOCK: usize = 500;
-const BYTES_PER_TX: usize = 400;
-const BYTES_PER_OUTPUT: usize = 550;
-const BYTES_PER_INPUT: usize = 550;
 
 // =============================================================================
 // Helper: build a blocks slice with controllable entity counts
@@ -47,7 +44,8 @@ async fn test_adaptive_chunking_large_blocks_produce_multiple_chunks() {
     // We can't fabricate blocks with 3000 txs easily, but we CAN test
     // compute_adaptive_chunks() directly with the memory estimator.
     // Simulate: each block has 3000 txs, 6000 outputs, 7500 inputs
-    let per_block = BYTES_PER_BLOCK + 3000 * BYTES_PER_TX + 6000 * BYTES_PER_OUTPUT + 7500 * BYTES_PER_INPUT;
+    let per_block =
+        BYTES_PER_BLOCK + 3000 * BYTES_PER_TX + 6000 * BYTES_PER_OUTPUT + 7500 * BYTES_PER_INPUT;
     let max_memory_bytes = 600 * 1024 * 1024;
 
     // Create a fake memory list for 100 blocks
@@ -55,7 +53,10 @@ async fn test_adaptive_chunking_large_blocks_produce_multiple_chunks() {
     let chunks = compute_adaptive_chunks(&block_memories, max_memory_bytes);
 
     // Must produce more than 1 chunk
-    assert!(chunks.len() > 1, "100 large blocks should produce multiple chunks");
+    assert!(
+        chunks.len() > 1,
+        "100 large blocks should produce multiple chunks"
+    );
 
     // Each chunk's total memory must be <= budget
     for chunk_range in &chunks {
@@ -82,7 +83,11 @@ async fn test_adaptive_chunking_small_blocks_single_chunk() {
     let block_memories: Vec<usize> = vec![per_block; 5000];
     let chunks = compute_adaptive_chunks(&block_memories, max_memory_bytes);
 
-    assert_eq!(chunks.len(), 1, "5000 tiny blocks should fit in a single chunk");
+    assert_eq!(
+        chunks.len(),
+        1,
+        "5000 tiny blocks should fit in a single chunk"
+    );
     assert_eq!(chunks[0], 0..5000);
 }
 
@@ -95,7 +100,8 @@ async fn test_adaptive_chunking_mixed_blocks_decreasing_chunk_sizes() {
     // AC3: Mix of small (5 txs) and large (3000 txs) blocks. Earlier chunks should
     // contain more blocks than later chunks.
     let small = BYTES_PER_BLOCK + 5 * BYTES_PER_TX + 10 * BYTES_PER_OUTPUT + 5 * BYTES_PER_INPUT;
-    let large = BYTES_PER_BLOCK + 3000 * BYTES_PER_TX + 6000 * BYTES_PER_OUTPUT + 7500 * BYTES_PER_INPUT;
+    let large =
+        BYTES_PER_BLOCK + 3000 * BYTES_PER_TX + 6000 * BYTES_PER_OUTPUT + 7500 * BYTES_PER_INPUT;
     let max_memory_bytes = 600 * 1024 * 1024;
 
     // 200 small blocks followed by 200 large blocks
@@ -103,7 +109,10 @@ async fn test_adaptive_chunking_mixed_blocks_decreasing_chunk_sizes() {
     block_memories.extend(vec![large; 200]);
 
     let chunks = compute_adaptive_chunks(&block_memories, max_memory_bytes);
-    assert!(chunks.len() >= 2, "Mixed blocks should produce multiple chunks");
+    assert!(
+        chunks.len() >= 2,
+        "Mixed blocks should produce multiple chunks"
+    );
 
     // First chunk should contain more blocks than the last chunk
     let first_chunk_len = chunks[0].end - chunks[0].start;
@@ -124,7 +133,10 @@ async fn test_adaptive_chunking_mixed_blocks_decreasing_chunk_sizes() {
 async fn test_adaptive_chunking_oversized_block_own_chunk() {
     // AC4: A single block whose estimated memory exceeds the budget should be placed
     // alone in its own chunk (minimum 1 block per chunk)
-    let oversized = BYTES_PER_BLOCK + 500000 * BYTES_PER_TX + 1000000 * BYTES_PER_OUTPUT + 800000 * BYTES_PER_INPUT;
+    let oversized = BYTES_PER_BLOCK
+        + 500000 * BYTES_PER_TX
+        + 1000000 * BYTES_PER_OUTPUT
+        + 800000 * BYTES_PER_INPUT;
     let small = BYTES_PER_BLOCK + 1 * BYTES_PER_TX + 1 * BYTES_PER_OUTPUT + 0 * BYTES_PER_INPUT;
     let max_memory_bytes = 600 * 1024 * 1024;
 
@@ -175,22 +187,35 @@ fn test_estimate_block_memory_formula() {
     let output_count: usize = block.txdata.iter().map(|tx| tx.output.len()).sum();
     let input_count: usize = block.txdata.iter().map(|tx| tx.input.len()).sum();
 
-    let expected = BYTES_PER_BLOCK + tx_count * BYTES_PER_TX + output_count * BYTES_PER_OUTPUT + input_count * BYTES_PER_INPUT;
+    let expected = BYTES_PER_BLOCK
+        + tx_count * BYTES_PER_TX
+        + output_count * BYTES_PER_OUTPUT
+        + input_count * BYTES_PER_INPUT;
     let actual = estimate_block_memory(block);
     assert_eq!(actual, expected, "Memory estimate formula mismatch");
 }
 
 // =============================================================================
-// AC 7: Constants are pub(crate) and have correct values
+// AC 7: Constants are pub and have correct values
 // =============================================================================
 
 #[test]
 fn test_memory_estimation_constants() {
-    // AC7: Constants have the expected values (mirrored at top of file)
-    assert_eq!(BYTES_PER_BLOCK, 500);
-    assert_eq!(BYTES_PER_TX, 400);
-    assert_eq!(BYTES_PER_OUTPUT, 550);
-    assert_eq!(BYTES_PER_INPUT, 550);
+    // AC7: Constants are pub and have the expected values.
+    // These are imported directly from ingestion.rs — any drift is caught here.
+    assert_eq!(
+        BYTES_PER_BLOCK, 500,
+        "BYTES_PER_BLOCK changed in ingestion.rs"
+    );
+    assert_eq!(BYTES_PER_TX, 400, "BYTES_PER_TX changed in ingestion.rs");
+    assert_eq!(
+        BYTES_PER_OUTPUT, 550,
+        "BYTES_PER_OUTPUT changed in ingestion.rs"
+    );
+    assert_eq!(
+        BYTES_PER_INPUT, 550,
+        "BYTES_PER_INPUT changed in ingestion.rs"
+    );
 }
 
 // =============================================================================
@@ -339,7 +364,10 @@ async fn test_pipeline_phases_unchanged_within_chunk() {
 
     // Phase 1: blocks written
     let written_blocks = writer.get_blocks().await;
-    assert!(!written_blocks.is_empty(), "Phase 1: blocks should be written");
+    assert!(
+        !written_blocks.is_empty(),
+        "Phase 1: blocks should be written"
+    );
 
     // Phase 2: outputs written
     let outputs = writer.get_outputs().await;
@@ -352,7 +380,10 @@ async fn test_pipeline_phases_unchanged_within_chunk() {
     // Phase 4: inputs written (genesis has no non-coinbase inputs, but later blocks do)
     // Verify checkpoint was updated (part of the pipeline)
     let checkpoint = writer.get_stored_checkpoint().await;
-    assert!(checkpoint.is_some(), "Checkpoint should be updated after batch");
+    assert!(
+        checkpoint.is_some(),
+        "Checkpoint should be updated after batch"
+    );
 }
 
 // =============================================================================
@@ -404,7 +435,10 @@ async fn test_orchestrator_uses_configured_max_transaction_memory_mb() {
     orch1.init_schema().await.unwrap();
 
     let blocks = read_test_blocks(1000);
-    assert!(blocks.len() >= 600, "Need at least 600 test blocks to exceed 1 MB memory budget");
+    assert!(
+        blocks.len() >= 600,
+        "Need at least 600 test blocks to exceed 1 MB memory budget"
+    );
 
     orch1.ingest_blocks_batch(&blocks).await.unwrap();
     let commits_600mb = writer1.transaction_commit_count().await;
@@ -436,14 +470,18 @@ async fn test_orchestrator_uses_configured_max_transaction_memory_mb() {
 #[tokio::test]
 async fn test_edge_case_tiny_memory_budget() {
     // Edge case: max_transaction_memory_mb = 1 forces nearly per-block chunks
-    let per_block = BYTES_PER_BLOCK + 100 * BYTES_PER_TX + 200 * BYTES_PER_OUTPUT + 150 * BYTES_PER_INPUT;
+    let per_block =
+        BYTES_PER_BLOCK + 100 * BYTES_PER_TX + 200 * BYTES_PER_OUTPUT + 150 * BYTES_PER_INPUT;
     let max_memory_bytes = 1 * 1024 * 1024; // 1 MB
 
     let block_memories: Vec<usize> = vec![per_block; 10];
     let chunks = compute_adaptive_chunks(&block_memories, max_memory_bytes);
 
     // With 1MB budget, should produce many chunks (possibly per-block)
-    assert!(chunks.len() > 1, "1MB budget should produce multiple chunks from 10 blocks");
+    assert!(
+        chunks.len() > 1,
+        "1MB budget should produce multiple chunks from 10 blocks"
+    );
 
     // All indices should be covered
     let total_blocks: usize = chunks.iter().map(|r| r.end - r.start).sum();
@@ -457,13 +495,18 @@ async fn test_edge_case_tiny_memory_budget() {
 #[tokio::test]
 async fn test_edge_case_huge_memory_budget() {
     // Edge case: max_transaction_memory_mb = 10000 — everything in one chunk
-    let per_block = BYTES_PER_BLOCK + 3000 * BYTES_PER_TX + 6000 * BYTES_PER_OUTPUT + 7500 * BYTES_PER_INPUT;
+    let per_block =
+        BYTES_PER_BLOCK + 3000 * BYTES_PER_TX + 6000 * BYTES_PER_OUTPUT + 7500 * BYTES_PER_INPUT;
     let max_memory_bytes = 10000 * 1024 * 1024;
 
     let block_memories: Vec<usize> = vec![per_block; 50];
     let chunks = compute_adaptive_chunks(&block_memories, max_memory_bytes);
 
-    assert_eq!(chunks.len(), 1, "10GB budget should fit 50 blocks in one chunk");
+    assert_eq!(
+        chunks.len(),
+        1,
+        "10GB budget should fit 50 blocks in one chunk"
+    );
 }
 
 // =============================================================================
@@ -479,5 +522,9 @@ async fn test_edge_case_coinbase_only_blocks() {
     let block_memories: Vec<usize> = vec![per_block; 5000];
     let chunks = compute_adaptive_chunks(&block_memories, max_memory_bytes);
 
-    assert_eq!(chunks.len(), 1, "5000 coinbase-only blocks should fit in one chunk");
+    assert_eq!(
+        chunks.len(),
+        1,
+        "5000 coinbase-only blocks should fit in one chunk"
+    );
 }

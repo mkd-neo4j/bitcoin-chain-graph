@@ -642,5 +642,4 @@ mod tests {
         let checkpoint = writer.get_checkpoint().await.unwrap().unwrap();
         assert_eq!(checkpoint.status, "completed");
     }
-
 }

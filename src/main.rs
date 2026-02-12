@@ -520,7 +520,10 @@ async fn run_streaming_ingestion(
     // Save cache on completion
     if !cache_file.is_empty() {
         let final_height = start_height + blocks_processed as u32;
-        if let Err(e) = orchestrator.get_cache().save_to_file(cache_file, final_height) {
+        if let Err(e) = orchestrator
+            .get_cache()
+            .save_to_file(cache_file, final_height)
+        {
             tracing::warn!(error = %e, "Failed to save UTXO cache on completion");
         }
     }
@@ -654,11 +657,7 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
 
     // Try to load UTXO cache from snapshot file
     if !cache_file.is_empty() {
-        let checkpoint_data = orchestrator
-            .get_checkpoint()
-            .await
-            .ok()
-            .flatten();
+        let checkpoint_data = orchestrator.get_checkpoint().await.ok().flatten();
         let current_height = checkpoint_data.as_ref().and_then(|cp| {
             if cp.last_processed_height >= 0 {
                 Some(cp.last_processed_height as u32)
@@ -817,10 +816,7 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         );
 
         // Ingest using existing orchestrator
-        if let Err(e) = orchestrator
-            .ingest_blocks_batch(&blocks)
-            .await
-        {
+        if let Err(e) = orchestrator.ingest_blocks_batch(&blocks).await {
             let stats = orchestrator.cache_stats();
             tracing::error!(
                 error = %e,
@@ -862,7 +858,6 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
 
         // Periodic cache stats logging (every 10k ops, avoids log flooding)
         orchestrator.maybe_log_cache_stats();
-
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1075,9 +1070,16 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
     // Graceful shutdown: save cache to disk
     if !cache_file.is_empty() {
         let save_height = current_height.saturating_sub(1);
-        match orchestrator.get_cache().save_to_file(cache_file, save_height) {
+        match orchestrator
+            .get_cache()
+            .save_to_file(cache_file, save_height)
+        {
             Ok(saved) => {
-                tracing::info!(entries = saved, height = save_height, "UTXO cache saved on shutdown");
+                tracing::info!(
+                    entries = saved,
+                    height = save_height,
+                    "UTXO cache saved on shutdown"
+                );
             }
             Err(e) => {
                 tracing::error!(error = %e, "Failed to save UTXO cache on shutdown");

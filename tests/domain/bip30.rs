@@ -30,7 +30,13 @@ fn make_block_at_height(height: u32) -> bitcoin::Block {
 
     // Build a coinbase input with height in the script (BIP34 style)
     let height_bytes = (height as u64).to_le_bytes();
-    let script_sig = ScriptBuf::from(vec![0x04, height_bytes[0], height_bytes[1], height_bytes[2], height_bytes[3]]);
+    let script_sig = ScriptBuf::from(vec![
+        0x04,
+        height_bytes[0],
+        height_bytes[1],
+        height_bytes[2],
+        height_bytes[3],
+    ]);
 
     let coinbase_input = TxIn {
         previous_output: OutPoint {
@@ -57,8 +63,7 @@ fn make_block_at_height(height: u32) -> bitcoin::Block {
     };
 
     let txid = coinbase_tx.txid();
-    let merkle_root =
-        TxMerkleNode::from_raw_hash(*txid.as_raw_hash());
+    let merkle_root = TxMerkleNode::from_raw_hash(*txid.as_raw_hash());
 
     bitcoin::Block {
         header: Header {
@@ -238,10 +243,26 @@ async fn test_mixed_chunk_with_bip30_uses_merge_for_entire_chunk() {
 
     // Mix of normal blocks and BIP30 block
     let blocks = vec![
-        (91840u32, make_block_at_height(91840), "blk00000.dat".to_string()),
-        (91841u32, make_block_at_height(91841), "blk00000.dat".to_string()),
-        (91842u32, make_block_at_height(91842), "blk00000.dat".to_string()),
-        (91843u32, make_block_at_height(91843), "blk00000.dat".to_string()),
+        (
+            91840u32,
+            make_block_at_height(91840),
+            "blk00000.dat".to_string(),
+        ),
+        (
+            91841u32,
+            make_block_at_height(91841),
+            "blk00000.dat".to_string(),
+        ),
+        (
+            91842u32,
+            make_block_at_height(91842),
+            "blk00000.dat".to_string(),
+        ),
+        (
+            91843u32,
+            make_block_at_height(91843),
+            "blk00000.dat".to_string(),
+        ),
     ];
 
     let result = orchestrator.ingest_blocks_batch(&blocks).await;
@@ -286,7 +307,10 @@ fn test_constraint_violation_is_retryable_returns_false() {
     let err = WriterError::ConstraintViolation(
         "Neo.ClientError.Schema.ConstraintValidationFailed: already exists".into(),
     );
-    assert!(!err.is_retryable(), "ConstraintViolation must not be retryable");
+    assert!(
+        !err.is_retryable(),
+        "ConstraintViolation must not be retryable"
+    );
 }
 
 /// Verify the Display impl includes the violation message
@@ -330,7 +354,10 @@ fn test_transient_errors_remain_retryable() {
 #[test]
 fn test_non_retryable_errors_remain_non_retryable() {
     let db_err = WriterError::DatabaseError("schema error".into());
-    assert!(!db_err.is_retryable(), "DatabaseError should not be retryable");
+    assert!(
+        !db_err.is_retryable(),
+        "DatabaseError should not be retryable"
+    );
 
     let constraint_err = WriterError::ConstraintViolation("duplicate".into());
     assert!(
@@ -453,8 +480,7 @@ fn test_constraint_violation_on_non_bip30_block_is_non_retryable() {
     // This tests the error variant behavior — the actual detection of constraint
     // violations in run_with_retry is tested via Neo4j integration tests.
     let err = WriterError::ConstraintViolation(
-        "Node(12345) already exists with label `Output` and property `outputId` = 'abc:0'"
-            .into(),
+        "Node(12345) already exists with label `Output` and property `outputId` = 'abc:0'".into(),
     );
     assert!(
         !err.is_retryable(),

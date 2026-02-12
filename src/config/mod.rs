@@ -103,7 +103,6 @@ fn default_utxo_cache_file() -> String {
     "utxo_cache.bin".to_string()
 }
 
-
 /// Ingestion process configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestionConfig {
@@ -189,7 +188,6 @@ pub struct PerformanceConfig {
     /// Set to empty string to disable cache persistence entirely.
     #[serde(default = "default_utxo_cache_file")]
     pub utxo_cache_file: String,
-
 }
 
 /// Logging configuration
@@ -521,4 +519,3 @@ impl Default for LoggingConfig {
         }
     }
 }
-
