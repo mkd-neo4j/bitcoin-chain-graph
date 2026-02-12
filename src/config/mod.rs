@@ -103,9 +103,6 @@ fn default_utxo_cache_file() -> String {
     "utxo_cache.bin".to_string()
 }
 
-fn default_utxo_cache_snapshot_interval() -> u32 {
-    2000
-}
 
 /// Ingestion process configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,12 +191,6 @@ pub struct PerformanceConfig {
     #[serde(default = "default_utxo_cache_file")]
     pub utxo_cache_file: String,
 
-    /// Snapshot the UTXO cache to disk every N blocks during ingestion.
-    ///
-    /// Protects against cache loss on hard crashes (OOM, kill -9, panic).
-    /// Set to 0 to disable periodic snapshots (only save on graceful shutdown).
-    #[serde(default = "default_utxo_cache_snapshot_interval")]
-    pub utxo_cache_snapshot_interval: u32,
 }
 
 /// Logging configuration
@@ -494,7 +485,6 @@ impl PerformanceConfig {
     ///     parallel_batches: 4,
     ///     progress_report_interval: 100,
     ///     utxo_cache_file: String::new(),
-    ///     utxo_cache_snapshot_interval: 0,
     /// };
     ///
     /// let capacity = config.cache_capacity();
@@ -517,7 +507,6 @@ impl Default for PerformanceConfig {
             parallel_batches: 4,
             progress_report_interval: 500,
             utxo_cache_file: default_utxo_cache_file(),
-            utxo_cache_snapshot_interval: default_utxo_cache_snapshot_interval(),
         }
     }
 }

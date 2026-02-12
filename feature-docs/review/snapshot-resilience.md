@@ -1,6 +1,6 @@
 ---
 title: Snapshot Resilience — Save After Every Committed Batch
-status: testing
+status: review
 priority: high
 ideation-ref: feature-docs/ideation/snapshot-resilience/
 affected-files:

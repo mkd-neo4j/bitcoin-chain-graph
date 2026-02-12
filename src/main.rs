@@ -361,6 +361,14 @@ async fn run_streaming_ingestion(
     let mut blocks_processed = 0;
     let cache_file = &config.performance.utxo_cache_file;
 
+    // Wire up snapshot path so orchestrator saves after each committed batch
+    let snapshot_path = if cache_file.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(cache_file))
+    };
+    orchestrator.set_cache_snapshot_path(snapshot_path);
+
     // Try to load UTXO cache from snapshot file (faster than pre-warming from files)
     if !cache_file.is_empty() {
         let cache = orchestrator.get_cache();
@@ -500,17 +508,6 @@ async fn run_streaming_ingestion(
                 "Batch complete"
             );
 
-            // Periodic cache snapshot
-            let snapshot_interval = config.performance.utxo_cache_snapshot_interval;
-            if snapshot_interval > 0
-                && !cache_file.is_empty()
-                && batch_end_height % snapshot_interval == 0
-            {
-                if let Err(e) = orchestrator.get_cache().save_to_file(cache_file, batch_end_height) {
-                    tracing::warn!(error = %e, height = batch_end_height, "Periodic cache snapshot failed");
-                }
-            }
-
             // Clear batch for next iteration
             batch.clear();
         }
@@ -641,8 +638,16 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         config.performance.cache_capacity(),
     );
 
-    // Try to load UTXO cache from snapshot file
+    // Wire up snapshot path so orchestrator saves after each committed batch
     let cache_file = &config.performance.utxo_cache_file;
+    let snapshot_path = if cache_file.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(cache_file))
+    };
+    orchestrator.set_cache_snapshot_path(snapshot_path);
+
+    // Try to load UTXO cache from snapshot file
     if !cache_file.is_empty() {
         let checkpoint_data = orchestrator
             .get_checkpoint()
@@ -853,16 +858,6 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         // Periodic cache stats logging (every 10k ops, avoids log flooding)
         orchestrator.maybe_log_cache_stats();
 
-        // Periodic cache snapshot (protects against hard crashes)
-        let snapshot_interval = config.performance.utxo_cache_snapshot_interval;
-        if snapshot_interval > 0
-            && !cache_file.is_empty()
-            && batch_end % snapshot_interval == 0
-        {
-            if let Err(e) = orchestrator.get_cache().save_to_file(cache_file, batch_end) {
-                tracing::warn!(error = %e, height = batch_end, "Periodic cache snapshot failed");
-            }
-        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -984,16 +979,6 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
                             );
                             // Periodic cache stats logging
                             orchestrator.maybe_log_cache_stats();
-                            // Periodic cache snapshot
-                            let snapshot_interval = config.performance.utxo_cache_snapshot_interval;
-                            if snapshot_interval > 0
-                                && !cache_file.is_empty()
-                                && height % snapshot_interval == 0
-                            {
-                                if let Err(e) = orchestrator.get_cache().save_to_file(cache_file, height) {
-                                    tracing::warn!(error = %e, height, "Periodic cache snapshot failed");
-                                }
-                            }
                             height += 1;
                         }
                         Err(WriterError::ReorgDetected {

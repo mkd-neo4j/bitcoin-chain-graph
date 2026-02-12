@@ -40,7 +40,8 @@ use crate::domain::{
 use crate::writer::{GraphWriter, Result, WriterError};
 use bitcoin::{Block, Network};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 /// Known BIP30 duplicate transaction block heights.
 ///
@@ -80,6 +81,8 @@ pub struct IngestionOrchestrator<W: GraphWriter> {
     writer: Arc<W>,
     network: Network,
     utxo_cache: UtxoCache,
+    /// Optional path for saving UTXO cache snapshots after each committed batch
+    cache_snapshot_path: Mutex<Option<PathBuf>>,
 }
 
 impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
@@ -103,6 +106,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             writer: writer_arc,
             network,
             utxo_cache,
+            cache_snapshot_path: Mutex::new(None),
         }
     }
 
@@ -114,8 +118,27 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     ///
     /// # Arguments
     /// * `path` - Optional path to the snapshot file, or `None` to disable
-    pub fn set_cache_snapshot_path(&self, _path: Option<std::path::PathBuf>) {
-        todo!("snapshot-resilience: store cache_snapshot_path on orchestrator")
+    pub fn set_cache_snapshot_path(&self, path: Option<PathBuf>) {
+        let mut guard = self
+            .cache_snapshot_path
+            .lock()
+            .expect("cache_snapshot_path lock poisoned");
+        *guard = path;
+    }
+
+    /// Save UTXO cache snapshot to disk if a path is configured.
+    ///
+    /// Non-fatal: logs a warning on failure and returns without error.
+    fn try_save_snapshot(&self, height: u32) {
+        let guard = self
+            .cache_snapshot_path
+            .lock()
+            .expect("cache_snapshot_path lock poisoned");
+        if let Some(ref path) = *guard {
+            if let Err(e) = self.utxo_cache.save_to_file(path, height) {
+                tracing::warn!(error = %e, height, "Snapshot save failed after batch commit");
+            }
+        }
     }
 
     /// Initialize database schema and checkpoint
@@ -607,6 +630,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             match chunk_result {
                 Ok(()) => {
                     self.writer.commit_transaction().await?;
+                    self.try_save_snapshot(end_height);
                     tracing::info!(batch = batch_idx + 1, "Batch complete");
                 }
                 Err(e) => {
