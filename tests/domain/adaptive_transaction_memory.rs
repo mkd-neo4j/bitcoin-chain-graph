@@ -413,43 +413,31 @@ async fn test_chunk_processing_emits_info_log() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore] // EXPECTED FAILURE: remove #[ignore] once config wiring is implemented
 async fn test_orchestrator_uses_configured_max_transaction_memory_mb() {
-    // BUG: IngestionOrchestrator::new() hardcodes max_transaction_memory_mb to 600.
-    // The config value parsed from TOML is never wired to the orchestrator.
-    //
-    // This test creates TWO orchestrators: one with the default constructor (600 MB)
-    // and one that SHOULD use a tiny 1 MB budget. If the config wiring works,
-    // the 1 MB orchestrator produces more transaction commits than the 600 MB one.
-    //
-    // Currently IngestionOrchestrator::new() has no memory budget parameter,
-    // so both orchestrators behave identically and this test FAILS.
+    // Verifies that the max_transaction_memory_mb config value is wired to the orchestrator.
+    // A 1 MB budget should produce more transaction commits than the default 600 MB budget.
 
     // --- Orchestrator 1: default (600 MB budget) ---
     let writer1 = MockWriter::new();
     let orch1 = IngestionOrchestrator::new(writer1.clone(), Network::Bitcoin, 100_000);
     orch1.init_schema().await.unwrap();
 
-    let blocks = read_test_blocks(10);
-    assert!(blocks.len() >= 5, "Need at least 5 test blocks");
+    let blocks = read_test_blocks(1000);
+    assert!(blocks.len() >= 600, "Need at least 600 test blocks to exceed 1 MB memory budget");
 
     orch1.ingest_blocks_batch(&blocks).await.unwrap();
     let commits_600mb = writer1.transaction_commit_count().await;
 
-    // --- Orchestrator 2: should use 1 MB budget ---
-    // TODO: Once the fix lands, construct with 1 MB budget, e.g.:
-    //   IngestionOrchestrator::new(writer2.clone(), Network::Bitcoin, 100_000)
-    //       .with_max_transaction_memory_mb(1)
-    // For now, we use the same constructor (no way to set budget), so both are 600 MB.
+    // --- Orchestrator 2: 1 MB budget ---
     let writer2 = MockWriter::new();
-    let orch2 = IngestionOrchestrator::new(writer2.clone(), Network::Bitcoin, 100_000);
+    let orch2 = IngestionOrchestrator::new(writer2.clone(), Network::Bitcoin, 100_000)
+        .with_max_transaction_memory_mb(1);
     orch2.init_schema().await.unwrap();
 
     orch2.ingest_blocks_batch(&blocks).await.unwrap();
     let commits_1mb = writer2.transaction_commit_count().await;
 
     // With a 1 MB budget, blocks should be split into more chunks than with 600 MB.
-    // This assertion FAILS today because both orchestrators use 600 MB (hardcoded).
     assert!(
         commits_1mb > commits_600mb,
         "1 MB budget orchestrator should produce more transaction commits ({}) \

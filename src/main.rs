@@ -197,7 +197,8 @@ async fn ingest(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
         writer,
         Network::Bitcoin,
         config.performance.cache_capacity(),
-    );
+    )
+    .with_max_transaction_memory_mb(config.ingestion.max_transaction_memory_mb);
 
     // Check if schema is initialized
     let checkpoint = orchestrator
@@ -271,7 +272,8 @@ async fn resume(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
         writer,
         Network::Bitcoin,
         config.performance.cache_capacity(),
-    );
+    )
+    .with_max_transaction_memory_mb(config.ingestion.max_transaction_memory_mb);
 
     // Get checkpoint
     let checkpoint = orchestrator
@@ -638,7 +640,8 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         writer,
         Network::Bitcoin,
         config.performance.cache_capacity(),
-    );
+    )
+    .with_max_transaction_memory_mb(config.ingestion.max_transaction_memory_mb);
 
     // Wire up snapshot path so orchestrator saves after each committed batch
     let cache_file = &config.performance.utxo_cache_file;

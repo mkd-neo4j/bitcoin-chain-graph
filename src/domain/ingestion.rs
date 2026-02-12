@@ -192,6 +192,18 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         }
     }
 
+    /// Set the maximum transaction memory budget in megabytes.
+    ///
+    /// This controls how many blocks are grouped into each database transaction
+    /// during batch ingestion. Lower values mean more frequent commits.
+    ///
+    /// # Arguments
+    /// * `mb` - Memory budget in megabytes
+    pub fn with_max_transaction_memory_mb(mut self, mb: usize) -> Self {
+        self.max_transaction_memory_mb = mb;
+        self
+    }
+
     /// Set the path for UTXO cache snapshots after each committed batch.
     ///
     /// When set to `Some(path)`, the cache is saved to disk after each
