@@ -30,7 +30,7 @@ async fn test_successful_batch_commits_atomically() {
     }
 
     // Ingest a batch — should succeed atomically
-    orchestrator.ingest_blocks_batch(&batch, 5).await.unwrap();
+    orchestrator.ingest_blocks_batch(&batch).await.unwrap();
 
     // Verify all data committed
     assert_eq!(writer.get_blocks().await.len(), 5, "All 5 blocks committed");
@@ -77,7 +77,7 @@ async fn test_failed_phase_rolls_back_entire_batch() {
     }
 
     // Ingest should fail
-    let result = orchestrator.ingest_blocks_batch(&batch, 3).await;
+    let result = orchestrator.ingest_blocks_batch(&batch).await;
     assert!(result.is_err(), "Batch should fail when Phase 4 errors");
 
     // AC2: Zero data from this batch should be persisted
@@ -127,7 +127,7 @@ async fn test_phase3_failure_after_phase2_rolls_back_outputs() {
         batch.push((height, block, "blk00000.dat".to_string()));
     }
 
-    let result = orchestrator.ingest_blocks_batch(&batch, 2).await;
+    let result = orchestrator.ingest_blocks_batch(&batch).await;
     assert!(result.is_err(), "Batch should fail when Phase 3 errors");
 
     // AC3: Specifically, output nodes from Phase 2 must NOT be persisted
@@ -158,7 +158,7 @@ async fn test_checkpoint_written_in_same_transaction_as_data() {
         batch.push((height, block, "blk00000.dat".to_string()));
     }
 
-    orchestrator.ingest_blocks_batch(&batch, 3).await.unwrap();
+    orchestrator.ingest_blocks_batch(&batch).await.unwrap();
 
     // AC4: Checkpoint update must have occurred within the transaction boundary
     // The MockWriter should record that update_checkpoint was called between
@@ -191,7 +191,7 @@ async fn test_checkpoint_delete_and_create_are_atomic() {
         let block = reader.next_block().unwrap().expect("Block should exist");
         batch1.push((height, block, "blk00000.dat".to_string()));
     }
-    orchestrator.ingest_blocks_batch(&batch1, 3).await.unwrap();
+    orchestrator.ingest_blocks_batch(&batch1).await.unwrap();
 
     // Verify checkpoint exists at height 2
     let checkpoint = writer.get_checkpoint().await.unwrap();
@@ -213,7 +213,7 @@ async fn test_checkpoint_delete_and_create_are_atomic() {
         batch2.push((height, block, "blk00000.dat".to_string()));
     }
 
-    let result = orchestrator.ingest_blocks_batch(&batch2, 3).await;
+    let result = orchestrator.ingest_blocks_batch(&batch2).await;
     assert!(result.is_err(), "Second batch should fail");
 
     // AC5: The original checkpoint must still exist and be unchanged
@@ -275,7 +275,7 @@ async fn test_transaction_timeout_is_retryable() {
     }
 
     // First attempt fails with timeout
-    let result = orchestrator.ingest_blocks_batch(&batch, 5).await;
+    let result = orchestrator.ingest_blocks_batch(&batch).await;
     assert!(result.is_err(), "Should fail on transaction timeout");
 
     // The error should be retryable
@@ -294,7 +294,7 @@ async fn test_transaction_timeout_is_retryable() {
 
     // Clear the failure and retry the same batch — should succeed
     writer.clear_failures().await;
-    orchestrator.ingest_blocks_batch(&batch, 5).await.unwrap();
+    orchestrator.ingest_blocks_batch(&batch).await.unwrap();
 
     assert_eq!(
         writer.get_blocks().await.len(),
@@ -327,7 +327,7 @@ async fn test_connection_drop_mid_transaction_rolls_back() {
         batch.push((height, block, "blk00000.dat".to_string()));
     }
 
-    let result = orchestrator.ingest_blocks_batch(&batch, 3).await;
+    let result = orchestrator.ingest_blocks_batch(&batch).await;
     assert!(result.is_err(), "Should fail on connection drop");
 
     // Zero data persisted — server auto-rolled back the uncommitted transaction
@@ -366,7 +366,7 @@ async fn test_deadlock_during_phase6_retries_within_transaction() {
     }
 
     // The batch should succeed because the deadlock is retried within the transaction
-    let result = orchestrator.ingest_blocks_batch(&batch, 3).await;
+    let result = orchestrator.ingest_blocks_batch(&batch).await;
     assert!(
         result.is_ok(),
         "Batch should succeed after deadlock retry within transaction"
@@ -410,7 +410,7 @@ async fn test_memory_pressure_fails_with_clear_error() {
         batch.push((height, block, "blk00000.dat".to_string()));
     }
 
-    let result = orchestrator.ingest_blocks_batch(&batch, 10).await;
+    let result = orchestrator.ingest_blocks_batch(&batch).await;
     assert!(result.is_err(), "Should fail on memory pressure");
 
     // Error should indicate the issue clearly
@@ -474,32 +474,32 @@ async fn test_multiple_chunks_each_get_own_transaction() {
         batch.push((height, block, "blk00000.dat".to_string()));
     }
 
-    // Use batch_size=3 so we get 2 chunks
-    orchestrator.ingest_blocks_batch(&batch, 3).await.unwrap();
+    // With adaptive chunking, all 6 tiny blocks fit in one chunk
+    orchestrator.ingest_blocks_batch(&batch).await.unwrap();
 
-    // Should have 2 committed transactions (one per chunk)
+    // With adaptive chunking, all 6 tiny early blocks fit in a single chunk
     let txn_count = writer.transaction_commit_count().await;
     assert_eq!(
-        txn_count, 2,
-        "Should have 2 committed transactions for 2 batch chunks"
+        txn_count, 1,
+        "Should have 1 committed transaction (tiny blocks fit in one adaptive chunk)"
     );
 
     // All data committed
     assert_eq!(writer.get_blocks().await.len(), 6);
 }
 
-/// Verify that a failure in chunk 2 does not affect already-committed chunk 1
+/// Verify that a failure in the only chunk rolls back completely
+/// (With adaptive chunking, tiny early blocks all fit in one chunk)
 #[tokio::test]
-async fn test_failure_in_second_chunk_preserves_first_chunk() {
+async fn test_failure_in_single_chunk_rolls_back() {
     let writer = MockWriter::new();
 
-    // Configure failure to trigger only after the first chunk succeeds
-    // (fail on the 4th call to write_blocks_fast, which is the 2nd chunk)
+    // Fail on the first call to write_blocks_fast
     writer
         .set_failure_after_n_calls(
             "write_blocks_fast",
-            1, // succeed the first call, fail on the second
-            WriterError::QueryFailed("simulated failure in chunk 2".into()),
+            0, // fail immediately
+            WriterError::QueryFailed("simulated failure in chunk".into()),
         )
         .await;
 
@@ -513,45 +513,22 @@ async fn test_failure_in_second_chunk_preserves_first_chunk() {
         batch.push((height, block, "blk00000.dat".to_string()));
     }
 
-    // Use batch_size=3 so we get 2 chunks
-    let result = orchestrator.ingest_blocks_batch(&batch, 3).await;
-    assert!(result.is_err(), "Should fail on second chunk");
+    // With adaptive chunking, all 6 tiny blocks fit in one chunk
+    let result = orchestrator.ingest_blocks_batch(&batch).await;
+    assert!(result.is_err(), "Should fail");
 
-    // First chunk (blocks 0-2) should be committed and preserved
+    // No blocks should be committed (single chunk failed and rolled back)
     let blocks = writer.get_blocks().await;
     assert_eq!(
         blocks.len(),
-        3,
-        "First chunk's 3 blocks should be preserved"
-    );
-    for h in 0..3 {
-        assert!(
-            blocks.iter().any(|b| b.height == h),
-            "Block {} from first chunk should exist",
-            h
+        0,
+        "No blocks should be persisted after rollback"
         );
-    }
 
-    // Second chunk (blocks 3-5) should NOT be persisted
-    for h in 3..6 {
-        assert!(
-            blocks.iter().all(|b| b.height != h),
-            "Block {} from second chunk should NOT exist",
-            h
-        );
-    }
-
-    // Checkpoint should reflect the end of chunk 1 (height 2), not chunk 2
-    let checkpoint = writer.get_checkpoint().await.unwrap().unwrap();
-    assert_eq!(
-        checkpoint.last_processed_height, 2,
-        "Checkpoint should be at end of last successful chunk"
-    );
-
-    // First chunk's transaction was committed, second was rolled back
+    // No checkpoint should exist since the only chunk failed
     let txn_count = writer.transaction_commit_count().await;
     assert_eq!(
-        txn_count, 1,
-        "Only first chunk's transaction should have been committed"
+        txn_count, 0,
+        "No transactions should have been committed"
     );
 }

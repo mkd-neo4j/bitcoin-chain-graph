@@ -116,7 +116,7 @@ async fn test_bip30_block_91842_uses_merge_path() {
     let blocks = vec![(91842u32, block, "blk00000.dat".to_string())];
 
     // This should succeed because the orchestrator uses MERGE (not fast CREATE)
-    let result = orchestrator.ingest_blocks_batch(&blocks, 1).await;
+    let result = orchestrator.ingest_blocks_batch(&blocks).await;
     assert!(
         result.is_ok(),
         "BIP30 block 91842 should use MERGE path, not fast CREATE. Got: {:?}",
@@ -160,7 +160,7 @@ async fn test_bip30_block_91880_uses_merge_path() {
     let block = make_block_at_height(91880);
     let blocks = vec![(91880u32, block, "blk00000.dat".to_string())];
 
-    let result = orchestrator.ingest_blocks_batch(&blocks, 1).await;
+    let result = orchestrator.ingest_blocks_batch(&blocks).await;
     assert!(
         result.is_ok(),
         "BIP30 block 91880 should use MERGE path. Got: {:?}",
@@ -196,7 +196,7 @@ async fn test_non_bip30_blocks_use_fast_create_path() {
     let block = make_block_at_height(100);
     let blocks = vec![(100u32, block, "blk00000.dat".to_string())];
 
-    let result = orchestrator.ingest_blocks_batch(&blocks, 1).await;
+    let result = orchestrator.ingest_blocks_batch(&blocks).await;
     assert!(
         result.is_err(),
         "Non-BIP30 blocks should use fast CREATE path and hit the configured failure"
@@ -244,7 +244,7 @@ async fn test_mixed_chunk_with_bip30_uses_merge_for_entire_chunk() {
         (91843u32, make_block_at_height(91843), "blk00000.dat".to_string()),
     ];
 
-    let result = orchestrator.ingest_blocks_batch(&blocks, 4).await;
+    let result = orchestrator.ingest_blocks_batch(&blocks).await;
     assert!(
         result.is_ok(),
         "Chunk with BIP30 block should use MERGE for all blocks in chunk. Got: {:?}",
@@ -364,7 +364,7 @@ async fn test_bip30_duplicate_coinbase_writes_all_data() {
 
     let blocks = vec![(91842u32, block, "blk00000.dat".to_string())];
     orchestrator
-        .ingest_blocks_batch(&blocks, 1)
+        .ingest_blocks_batch(&blocks)
         .await
         .expect("BIP30 block should ingest successfully");
 
@@ -413,14 +413,14 @@ async fn test_utxo_cache_overwrites_on_bip30_duplicate() {
     let block_a = make_block_at_height(91800);
     let blocks_a = vec![(91800u32, block_a, "blk00000.dat".to_string())];
     orchestrator
-        .ingest_blocks_batch(&blocks_a, 1)
+        .ingest_blocks_batch(&blocks_a)
         .await
         .expect("Normal block should ingest");
 
     // Now ingest BIP30 block — the cache insert should overwrite any colliding key
     let block_b = make_block_at_height(91842);
     let blocks_b = vec![(91842u32, block_b, "blk00000.dat".to_string())];
-    let result = orchestrator.ingest_blocks_batch(&blocks_b, 1).await;
+    let result = orchestrator.ingest_blocks_batch(&blocks_b).await;
     assert!(
         result.is_ok(),
         "BIP30 block should ingest successfully even with duplicate txid in cache. Got: {:?}",

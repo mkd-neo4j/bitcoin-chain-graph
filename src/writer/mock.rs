@@ -159,6 +159,11 @@ impl MockWriter {
         storage.transaction_commit_count
     }
 
+    /// Get the number of committed transactions (alias for `transaction_commit_count`)
+    pub async fn get_commit_count(&self) -> u32 {
+        self.transaction_commit_count().await
+    }
+
     /// Check if the checkpoint was written inside a transaction
     pub async fn checkpoint_written_in_transaction(&self) -> bool {
         let storage = self.storage.lock().unwrap();

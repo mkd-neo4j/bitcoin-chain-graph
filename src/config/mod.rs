@@ -107,18 +107,17 @@ fn default_utxo_cache_file() -> String {
 /// Ingestion process configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestionConfig {
-    /// Number of blocks to process per batch.
-    /// This is the primary control for memory usage — larger batches use more RAM.
-    pub batch_size: usize,
+    /// Maximum Neo4j transaction memory budget in megabytes.
+    /// The orchestrator dynamically sizes each transaction's block count
+    /// based on entity counts to stay within this budget.
+    #[serde(default = "default_max_transaction_memory_mb")]
+    pub max_transaction_memory_mb: usize,
 
     /// Enable validation after ingestion
     pub enable_validation: bool,
 
     /// Validate every N blocks
     pub validate_every_n_blocks: u32,
-
-    /// Update checkpoint every N blocks (for performance)
-    pub checkpoint_interval: u32,
 
     /// Automatically resume from last checkpoint on startup
     pub auto_resume: bool,
@@ -348,9 +347,9 @@ impl Config {
         }
 
         // Validate ingestion config
-        if self.ingestion.batch_size == 0 {
+        if self.ingestion.max_transaction_memory_mb == 0 {
             return Err(ConfigError::ValidationError(
-                "batch_size must be > 0".into(),
+                "max_transaction_memory_mb must be > 0".into(),
             ));
         }
 
@@ -449,13 +448,16 @@ impl Default for Neo4jConfig {
     }
 }
 
+fn default_max_transaction_memory_mb() -> usize {
+    600
+}
+
 impl Default for IngestionConfig {
     fn default() -> Self {
         Self {
-            batch_size: 5000,
+            max_transaction_memory_mb: default_max_transaction_memory_mb(),
             enable_validation: true,
             validate_every_n_blocks: 10000,
-            checkpoint_interval: 10,
             auto_resume: true,
             validate_on_resume: true,
         }

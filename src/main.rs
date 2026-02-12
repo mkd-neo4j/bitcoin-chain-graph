@@ -197,7 +197,8 @@ async fn ingest(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
         writer,
         Network::Bitcoin,
         config.performance.cache_capacity(),
-    );
+    )
+    .with_max_transaction_memory_mb(config.ingestion.max_transaction_memory_mb);
 
     // Check if schema is initialized
     let checkpoint = orchestrator
@@ -271,7 +272,8 @@ async fn resume(config: &Config, cli_max_height: Option<u32>) -> Result<()> {
         writer,
         Network::Bitcoin,
         config.performance.cache_capacity(),
-    );
+    )
+    .with_max_transaction_memory_mb(config.ingestion.max_transaction_memory_mb);
 
     // Get checkpoint
     let checkpoint = orchestrator
@@ -419,8 +421,10 @@ async fn run_streaming_ingestion(
     }
 
     // Start streaming ingestion with batching
+    // Fixed read-ahead size for disk I/O; adaptive memory splitting happens inside the orchestrator
+    const READ_AHEAD_BLOCKS: usize = 5000;
     tracing::info!("Starting streaming ingestion with batching");
-    let batch_size = config.ingestion.batch_size;
+    let batch_size = READ_AHEAD_BLOCKS;
     tracing::info!(batch_size = batch_size, "Batch configuration");
 
     let mut batch: Vec<(u32, bitcoin::Block, String)> = Vec::with_capacity(batch_size);
@@ -473,7 +477,7 @@ async fn run_streaming_ingestion(
                 "Ingesting batch"
             );
 
-            if let Err(e) = orchestrator.ingest_blocks_batch(&batch, batch_size).await {
+            if let Err(e) = orchestrator.ingest_blocks_batch(&batch).await {
                 let stats = orchestrator.cache_stats();
                 tracing::error!(
                     error = %e,
@@ -636,7 +640,8 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         writer,
         Network::Bitcoin,
         config.performance.cache_capacity(),
-    );
+    )
+    .with_max_transaction_memory_mb(config.ingestion.max_transaction_memory_mb);
 
     // Wire up snapshot path so orchestrator saves after each committed batch
     let cache_file = &config.performance.utxo_cache_file;
@@ -813,7 +818,7 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
 
         // Ingest using existing orchestrator
         if let Err(e) = orchestrator
-            .ingest_blocks_batch(&blocks, config.ingestion.batch_size)
+            .ingest_blocks_batch(&blocks)
             .await
         {
             let stats = orchestrator.cache_stats();
@@ -969,7 +974,7 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
                     .with_context(|| format!("Failed to fetch block {} via RPC", height))?;
 
                 if let Some(block_tuple) = block_data {
-                    match orchestrator.ingest_blocks_batch(&[block_tuple], 1).await {
+                    match orchestrator.ingest_blocks_batch(&[block_tuple]).await {
                         Ok(()) => {
                             blocks_processed += 1;
                             tracing::info!(

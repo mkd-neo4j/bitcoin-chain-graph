@@ -195,7 +195,7 @@ async fn test_batch_ingestion_checkpoints() {
 
     // Ingest in batches of 25
     orchestrator
-        .ingest_blocks_batch(&blocks, 25)
+        .ingest_blocks_batch(&blocks)
         .await
         .expect("Batch ingestion failed");
 

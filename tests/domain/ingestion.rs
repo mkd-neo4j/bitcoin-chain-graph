@@ -994,7 +994,7 @@ async fn test_ingest_blocks_batch_detects_reorg() {
 
     let batch = vec![(5u32, block1, "blk00000.dat".to_string())];
 
-    let result = orchestrator.ingest_blocks_batch(&batch, 1).await;
+    let result = orchestrator.ingest_blocks_batch(&batch).await;
 
     assert!(result.is_err(), "Should fail with ReorgDetected");
     assert!(
