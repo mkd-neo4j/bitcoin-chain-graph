@@ -2,6 +2,11 @@
 
 Updated by agents after each stage transition.
 
+## utxo-lookup-outside-transaction — review
+- **Agent**: builder (done)
+- **Tests**: 8/8 passing
+- **Verify**: type check PASS, lint PASS, tests PASS
+
 ## utxo-neo4j-fallback — completed
 - **Agent**: code-reviewer (approved)
 - **Tests**: 15/15 passing (84 unit + 134 domain + 20 parser + 21 integration)

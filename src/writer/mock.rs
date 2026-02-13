@@ -47,6 +47,8 @@ struct MockStorage {
     snapshot: Option<MockSnapshot>,
     /// Configured lookup_outputs_batch responses
     lookup_outputs_responses: Vec<OutputLookupResult>,
+    /// Ordered log of method calls for verifying call ordering in tests
+    call_log: Vec<String>,
     /// Configured failures: method_name -> error
     failures: std::collections::HashMap<String, Option<WriterError>>,
     /// Transient failures: method_name -> (error, remaining_failures)
@@ -204,6 +206,12 @@ impl MockWriter {
             .insert(method.to_string(), (n, 0, error));
     }
 
+    /// Get the ordered log of method calls for verifying call ordering
+    pub async fn get_call_log(&self) -> Vec<String> {
+        let storage = self.storage.lock().unwrap();
+        storage.call_log.clone()
+    }
+
     /// Clear all configured failures
     pub async fn clear_failures(&self) {
         let mut storage = self.storage.lock().unwrap();
@@ -339,6 +347,7 @@ impl GraphWriter for MockWriter {
         if let Some(err) = Self::check_failure(&mut storage, "lookup_outputs_batch") {
             return Err(err);
         }
+        storage.call_log.push("lookup_outputs_batch".to_string());
         // Return only results whose output_id matches the requested IDs
         let results: Vec<OutputLookupResult> = storage
             .lookup_outputs_responses
@@ -517,6 +526,7 @@ impl GraphWriter for MockWriter {
         if let Some(err) = Self::check_failure(&mut storage, "begin_transaction") {
             return Err(err);
         }
+        storage.call_log.push("begin_transaction".to_string());
         storage.in_transaction = true;
         storage.snapshot = Some(MockSnapshot {
             blocks_len: storage.blocks.len(),
@@ -532,6 +542,7 @@ impl GraphWriter for MockWriter {
 
     async fn commit_transaction(&self) -> Result<()> {
         let mut storage = self.storage.lock().unwrap();
+        storage.call_log.push("commit_transaction".to_string());
         if let Some(err) = Self::check_failure(&mut storage, "commit_transaction") {
             // On commit failure, rollback the transaction
             if let Some(snap) = storage.snapshot.take() {

@@ -20,6 +20,9 @@ mod adaptive_transaction_memory;
 #[path = "domain/shutdown_height.rs"]
 mod shutdown_height;
 
+#[path = "domain/utxo_prefetch.rs"]
+mod utxo_prefetch;
+
 #[path = "domain/utxo"]
 mod utxo {
     mod cache;
