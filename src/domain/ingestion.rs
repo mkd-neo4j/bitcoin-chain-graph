@@ -240,6 +240,11 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         self
     }
 
+    /// Returns the configured maximum transaction memory budget in bytes.
+    pub fn max_transaction_memory_bytes(&self) -> usize {
+        self.max_transaction_memory_bytes
+    }
+
     /// Set the path for UTXO cache snapshots after each committed batch.
     ///
     /// When set to `Some(path)`, the cache is saved to disk after each

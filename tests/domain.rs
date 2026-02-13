@@ -23,6 +23,9 @@ mod shutdown_height;
 #[path = "domain/utxo_prefetch.rs"]
 mod utxo_prefetch;
 
+#[path = "domain/neo4j_memory_estimator.rs"]
+mod neo4j_memory_estimator;
+
 #[path = "domain/utxo"]
 mod utxo {
     mod cache;
