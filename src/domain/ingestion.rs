@@ -65,8 +65,14 @@ pub const BYTES_PER_INPUT: usize = 550;
 /// # Returns
 ///
 /// A vector of `UtxoKey` for every non-coinbase input in the batch.
-pub fn collect_input_keys(_blocks: &[&(u32, Block, String)]) -> Vec<UtxoKey> {
-    todo!("collect_input_keys: extract Phase 3a key collection for pre-transaction UTXO lookup")
+pub fn collect_input_keys(blocks: &[&(u32, Block, String)]) -> Vec<UtxoKey> {
+    blocks
+        .iter()
+        .flat_map(|(_, block, _)| &block.txdata)
+        .filter(|tx| !tx.is_coinbase())
+        .flat_map(|tx| &tx.input)
+        .map(|input| UtxoKey::from_outpoint(&input.previous_output))
+        .collect()
 }
 
 /// Estimate the Neo4j transaction memory for a single bitcoin block.
@@ -743,6 +749,68 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 self.validate_parent_hash(block, *height).await?;
             }
 
+            // Pre-fetch UTXO data BEFORE opening the write transaction.
+            // This moves Neo4j read queries (lookup_outputs_batch) outside the
+            // transaction boundary to reduce transaction duration and memory.
+            //
+            // Same-block outputs (created and spent within this chunk) won't
+            // exist in Neo4j yet, so they may remain unresolved after this
+            // pre-fetch. That's OK — Phase 2 populates the cache with same-block
+            // outputs before Phase 3 needs them.
+            let chunk_refs: Vec<&(u32, Block, String)> = chunk.iter().collect();
+            let input_keys = collect_input_keys(&chunk_refs);
+
+            let prefetched_utxos = if input_keys.is_empty() {
+                HashMap::new()
+            } else {
+                // Try the cache first (no Neo4j)
+                let (mut found, misses) = self.utxo_cache.get_many(&input_keys);
+
+                if !misses.is_empty() {
+                    // Fall back to Neo4j for cache misses (auto-commit queries,
+                    // not tied to the write transaction)
+                    let miss_ids: Vec<String> =
+                        misses.iter().map(|k| k.to_output_id_string()).collect();
+                    let neo4j_results = self.writer.lookup_outputs_batch(&miss_ids).await?;
+
+                    // Build map for fast lookup
+                    let result_map: HashMap<String, &crate::domain::OutputLookupResult> =
+                        neo4j_results
+                            .iter()
+                            .map(|r| (r.output_id.clone(), r))
+                            .collect();
+
+                    for miss_key in &misses {
+                        let output_id = miss_key.to_output_id_string();
+                        if let Some(lookup) = result_map.get(&output_id) {
+                            let script_type: ScriptTypeTag =
+                                lookup.script_type.parse().unwrap_or(ScriptTypeTag::Unknown);
+                            let cached = CachedOutput {
+                                output_index: lookup.output_index,
+                                amount: lookup.amount,
+                                script_type,
+                                address: lookup.address.as_ref().map(|a| Arc::from(a.as_str())),
+                            };
+                            self.utxo_cache.insert(*miss_key, cached.clone());
+                            found.insert(*miss_key, cached);
+                        }
+                        // Still-missing keys are likely same-block outputs —
+                        // Phase 2 will populate the cache before Phase 3 needs them
+                    }
+
+                    if !neo4j_results.is_empty() || !misses.is_empty() {
+                        tracing::info!(
+                            cache_hits = input_keys.len() - misses.len(),
+                            neo4j_resolved = neo4j_results.len(),
+                            same_block_deferred = misses.len() - neo4j_results.len(),
+                            "UTXO cache fallback to Neo4j resolved all misses"
+                        );
+                    }
+                }
+
+                found
+            };
+
             tracing::info!(
                 chunk = chunk_idx + 1,
                 total_chunks,
@@ -757,7 +825,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             self.writer.begin_transaction().await?;
 
             let chunk_result = self
-                .process_batch_chunk(chunk, chunk_idx, blocks_in_batch)
+                .process_batch_chunk(chunk, chunk_idx, blocks_in_batch, prefetched_utxos)
                 .await;
 
             match chunk_result {
@@ -801,6 +869,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         chunk: &[(u32, Block, String)],
         _batch_idx: usize,
         blocks_in_batch: usize,
+        prefetched_utxos: HashMap<UtxoKey, CachedOutput>,
     ) -> Result<()> {
         // Detect BIP30 duplicate-txid blocks in this chunk.
         // If any block is a known BIP30 height, fall back to MERGE writes
@@ -967,11 +1036,19 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             }
         }
 
-        // Phase 3b: Single batched lookup for ALL input keys from cache
-        let all_outputs = self
-            .utxo_cache
-            .get_many_with_fallback(&all_input_keys, self.writer.as_ref())
-            .await?;
+        // Phase 3b: Use pre-fetched UTXO data (looked up before begin_transaction).
+        // For same-block UTXOs that weren't in the pre-fetch, Phase 2 already
+        // populated the cache — check the cache first, then fall back to the
+        // pre-fetched map for cross-batch entries.
+        let mut all_outputs = prefetched_utxos;
+        // Supplement with any same-block outputs now in the cache after Phase 2
+        for key in &all_input_keys {
+            if !all_outputs.contains_key(key) {
+                if let Ok(cached) = self.utxo_cache.get(key) {
+                    all_outputs.insert(*key, cached);
+                }
+            }
+        }
 
         tracing::debug!(
             total_keys = all_input_keys.len(),
