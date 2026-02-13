@@ -204,16 +204,16 @@ fn test_memory_estimation_constants() {
     // AC7: Constants are pub and have the expected values.
     // These are imported directly from ingestion.rs — any drift is caught here.
     assert_eq!(
-        BYTES_PER_BLOCK, 500,
+        BYTES_PER_BLOCK, 3500,
         "BYTES_PER_BLOCK changed in ingestion.rs"
     );
-    assert_eq!(BYTES_PER_TX, 400, "BYTES_PER_TX changed in ingestion.rs");
+    assert_eq!(BYTES_PER_TX, 3000, "BYTES_PER_TX changed in ingestion.rs");
     assert_eq!(
-        BYTES_PER_OUTPUT, 550,
+        BYTES_PER_OUTPUT, 3500,
         "BYTES_PER_OUTPUT changed in ingestion.rs"
     );
     assert_eq!(
-        BYTES_PER_INPUT, 550,
+        BYTES_PER_INPUT, 2500,
         "BYTES_PER_INPUT changed in ingestion.rs"
     );
 }

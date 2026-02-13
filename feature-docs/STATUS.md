@@ -2,6 +2,11 @@
 
 Updated by agents after each stage transition.
 
+## neo4j-memory-estimator — review
+- **Agent**: builder (done)
+- **Tests**: 9/9 passing
+- **Verify**: type check PASS, lint PASS, tests PASS
+
 ## utxo-lookup-outside-transaction — review
 - **Agent**: builder (done)
 - **Tests**: 8/8 passing
