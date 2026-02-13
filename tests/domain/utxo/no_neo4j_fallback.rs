@@ -1,10 +1,10 @@
-//! Tests verifying Neo4j UTXO lookup fallback has been removed
+//! Tests verifying the cache-only path works alongside the Neo4j fallback
 //!
 //! These tests assert that:
-//! 1. GraphWriter trait has no lookup_output or lookup_outputs_batch methods
-//! 2. UtxoCache does not require a GraphWriter generic parameter
-//! 3. Cache misses return errors without querying Neo4j
-//! 4. get_many_with_fallback is replaced by get_many_or_fail (cache-only)
+//! 1. UtxoCache does not require a GraphWriter generic parameter for construction
+//! 2. Cache misses via `get` and `get_many_or_fail` return errors without querying Neo4j
+//! 3. `get_many_or_fail` (cache-only) still works for strict cache-only callers
+//! 4. Cache stats track hits and misses, and persistence works without a writer
 
 use bitcoin_chain_graph::domain::utxo::{CachedOutput, ScriptTypeTag, UtxoCache, UtxoKey};
 use std::sync::Arc;

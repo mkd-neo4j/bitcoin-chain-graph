@@ -78,12 +78,30 @@ async fn test_get_many_with_fallback_combines_cache_and_writer() {
     // Request both cached and uncached keys
     // The uncached key will miss cache and fall back to writer
     // MockWriter returns empty, so this should error on truly missing keys
-    let keys = vec![key_in_cache];
+    // Configure MockWriter to return a result for the uncached key
+    let uncached_key = test_key(2, 0);
+    let uncached_output_id = uncached_key.to_output_id_string();
+    writer
+        .set_lookup_outputs_response(vec![OutputLookupResult {
+            output_id: uncached_output_id,
+            output_index: 0,
+            amount: 2_000_000,
+            script_type: "P2PKH".to_string(),
+            address: Some("1FallbackAddr".to_string()),
+        }])
+        .await;
+
+    let keys = vec![key_in_cache, uncached_key];
     let result = cache.get_many_with_fallback(&keys, &writer).await;
     assert!(result.is_ok());
     let map = result.unwrap();
-    assert_eq!(map.len(), 1);
+    assert_eq!(
+        map.len(),
+        2,
+        "Should contain both cached and fallback entries"
+    );
     assert_eq!(map[&key_in_cache].amount, 1_000_000);
+    assert_eq!(map[&uncached_key].amount, 2_000_000);
 }
 
 // =========================================================================
@@ -110,7 +128,7 @@ async fn test_get_many_with_fallback_errors_on_truly_missing() {
     // Error message should mention count and sample IDs
     let msg = err.to_string();
     assert!(
-        msg.contains("1"),
+        msg.contains("Missing 1"),
         "Error should mention count of missing keys"
     );
 }
@@ -147,9 +165,16 @@ async fn test_get_many_with_fallback_all_resolved_returns_ok() {
     let keys = vec![cached_key, fallback_key];
     let result = cache.get_many_with_fallback(&keys, &writer).await;
 
-    assert!(result.is_ok(), "All misses resolved by fallback should return Ok");
+    assert!(
+        result.is_ok(),
+        "All misses resolved by fallback should return Ok"
+    );
     let map = result.unwrap();
-    assert_eq!(map.len(), 2, "Should contain both cached and fallback entries");
+    assert_eq!(
+        map.len(),
+        2,
+        "Should contain both cached and fallback entries"
+    );
     assert_eq!(map[&cached_key].amount, 1_000_000);
     assert_eq!(map[&fallback_key].amount, 2_000_000);
 }
