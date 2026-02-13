@@ -1,6 +1,6 @@
 ---
 title: UTXO Cache Neo4j Fallback
-status: testing
+status: review
 priority: high
 affected-files:
   - src/writer/traits.rs

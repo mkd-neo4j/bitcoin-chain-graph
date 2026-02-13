@@ -182,3 +182,21 @@ pub struct BenefitsToData {
     /// Total amount received by this address in this transaction (satoshis)
     pub amount_received: u64,
 }
+
+/// Result of looking up outputs from Neo4j during UTXO cache fallback.
+///
+/// Used when the UTXO cache has misses and needs to fall back to
+/// querying Neo4j Output nodes via `GraphWriter::lookup_outputs_batch`.
+#[derive(Clone, Debug)]
+pub struct OutputLookupResult {
+    /// Output identifier in format "txid:index"
+    pub output_id: String,
+    /// Output index within the transaction
+    pub output_index: u32,
+    /// Amount in satoshis
+    pub amount: u64,
+    /// Script type (e.g., "P2PKH", "P2SH", "NULL_DATA")
+    pub script_type: String,
+    /// Bitcoin address (if derivable from script)
+    pub address: Option<String>,
+}

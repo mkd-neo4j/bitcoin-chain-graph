@@ -11,7 +11,8 @@
 use super::error::{Result, WriterError};
 use super::traits::GraphWriter;
 use crate::domain::{
-    BenefitsToData, BlockData, CheckpointData, InputData, OutputData, PerformsData, TransactionData,
+    BenefitsToData, BlockData, CheckpointData, InputData, OutputData, OutputLookupResult,
+    PerformsData, TransactionData,
 };
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -320,6 +321,17 @@ impl GraphWriter for MockWriter {
         }
         storage.benefits_to.extend_from_slice(benefits_to);
         Ok(())
+    }
+
+    async fn lookup_outputs_batch(
+        &self,
+        _output_ids: &[String],
+    ) -> Result<Vec<OutputLookupResult>> {
+        let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "lookup_outputs_batch") {
+            return Err(err);
+        }
+        Ok(vec![])
     }
 
     async fn mark_output_spent(

@@ -10,15 +10,17 @@ use std::time::Duration;
 
 use crate::config::Neo4jConfig;
 use crate::domain::{
-    BenefitsToData, BlockData, CheckpointData, InputData, OutputData, PerformsData, TransactionData,
+    BenefitsToData, BlockData, CheckpointData, InputData, OutputData, OutputLookupResult,
+    PerformsData, TransactionData,
 };
 use crate::writer::{GraphWriter, Result, WriterError};
 
 mod conversions;
-mod queries;
+pub mod queries;
 mod schema;
 
 use conversions::*;
+pub use queries::LOOKUP_OUTPUTS_BATCH_QUERY;
 
 /// Sentinel height value for initial checkpoint state ("not yet started").
 ///
@@ -528,6 +530,53 @@ impl GraphWriter for Neo4jWriter {
             benefits_to_to_bolt_list,
         )
         .await
+    }
+
+    async fn lookup_outputs_batch(&self, output_ids: &[String]) -> Result<Vec<OutputLookupResult>> {
+        if output_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let bolt_ids: Vec<BoltType> = output_ids
+            .iter()
+            .map(|id| BoltType::String(id.clone().into()))
+            .collect();
+
+        let q = query(queries::LOOKUP_OUTPUTS_BATCH_QUERY).param("outputIds", bolt_ids.as_slice());
+
+        let mut result = tokio::time::timeout(self.query_timeout, self.graph.execute(q))
+            .await
+            .map_err(|_| WriterError::QueryFailed("lookup_outputs_batch timed out".to_string()))?
+            .map_err(|e| WriterError::QueryFailed(format!("lookup_outputs_batch failed: {}", e)))?;
+
+        let mut outputs = Vec::new();
+        while let Some(row) = result.next().await.map_err(|e| {
+            WriterError::QueryFailed(format!("lookup_outputs_batch row fetch failed: {}", e))
+        })? {
+            let output_id: String = row
+                .get("outputId")
+                .map_err(|e| WriterError::DatabaseError(format!("Missing outputId: {}", e)))?;
+            let output_index: i64 = row
+                .get("outputIndex")
+                .map_err(|e| WriterError::DatabaseError(format!("Missing outputIndex: {}", e)))?;
+            let amount: i64 = row
+                .get("amount")
+                .map_err(|e| WriterError::DatabaseError(format!("Missing amount: {}", e)))?;
+            let script_type: String = row
+                .get("scriptType")
+                .map_err(|e| WriterError::DatabaseError(format!("Missing scriptType: {}", e)))?;
+            let address: Option<String> = row.get("address").ok();
+
+            outputs.push(OutputLookupResult {
+                output_id,
+                output_index: output_index as u32,
+                amount: amount as u64,
+                script_type,
+                address,
+            });
+        }
+
+        Ok(outputs)
     }
 
     async fn mark_output_spent(

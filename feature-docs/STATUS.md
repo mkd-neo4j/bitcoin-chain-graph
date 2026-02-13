@@ -2,10 +2,10 @@
 
 Updated by agents after each stage transition.
 
-## utxo-neo4j-fallback — testing
-- **Agent**: test-writer
-- **Tests**: 15 tests written, all failing (expected — 13 compile errors)
-- **Criteria covered**: 8/8 acceptance, 5/5 edge cases
+## utxo-neo4j-fallback — review
+- **Agent**: builder (done)
+- **Tests**: 15/15 passing
+- **Verify**: type check PASS, lint PASS, tests PASS
 - **Branch**: feat/utxo-neo4j-fallback
 
 ## neo4j-writer-transactions — completed
