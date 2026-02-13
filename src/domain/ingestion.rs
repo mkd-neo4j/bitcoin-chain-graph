@@ -804,11 +804,20 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                         // Phase 2 will populate the cache before Phase 3 needs them
                     }
 
+                    let same_block_deferred = misses.len() - neo4j_results.len();
+
+                    // Don't count same-block deferred as real misses — these
+                    // outputs don't exist yet (Phase 2 hasn't run), so the
+                    // cache miss is expected, not a performance problem.
+                    if same_block_deferred > 0 {
+                        self.utxo_cache.adjust_misses(same_block_deferred as u64);
+                    }
+
                     if !neo4j_results.is_empty() || !misses.is_empty() {
                         tracing::info!(
                             cache_hits = input_keys.len() - misses.len(),
                             neo4j_resolved = neo4j_results.len(),
-                            same_block_deferred = misses.len() - neo4j_results.len(),
+                            same_block_deferred,
                             "UTXO cache fallback to Neo4j resolved all misses"
                         );
                     }
@@ -1047,10 +1056,13 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         // populated the cache — check the cache first, then fall back to the
         // pre-fetched map for cross-batch entries.
         let mut all_outputs = prefetched_utxos;
-        // Supplement with any same-block outputs now in the cache after Phase 2
+        // Supplement with any same-block outputs now in the cache after Phase 2.
+        // Use get_quiet() to avoid double-counting stats — these keys were already
+        // recorded as misses during pre-fetch, and the miss was corrected via
+        // adjust_misses(). Recording another hit here would inflate the hit rate.
         for key in &all_input_keys {
             if !all_outputs.contains_key(key) {
-                if let Ok(cached) = self.utxo_cache.get(key) {
+                if let Ok(cached) = self.utxo_cache.get_quiet(key) {
                     all_outputs.insert(*key, cached);
                 }
             }
