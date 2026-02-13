@@ -891,7 +891,7 @@ impl UtxoCache {
         // Atomic rename
         std::fs::rename(&tmp_path, path)?;
 
-        tracing::info!(
+        tracing::debug!(
             entries = written,
             checkpoint_height = checkpoint_height,
             crc32 = format!("{:08x}", crc),

@@ -44,6 +44,22 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// Statistics returned by [`IngestionOrchestrator::ingest_blocks_batch`].
+///
+/// Provides entity counts from the batch so callers can log volume metrics
+/// without reaching into orchestrator internals.
+#[derive(Clone, Debug, Default)]
+pub struct BatchStats {
+    /// Total transactions processed across all chunks.
+    pub transactions: usize,
+    /// Total outputs processed across all chunks.
+    pub outputs: usize,
+    /// Total inputs processed across all chunks.
+    pub inputs: usize,
+    /// Number of adaptive chunks used.
+    pub chunks: usize,
+}
+
 /// Estimated Neo4j transaction heap cost per block (Block node + NEXT_BLOCK relationship).
 pub const BYTES_PER_BLOCK: usize = 3500;
 /// Estimated Neo4j transaction heap cost per transaction (Transaction node + PERFORMS relationship).
@@ -723,10 +739,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
     ///
     /// # Errors
     /// Returns error if any database write fails or UTXO lookup fails
-    pub async fn ingest_blocks_batch(&self, blocks: &[(u32, Block, String)]) -> Result<()> {
+    pub async fn ingest_blocks_batch(&self, blocks: &[(u32, Block, String)]) -> Result<BatchStats> {
         let total_blocks = blocks.len();
         let max_memory_bytes = self.max_transaction_memory_bytes;
-        tracing::info!(
+        tracing::debug!(
             total_blocks,
             max_memory_mb = self.max_transaction_memory_bytes / (1024 * 1024),
             "Starting adaptive batch ingestion"
@@ -741,6 +757,11 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         // Compute adaptive chunks based on memory budget
         let chunk_ranges = compute_adaptive_chunks(&block_memories, max_memory_bytes);
         let total_chunks = chunk_ranges.len();
+
+        let mut batch_stats = BatchStats {
+            chunks: total_chunks,
+            ..Default::default()
+        };
 
         for (chunk_idx, chunk_range) in chunk_ranges.iter().enumerate() {
             let chunk = &blocks[chunk_range.clone()];
@@ -820,11 +841,11 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                             same_block_deferred,
                             "UTXO cache misses resolved via Neo4j fallback"
                         );
-                    } else if same_block_deferred > 0 {
+                    } else {
                         tracing::debug!(
                             cache_hits = input_keys.len() - misses.len(),
                             same_block_deferred,
-                            "All UTXO cache misses are same-block deferred — no Neo4j fallback needed"
+                            "All UTXO misses are same-block deferred — no Neo4j fallback needed"
                         );
                     }
                 }
@@ -832,7 +853,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 found
             };
 
-            tracing::info!(
+            tracing::debug!(
                 chunk = chunk_idx + 1,
                 total_chunks,
                 blocks = blocks_in_batch,
@@ -843,6 +864,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             );
 
             // Begin atomic transaction for this chunk
+            let chunk_start = std::time::Instant::now();
             self.writer.begin_transaction().await?;
 
             let chunk_result = self
@@ -850,10 +872,21 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 .await;
 
             match chunk_result {
-                Ok(()) => {
+                Ok((txs, outputs, inputs)) => {
                     self.writer.commit_transaction().await?;
                     self.try_save_snapshot(end_height);
-                    tracing::info!(chunk = chunk_idx + 1, total_chunks, "Chunk complete");
+
+                    batch_stats.transactions += txs;
+                    batch_stats.outputs += outputs;
+                    batch_stats.inputs += inputs;
+
+                    tracing::info!(
+                        chunk = chunk_idx + 1,
+                        total_chunks,
+                        height = end_height,
+                        chunk_secs = format!("{:.1}", chunk_start.elapsed().as_secs_f64()),
+                        "Chunk complete"
+                    );
                 }
                 Err(e) => {
                     tracing::error!(
@@ -873,25 +906,28 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             }
         }
 
-        tracing::info!(
+        tracing::debug!(
             total_blocks,
             total_chunks,
             "Adaptive batch ingestion complete"
         );
-        Ok(())
+        Ok(batch_stats)
     }
 
-    /// Process a single batch chunk through all 7 phases
+    /// Process a single batch chunk through all 7 phases.
     ///
     /// Extracted from `ingest_blocks_batch` to enable transaction wrapping.
     /// The caller is responsible for begin/commit/rollback.
+    ///
+    /// # Returns
+    /// A tuple of `(transactions, outputs, inputs)` entity counts for this chunk.
     async fn process_batch_chunk(
         &self,
         chunk: &[(u32, Block, String)],
         _batch_idx: usize,
         blocks_in_batch: usize,
         prefetched_utxos: HashMap<UtxoKey, CachedOutput>,
-    ) -> Result<()> {
+    ) -> Result<(usize, usize, usize)> {
         // Detect BIP30 duplicate-txid blocks in this chunk.
         // If any block is a known BIP30 height, fall back to MERGE writes
         // for the entire chunk to handle duplicate unique constraints safely.
@@ -1276,14 +1312,14 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                 status: "in_progress".to_string(),
             };
             self.writer.update_checkpoint(&checkpoint).await?;
-            tracing::info!(
+            tracing::debug!(
                 checkpoint_height = *height,
                 checkpoint_file = %file_name,
                 "Checkpoint updated"
             );
         }
 
-        Ok(())
+        Ok((total_txs, total_outputs, total_inputs))
     }
 
     /// Phase 1: Create Block node
