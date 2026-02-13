@@ -17,6 +17,11 @@ if git diff --quiet HEAD -- . 2>/dev/null && \
   exit 0
 fi
 
+# --- Lifecycle-aware skip ---
+# During testing stage, test-writer references unimplemented APIs — skip verify.
+. "${CLAUDE_PROJECT_DIR}/scripts/lifecycle-stage.sh"
+[ "$LIFECYCLE_STAGE" = "testing" ] && exit 0
+
 # --- Loop detection ---
 # Track consecutive stop-hook failures to prevent infinite loops where
 # the agent keeps trying to stop, the hook blocks it, the agent retries

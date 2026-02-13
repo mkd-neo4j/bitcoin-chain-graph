@@ -9,13 +9,15 @@ Each subfolder is one feature idea:
 ```
 ideation/
   CLAUDE.md              This file
-  <feature-name>/
+  NNN-<feature-name>/
     README.md            Status tracking + progress log
     code-review.md       Analysis of existing code to change
     api-design.md        API contracts, data flow
     research.md          How others solve this, trade-offs
     ...                  Any other artifacts
 ```
+
+Folder names use a 3-digit numeric prefix (e.g., `001-user-auth/`). The prefix is assigned by running `scripts/next-feature-number.sh` and carries through to the feature doc filename (e.g., `ready/001-user-auth.md`).
 
 ## Starting or Resuming
 

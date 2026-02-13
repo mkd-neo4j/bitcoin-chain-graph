@@ -41,13 +41,19 @@ Then ask:
 
 ## Step 3 — Create the Ideation Folder
 
-Create the ideation folder and seed the README using the template from `feature-docs/ideation/CLAUDE.md` (see the "README Template" section):
+First, get the next available feature number by running:
+
+```bash
+bash scripts/next-feature-number.sh
+```
+
+This returns a 3-digit prefix (e.g., `003`). Use it to create the ideation folder:
 
 ```
-feature-docs/ideation/<feature-name>/README.md
+feature-docs/ideation/NNN-<feature-name>/README.md
 ```
 
-Set the frontmatter with the feature name, `status: in-progress`, and today's date. Under the `## Progress` section, add the first entry:
+Seed the README using the template from `feature-docs/ideation/CLAUDE.md` (see the "README Template" section). Set the frontmatter with the feature name, `status: in-progress`, and today's date. Under the `## Progress` section, add the first entry:
 
 ```markdown
 ### <today's date> — Initial exploration
@@ -150,12 +156,12 @@ When I say "create the feature" (or similar):
 3. **Flag gaps**: Tell me what's missing or unclear before we finalise
 4. **Show me the full draft** and ask if I want changes
 5. **Check for conflicts**: Read feature docs in `feature-docs/testing/` and `feature-docs/building/` — warn if any `affected-files` overlap
-6. **Save** to `feature-docs/ready/<feature-name>.md`
+6. **Save** to `feature-docs/ready/NNN-<feature-name>.md` — use the same numeric prefix from the ideation folder (e.g., if ideation was `003-user-auth/`, the feature doc is `003-user-auth.md`)
 7. **Update the ideation README**: Set `status: complete` in frontmatter, add a final progress entry linking to the ready file
 8. **Tell me the kickoff command**:
 
 ```
-@test-writer Pick up feature-docs/ready/<feature-name>.md
+@test-writer Pick up feature-docs/ready/NNN-<feature-name>.md
 ```
 
 Or source `feature-docs/implement-feature.md` to run the pipeline with pre-flight checks (file ownership validation, section completeness).
@@ -167,6 +173,12 @@ Or source `feature-docs/implement-feature.md` to run the pipeline with pre-fligh
 If the user chose to skip ideation at Step 2, generate the feature doc autonomously using all available context — prior conversation, code reviews, codebase exploration, error reports, etc. **Do not interrogate the user section by section.** Draft first, review once.
 
 **8a — Draft the Complete Feature Doc**
+
+First, get the next available feature number:
+
+```bash
+bash scripts/next-feature-number.sh
+```
 
 Using the format from `feature-docs/CLAUDE.md` (see the "Feature Doc Format" section), fill in every section:
 
@@ -193,10 +205,10 @@ Before saving, check `feature-docs/testing/` and `feature-docs/building/` for an
 
 **8d — Save and Next Steps**
 
-Write the file to `feature-docs/ready/<feature-name>.md` where the filename is derived from the title (lowercase, hyphens). Then tell the exact command to kick off the test-writer:
+Write the file to `feature-docs/ready/NNN-<feature-name>.md` where `NNN` is the number from step 8a and the name is derived from the title (lowercase, hyphens). Then tell the exact command to kick off the test-writer:
 
 ```
-@test-writer Pick up feature-docs/ready/<filename>.md
+@test-writer Pick up feature-docs/ready/NNN-<feature-name>.md
 ```
 
 Or source `feature-docs/implement-feature.md` to run the pipeline with pre-flight checks (file ownership validation, section completeness).

@@ -34,7 +34,7 @@ When you encounter a problem with code — wrong implementation, failing tests, 
 
 ## Step 1 — Scan for Ready Features
 
-Scan `feature-docs/ready/` for `.md` files (excluding example-feature.md). For each feature doc found, read its YAML frontmatter to get the `title`, `priority`, and `affected-files`.
+Scan `feature-docs/ready/` for `.md` files. For each feature doc found, read its YAML frontmatter to get the `title`, `priority`, and `affected-files`.
 
 **If features are found**, present them in a table:
 

@@ -45,6 +45,15 @@ if [ -d "${FEATURE_DIR}" ]; then
   fi
 fi
 
+# --- Lifecycle-aware verify skip ---
+# During testing stage, tests are supposed to fail — skip verify.
+# Lifecycle compliance already ran above; the builder will verify when it completes.
+. "${PROJECT_DIR}/scripts/lifecycle-stage.sh"
+if [ "$LIFECYCLE_STAGE" = "testing" ]; then
+  echo "Stage: testing — skipping verify (tests expected to fail)" >&2
+  exit 0
+fi
+
 # --- Full verify pipeline ---
 if [ ! -f "${VERIFY_SCRIPT}" ]; then
   echo "Warning: scripts/verify.sh not found — skipping verification" >&2
