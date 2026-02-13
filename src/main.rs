@@ -477,22 +477,25 @@ async fn run_streaming_ingestion(
                 "Ingesting batch"
             );
 
-            if let Err(e) = orchestrator.ingest_blocks_batch(&batch).await {
-                let stats = orchestrator.cache_stats();
-                tracing::error!(
-                    error = %e,
-                    blocks_processed,
-                    cache_hits = stats.hits,
-                    cache_misses = stats.misses,
-                    hit_rate_pct = format!("{:.2}", stats.hit_rate_percent()),
-                    "Batch ingestion failed — cache stats at time of failure"
-                );
-                return Err(e).with_context(|| {
-                    format!(
-                        "Failed to ingest batch starting at block {}",
-                        batch_start_height
-                    )
-                });
+            match orchestrator.ingest_blocks_batch(&batch).await {
+                Ok(_batch_stats) => {}
+                Err(e) => {
+                    let stats = orchestrator.cache_stats();
+                    tracing::error!(
+                        error = %e,
+                        blocks_processed,
+                        cache_hits = stats.hits,
+                        cache_misses = stats.misses,
+                        hit_rate_pct = format!("{:.2}", stats.hit_rate_percent()),
+                        "Batch ingestion failed — cache stats at time of failure"
+                    );
+                    return Err(e).with_context(|| {
+                        format!(
+                            "Failed to ingest batch starting at block {}",
+                            batch_start_height
+                        )
+                    });
+                }
             }
 
             blocks_processed += batch.len();
@@ -781,7 +784,7 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         let remaining = (target - current_height + 1) as usize;
         let fetch_count = remaining.min(rpc_batch_size);
 
-        tracing::info!(
+        tracing::debug!(
             start = current_height,
             count = fetch_count,
             tip = tip,
@@ -813,24 +816,33 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         tracing::info!(
             fetched = blocks.len(),
             fetch_secs = format!("{:.2}", fetch_elapsed.as_secs_f64()),
-            "RPC fetch complete, ingesting..."
+            start = current_height,
+            behind = tip - current_height,
+            "RPC batch fetched"
         );
 
         // Ingest using existing orchestrator
-        if let Err(e) = orchestrator.ingest_blocks_batch(&blocks).await {
-            let stats = orchestrator.cache_stats();
-            tracing::error!(
-                error = %e,
-                blocks_processed,
-                cache_hits = stats.hits,
-                cache_misses = stats.misses,
-                hit_rate_pct = format!("{:.2}", stats.hit_rate_percent()),
-                "Batch ingestion failed — cache stats at time of failure"
-            );
-            return Err(e).with_context(|| {
-                format!("Failed to ingest batch {}-{}", current_height, batch_end)
-            });
-        }
+        let ingest_start = Instant::now();
+        let batch_result = orchestrator.ingest_blocks_batch(&blocks).await;
+        let ingest_elapsed = ingest_start.elapsed();
+
+        let ingestion_stats = match batch_result {
+            Ok(stats) => stats,
+            Err(e) => {
+                let cache_stats = orchestrator.cache_stats();
+                tracing::error!(
+                    error = %e,
+                    blocks_processed,
+                    cache_hits = cache_stats.hits,
+                    cache_misses = cache_stats.misses,
+                    hit_rate_pct = format!("{:.2}", cache_stats.hit_rate_percent()),
+                    "Batch ingestion failed — cache stats at time of failure"
+                );
+                return Err(e).with_context(|| {
+                    format!("Failed to ingest batch {}-{}", current_height, batch_end)
+                });
+            }
+        };
 
         shutdown_tracker.record_batch_commit(batch_end);
 
@@ -846,16 +858,32 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
         blocks_processed += blocks.len() as u64;
         current_height = batch_end + 1;
 
-        // Log progress
-        let stats = orchestrator.cache_stats();
+        // Log progress with ETA and entity counts
+        let cache_stats = orchestrator.cache_stats();
         let total_elapsed = start_time.elapsed().as_secs_f64();
         let overall_bps = blocks_processed as f64 / total_elapsed;
+        let behind = tip.saturating_sub(batch_end);
+        let eta_secs = if overall_bps > 0.0 {
+            behind as f64 / overall_bps
+        } else {
+            0.0
+        };
+        let progress_pct = if tip > 0 {
+            (batch_end as f64 / tip as f64) * 100.0
+        } else {
+            0.0
+        };
 
         tracing::info!(
-            processed_up_to = batch_end,
-            total_blocks = blocks_processed,
+            height = batch_end,
+            blocks = blocks_processed,
+            txs = ingestion_stats.transactions,
             avg_bps = format!("{:.1}", overall_bps),
-            cache_hit_rate = format!("{:.1}%", stats.hit_rate_percent()),
+            batch_secs = format!("{:.1}", ingest_elapsed.as_secs_f64()),
+            cache_hit_rate = format!("{:.1}%", cache_stats.hit_rate_percent()),
+            progress = format!("{:.1}%", progress_pct),
+            behind,
+            eta = format_eta(eta_secs),
             "Batch ingested"
         );
 
@@ -973,7 +1001,7 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
 
                 if let Some(block_tuple) = block_data {
                     match orchestrator.ingest_blocks_batch(&[block_tuple]).await {
-                        Ok(()) => {
+                        Ok(_batch_stats) => {
                             shutdown_tracker.record_block_commit(height);
                             blocks_processed += 1;
                             tracing::info!(
@@ -1117,6 +1145,20 @@ async fn run_live_ingestion(config: &Config, cli_max_height: Option<u32>) -> Res
 /// with the canonical hashes from Bitcoin Core via RPC. Returns the height
 /// of the last block where both chains agree.
 ///
+/// Format an ETA in seconds as a human-readable string (e.g. "25h24m", "42m").
+fn format_eta(secs: f64) -> String {
+    if secs <= 0.0 {
+        return "n/a".to_string();
+    }
+    let h = (secs / 3600.0) as u64;
+    let m = ((secs % 3600.0) / 60.0) as u64;
+    if h > 0 {
+        format!("{}h{}m", h, m)
+    } else {
+        format!("{}m", m)
+    }
+}
+
 /// Used during chain reorganization handling to determine how far back
 /// to roll back before re-ingesting the canonical chain.
 async fn find_fork_point(

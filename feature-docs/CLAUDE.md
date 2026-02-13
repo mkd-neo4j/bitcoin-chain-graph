@@ -40,7 +40,11 @@ All agents update `feature-docs/STATUS.md` after each stage transition.
 
 ## Feature Doc Format
 
-Feature docs in `ready/` through `completed/` use this format. See `ready/example-feature.md` for a filled-out example.
+Feature docs in `ready/` through `completed/` use this format.
+
+### Naming Convention
+
+Feature doc filenames use a 3-digit numeric prefix: `NNN-feature-name.md` (e.g., `001-user-auth.md`, `002-cart-redesign.md`). The prefix is assigned at creation time by running `scripts/next-feature-number.sh` (copied from `verify-scripts/` during setup). This guarantees unique, unambiguous filenames — agents can never confuse `001-user-auth.md` with `002-user-auth-v2.md`. Ideation folders use the same prefix: `ideation/001-user-auth/`.
 
 ```markdown
 ---
@@ -161,10 +165,12 @@ Every agent must complete ALL of these before finishing a task. The `task-comple
 
 The `task-completed.sh` hook scans all feature docs in `ready/`, `testing/`, `building/`, `review/`, and `completed/`. For each doc with a `status:` field, it verifies the value matches the directory name. If any mismatch is found, task completion is blocked with exit code 2. This is not a prompt convention — it is a shell script that runs automatically and cannot be skipped.
 
+**Lifecycle-aware verification**: Both `task-completed.sh` and `stop-hook.sh` source `scripts/lifecycle-stage.sh` to detect the active stage. During the `testing` stage, verification is skipped — test-writer code references unimplemented APIs (causing type errors) and tests are expected to fail. Lifecycle compliance (status/directory sync) is still enforced. The builder runs full verification when it completes.
+
 ## Kickoff Commands
 
 ```
-@test-writer Pick up feature-docs/ready/<filename>.md
-@builder Pick up feature-docs/testing/<filename>.md
-@code-reviewer Review feature-docs/review/<filename>.md
+@test-writer Pick up feature-docs/ready/NNN-<feature-name>.md
+@builder Pick up feature-docs/testing/NNN-<feature-name>.md
+@code-reviewer Review feature-docs/review/NNN-<feature-name>.md
 ```

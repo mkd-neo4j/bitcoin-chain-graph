@@ -118,15 +118,15 @@ async fn lookup_outputs_batch_called_before_begin_transaction() {
         }
     }
 
-    // Verify that the cache stats show the system is working —
-    // either all inputs resolved from cache or some triggered fallback
+    // Verify that cache stats are consistent. With adjust_misses(),
+    // same-block deferred misses are excluded from the miss counter,
+    // so hits + misses may be 0 for early blocks where all inputs are
+    // same-block spends. The important invariant is the call ordering
+    // verified above. Here we just check that outputs were cached.
     let stats = orchestrator.cache_stats();
-    let total_lookups = stats.hits + stats.misses;
-    // With 200 blocks including non-coinbase txs, there should be some lookups
-    // (even if all resolve from cache due to Phase 2 pre-population)
     assert!(
-        total_lookups > 0 || lookup_positions.is_empty(),
-        "If there were UTXO lookups, cache stats should reflect them"
+        stats.inserts > 0,
+        "Should have inserted outputs into the cache"
     );
 }
 

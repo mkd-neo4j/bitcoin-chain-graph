@@ -234,6 +234,15 @@ impl AtomicUtxoCacheStats {
         self.neo4j_fallbacks.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Subtract false misses from the miss counter.
+    ///
+    /// Used to correct for same-block deferred lookups that were
+    /// recorded as misses during pre-fetch but are not true cache
+    /// misses (the outputs didn't exist yet because Phase 2 hadn't run).
+    fn adjust_misses(&self, count: u64) {
+        self.misses.fetch_sub(count, Ordering::Relaxed);
+    }
+
     fn snapshot(&self) -> UtxoCacheStats {
         UtxoCacheStats {
             hits: self.hits.load(Ordering::Relaxed),
@@ -415,6 +424,24 @@ impl UtxoCache {
         self.stats.record_miss();
         Err(WriterError::QueryFailed(format!(
             "UTXO cache miss for {} — cache is persisted, this should not happen",
+            key.to_output_id_string()
+        )))
+    }
+
+    /// Lookup output by key without updating cache statistics.
+    ///
+    /// Used for supplemental lookups where the same key was already
+    /// counted (e.g., same-block UTXO resolution in Phase 3b after
+    /// Phase 2 has populated the cache).
+    pub fn get_quiet(&self, key: &UtxoKey) -> Result<CachedOutput, WriterError> {
+        let idx = Self::shard_index(key);
+        let mut shard = self.shards[idx].lock().expect("UTXO shard mutex poisoned");
+        if let Some(output) = shard.get(key) {
+            return Ok(output.clone());
+        }
+
+        Err(WriterError::QueryFailed(format!(
+            "UTXO cache miss for {} — same-block output not found after Phase 2",
             key.to_output_id_string()
         )))
     }
@@ -625,6 +652,15 @@ impl UtxoCache {
     /// Get a snapshot of cache statistics.
     pub fn stats(&self) -> UtxoCacheStats {
         self.stats.snapshot()
+    }
+
+    /// Subtract false misses from the miss counter.
+    ///
+    /// Used to correct for same-block deferred lookups that were
+    /// recorded as misses during pre-fetch but are not true cache
+    /// misses (the outputs didn't exist yet because Phase 2 hadn't run).
+    pub fn adjust_misses(&self, count: u64) {
+        self.stats.adjust_misses(count);
     }
 
     /// Clear all statistics (useful for testing).
@@ -855,7 +891,7 @@ impl UtxoCache {
         // Atomic rename
         std::fs::rename(&tmp_path, path)?;
 
-        tracing::info!(
+        tracing::debug!(
             entries = written,
             checkpoint_height = checkpoint_height,
             crc32 = format!("{:08x}", crc),
