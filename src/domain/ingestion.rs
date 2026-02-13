@@ -44,14 +44,14 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-/// Estimated bytes per block node in a Neo4j transaction.
-pub const BYTES_PER_BLOCK: usize = 500;
-/// Estimated bytes per transaction node in a Neo4j transaction.
-pub const BYTES_PER_TX: usize = 400;
-/// Estimated bytes per output node in a Neo4j transaction.
-pub const BYTES_PER_OUTPUT: usize = 550;
-/// Estimated bytes per input node in a Neo4j transaction.
-pub const BYTES_PER_INPUT: usize = 550;
+/// Estimated Neo4j transaction heap cost per block (Block node + NEXT_BLOCK relationship).
+pub const BYTES_PER_BLOCK: usize = 3500;
+/// Estimated Neo4j transaction heap cost per transaction (Transaction node + PERFORMS relationship).
+pub const BYTES_PER_TX: usize = 3000;
+/// Estimated Neo4j transaction heap cost per output (Output node + HAS_OUTPUT + LOCKED_TO + BENEFITS_TO relationships).
+pub const BYTES_PER_OUTPUT: usize = 3500;
+/// Estimated Neo4j transaction heap cost per input (Input node + SPENDS relationship).
+pub const BYTES_PER_INPUT: usize = 2500;
 
 /// Collect all UTXO input keys from a batch of blocks.
 ///
@@ -75,10 +75,11 @@ pub fn collect_input_keys(blocks: &[&(u32, Block, String)]) -> Vec<UtxoKey> {
         .collect()
 }
 
-/// Estimate the Neo4j transaction memory for a single bitcoin block.
+/// Estimate the Neo4j transaction heap cost for a single bitcoin block.
 ///
 /// Returns `BYTES_PER_BLOCK + T*BYTES_PER_TX + O*BYTES_PER_OUTPUT + I*BYTES_PER_INPUT`
 /// where T = transaction count, O = total outputs, I = total inputs.
+/// Each constant accounts for both the node and its associated relationships.
 pub fn estimate_block_memory(block: &Block) -> usize {
     let tx_count = block.txdata.len();
     let output_count: usize = block.txdata.iter().map(|tx| tx.output.len()).sum();
@@ -212,7 +213,7 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
             writer: writer_arc,
             network,
             utxo_cache,
-            max_transaction_memory_bytes: 600 * 1024 * 1024,
+            max_transaction_memory_bytes: 256 * 1024 * 1024,
             cache_snapshot_path: Mutex::new(None),
         }
     }

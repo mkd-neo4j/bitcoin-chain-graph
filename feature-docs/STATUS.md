@@ -2,10 +2,10 @@
 
 Updated by agents after each stage transition.
 
-## neo4j-memory-estimator — testing
-- **Agent**: test-writer
-- **Tests**: 9 tests written, 5 failing (expected — no implementation yet)
-- **Criteria covered**: 6/6 acceptance, 3/3 edge cases
+## neo4j-memory-estimator — review
+- **Agent**: builder (done)
+- **Tests**: 9/9 passing
+- **Verify**: type check PASS, lint PASS, tests PASS
 
 ## utxo-lookup-outside-transaction — review
 - **Agent**: builder (done)
