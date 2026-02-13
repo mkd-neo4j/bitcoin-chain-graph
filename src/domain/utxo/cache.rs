@@ -200,6 +200,7 @@ struct AtomicUtxoCacheStats {
     misses: AtomicU64,
     inserts: AtomicU64,
     removals: AtomicU64,
+    neo4j_fallbacks: AtomicU64,
 }
 
 impl AtomicUtxoCacheStats {
@@ -209,6 +210,7 @@ impl AtomicUtxoCacheStats {
             misses: AtomicU64::new(0),
             inserts: AtomicU64::new(0),
             removals: AtomicU64::new(0),
+            neo4j_fallbacks: AtomicU64::new(0),
         }
     }
 
@@ -228,12 +230,17 @@ impl AtomicUtxoCacheStats {
         self.removals.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn record_neo4j_fallback(&self) {
+        self.neo4j_fallbacks.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn snapshot(&self) -> UtxoCacheStats {
         UtxoCacheStats {
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
             inserts: self.inserts.load(Ordering::Relaxed),
             removals: self.removals.load(Ordering::Relaxed),
+            neo4j_fallbacks: self.neo4j_fallbacks.load(Ordering::Relaxed),
         }
     }
 
@@ -242,6 +249,7 @@ impl AtomicUtxoCacheStats {
         self.misses.store(0, Ordering::Relaxed);
         self.inserts.store(0, Ordering::Relaxed);
         self.removals.store(0, Ordering::Relaxed);
+        self.neo4j_fallbacks.store(0, Ordering::Relaxed);
     }
 }
 
@@ -256,6 +264,8 @@ pub struct UtxoCacheStats {
     pub inserts: u64,
     /// Number of removals (spent outputs)
     pub removals: u64,
+    /// Number of Neo4j fallback lookups performed
+    pub neo4j_fallbacks: u64,
 }
 
 impl UtxoCacheStats {
@@ -492,6 +502,90 @@ impl UtxoCache {
                 missing_ids,
             )));
         }
+
+        Ok(found)
+    }
+
+    /// Batch get with Neo4j fallback for cache misses.
+    ///
+    /// First checks the cache for all requested keys. If there are misses,
+    /// falls back to querying Neo4j via `GraphWriter::lookup_outputs_batch`.
+    /// Resolved outputs are inserted into the cache for subsequent lookups.
+    ///
+    /// # Arguments
+    /// * `keys` - Slice of UTXO keys to look up
+    /// * `writer` - GraphWriter implementation for Neo4j fallback
+    ///
+    /// # Errors
+    /// Returns error if any keys remain unresolved after both cache and Neo4j lookup,
+    /// or if the Neo4j query itself fails.
+    pub async fn get_many_with_fallback<W: crate::writer::GraphWriter>(
+        &self,
+        keys: &[UtxoKey],
+        writer: &W,
+    ) -> Result<HashMap<UtxoKey, CachedOutput>, WriterError> {
+        let (mut found, misses) = self.get_many(keys);
+
+        if misses.is_empty() {
+            return Ok(found);
+        }
+
+        // Record that a Neo4j fallback is happening
+        self.stats.record_neo4j_fallback();
+
+        // Convert miss keys to output ID strings for Neo4j lookup
+        let miss_ids: Vec<String> = misses.iter().map(|k| k.to_output_id_string()).collect();
+        let cache_hits = found.len();
+
+        let neo4j_results = writer.lookup_outputs_batch(&miss_ids).await?;
+
+        // Build a map from output_id -> lookup result for fast matching
+        let result_map: HashMap<String, &crate::domain::OutputLookupResult> = neo4j_results
+            .iter()
+            .map(|r| (r.output_id.clone(), r))
+            .collect();
+
+        // Resolve misses from Neo4j results and insert into cache
+        let mut still_missing = Vec::new();
+        for miss_key in &misses {
+            let output_id = miss_key.to_output_id_string();
+            if let Some(lookup) = result_map.get(&output_id) {
+                let script_type: ScriptTypeTag =
+                    lookup.script_type.parse().unwrap_or(ScriptTypeTag::Unknown);
+                let cached = CachedOutput {
+                    output_index: lookup.output_index,
+                    amount: lookup.amount,
+                    script_type,
+                    address: lookup.address.as_ref().map(|a| Arc::from(a.as_str())),
+                };
+                // Insert into cache for future lookups
+                self.insert(*miss_key, cached.clone());
+                found.insert(*miss_key, cached);
+            } else {
+                still_missing.push(miss_key);
+            }
+        }
+
+        if !still_missing.is_empty() {
+            let sample_ids: Vec<String> = still_missing
+                .iter()
+                .take(5)
+                .map(|k| k.to_output_id_string())
+                .collect();
+            return Err(WriterError::QueryFailed(format!(
+                "Missing {} of {} UTXOs after Neo4j fallback. Sample missing IDs: {:?}",
+                still_missing.len(),
+                keys.len(),
+                sample_ids,
+            )));
+        }
+
+        tracing::info!(
+            cache_hits = cache_hits,
+            neo4j_fallbacks = misses.len(),
+            total_keys = keys.len(),
+            "UTXO cache fallback to Neo4j resolved all misses"
+        );
 
         Ok(found)
     }

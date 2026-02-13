@@ -11,7 +11,8 @@
 use super::error::{Result, WriterError};
 use super::traits::GraphWriter;
 use crate::domain::{
-    BenefitsToData, BlockData, CheckpointData, InputData, OutputData, PerformsData, TransactionData,
+    BenefitsToData, BlockData, CheckpointData, InputData, OutputData, OutputLookupResult,
+    PerformsData, TransactionData,
 };
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -44,6 +45,8 @@ struct MockStorage {
     checkpoint_written_in_txn: bool,
     /// Snapshot saved at begin_transaction for rollback support
     snapshot: Option<MockSnapshot>,
+    /// Configured lookup_outputs_batch responses
+    lookup_outputs_responses: Vec<OutputLookupResult>,
     /// Configured failures: method_name -> error
     failures: std::collections::HashMap<String, Option<WriterError>>,
     /// Transient failures: method_name -> (error, remaining_failures)
@@ -168,6 +171,15 @@ impl MockWriter {
     pub async fn checkpoint_written_in_transaction(&self) -> bool {
         let storage = self.storage.lock().unwrap();
         storage.checkpoint_written_in_txn
+    }
+
+    /// Configure lookup_outputs_batch to return specific results
+    ///
+    /// When `lookup_outputs_batch` is called, it will filter this list
+    /// to only return results whose `output_id` matches the requested IDs.
+    pub async fn set_lookup_outputs_response(&self, results: Vec<OutputLookupResult>) {
+        let mut storage = self.storage.lock().unwrap();
+        storage.lookup_outputs_responses = results;
     }
 
     /// Configure a permanent failure on a specific method
@@ -320,6 +332,21 @@ impl GraphWriter for MockWriter {
         }
         storage.benefits_to.extend_from_slice(benefits_to);
         Ok(())
+    }
+
+    async fn lookup_outputs_batch(&self, output_ids: &[String]) -> Result<Vec<OutputLookupResult>> {
+        let mut storage = self.storage.lock().unwrap();
+        if let Some(err) = Self::check_failure(&mut storage, "lookup_outputs_batch") {
+            return Err(err);
+        }
+        // Return only results whose output_id matches the requested IDs
+        let results: Vec<OutputLookupResult> = storage
+            .lookup_outputs_responses
+            .iter()
+            .filter(|r| output_ids.contains(&r.output_id))
+            .cloned()
+            .collect();
+        Ok(results)
     }
 
     async fn mark_output_spent(

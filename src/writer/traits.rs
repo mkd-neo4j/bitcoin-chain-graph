@@ -11,7 +11,8 @@
 
 use super::error::Result;
 use crate::domain::{
-    BenefitsToData, BlockData, CheckpointData, InputData, OutputData, PerformsData, TransactionData,
+    BenefitsToData, BlockData, CheckpointData, InputData, OutputData, OutputLookupResult,
+    PerformsData, TransactionData,
 };
 use async_trait::async_trait;
 
@@ -254,6 +255,23 @@ pub trait GraphWriter: Send + Sync {
     /// # Errors
     /// Returns error if status update fails.
     async fn set_checkpoint_status(&self, status: &str) -> Result<()>;
+
+    // UTXO Cache Fallback
+
+    /// Look up outputs by their IDs from the database.
+    ///
+    /// Used as a fallback when the UTXO cache has misses. The cache calls
+    /// this method to resolve missing outputs from Neo4j before failing.
+    ///
+    /// # Arguments
+    /// * `output_ids` - Slice of output identifiers in format "txid:index"
+    ///
+    /// # Returns
+    /// Vec of found outputs. Missing outputs are silently omitted.
+    ///
+    /// # Errors
+    /// Returns error if the database query fails.
+    async fn lookup_outputs_batch(&self, output_ids: &[String]) -> Result<Vec<OutputLookupResult>>;
 
     // Block Lookup (for reorg detection)
 

@@ -228,6 +228,29 @@ pub const MARK_OUTPUT_SPENT_QUERY: &str = r#"
 "#;
 
 // =============================================================================
+// UTXO CACHE FALLBACK
+// =============================================================================
+
+/// Look up Output nodes by their IDs for UTXO cache fallback.
+///
+/// Used when the UTXO cache has misses and needs to resolve outputs
+/// from Neo4j. Returns output properties needed to reconstruct
+/// CachedOutput entries.
+///
+/// Parameters:
+/// - $outputIds: List of output identifier strings ("txid:index")
+pub const LOOKUP_OUTPUTS_BATCH_QUERY: &str = r#"
+    UNWIND $outputIds AS oid
+    MATCH (o:Output {outputId: oid})
+    OPTIONAL MATCH (o)-[:LOCKED_TO]->(a:Address)
+    RETURN o.outputId AS outputId,
+           o.outputIndex AS outputIndex,
+           o.amount AS amount,
+           o.scriptType AS scriptType,
+           a.address AS address
+"#;
+
+// =============================================================================
 // CHECKPOINT MANAGEMENT
 // =============================================================================
 
