@@ -120,8 +120,7 @@ async fn test_get_many_with_fallback_errors_on_truly_missing() {
 // =========================================================================
 
 /// When all cache misses are resolved by Neo4j fallback, returns Ok(HashMap).
-/// This test requires a writer that actually returns results for lookup_outputs_batch.
-/// We use a custom mock that returns data for specific output IDs.
+/// Uses MockWriter configured with set_lookup_outputs_response to simulate Neo4j results.
 #[tokio::test]
 async fn test_get_many_with_fallback_all_resolved_returns_ok() {
     let cache = UtxoCache::new(1000);
@@ -133,26 +132,26 @@ async fn test_get_many_with_fallback_all_resolved_returns_ok() {
     let fallback_key = test_key(2, 0);
     let fallback_output_id = fallback_key.to_output_id_string();
 
-    // We need a writer that returns results for the fallback key
-    // For now, MockWriter returns empty — this test will fail until
-    // MockWriter or a test helper supports configurable lookup results
-    // OR until a real implementation exists.
-    // The test asserts the contract: if all misses resolved, Ok is returned.
+    // Configure MockWriter to return a result for the fallback key
     let writer = MockWriter::new();
+    writer
+        .set_lookup_outputs_response(vec![OutputLookupResult {
+            output_id: fallback_output_id,
+            output_index: 0,
+            amount: 2_000_000,
+            script_type: "P2PKH".to_string(),
+            address: Some("1FallbackAddress".to_string()),
+        }])
+        .await;
 
-    // With MockWriter returning empty, the fallback_key won't be resolved
-    // so this should error. When implementation is done, we'll need a way
-    // to configure MockWriter to return results.
     let keys = vec![cached_key, fallback_key];
     let result = cache.get_many_with_fallback(&keys, &writer).await;
 
-    // This will fail because MockWriter returns empty for lookup_outputs_batch
-    // and fallback_key is not in cache. The builder must make this work.
-    // For now, assert the error case to prove the method exists and is callable.
-    assert!(
-        result.is_err(),
-        "Should fail because MockWriter doesn't resolve the fallback key"
-    );
+    assert!(result.is_ok(), "All misses resolved by fallback should return Ok");
+    let map = result.unwrap();
+    assert_eq!(map.len(), 2, "Should contain both cached and fallback entries");
+    assert_eq!(map[&cached_key].amount, 1_000_000);
+    assert_eq!(map[&fallback_key].amount, 2_000_000);
 }
 
 // =========================================================================
@@ -199,18 +198,29 @@ async fn test_mock_writer_lookup_outputs_batch_returns_empty() {
 #[tokio::test]
 async fn test_fallback_results_inserted_into_cache() {
     let cache = UtxoCache::new(1000);
-    let writer = MockWriter::new();
 
-    // All keys in cache — no fallback needed
+    // Do NOT insert the key into cache — it must come from fallback
     let key = test_key(1, 0);
-    cache.insert(key, test_output(2_000_000));
+    let output_id = key.to_output_id_string();
+
+    // Configure MockWriter to return a result for the key
+    let writer = MockWriter::new();
+    writer
+        .set_lookup_outputs_response(vec![OutputLookupResult {
+            output_id,
+            output_index: 0,
+            amount: 2_000_000,
+            script_type: "P2PKH".to_string(),
+            address: Some("1CacheInsertTest".to_string()),
+        }])
+        .await;
 
     let result = cache.get_many_with_fallback(&[key], &writer).await;
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "Fallback should resolve the key");
 
-    // The key should still be in cache
+    // Verify the fallback result was inserted into cache
     let cached = cache.get(&key);
-    assert!(cached.is_ok());
+    assert!(cached.is_ok(), "Key should now be in cache after fallback");
     assert_eq!(cached.unwrap().amount, 2_000_000);
 }
 

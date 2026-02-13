@@ -3,7 +3,7 @@
 Updated by agents after each stage transition.
 
 ## utxo-neo4j-fallback — review
-- **Agent**: builder (rework #1 done)
+- **Agent**: builder (rework #2 done)
 - **Tests**: 15/15 passing
 - **Verify**: type check PASS, lint PASS, tests PASS
 - **Branch**: feat/utxo-neo4j-fallback
