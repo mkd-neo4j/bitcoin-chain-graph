@@ -813,12 +813,18 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
                         self.utxo_cache.adjust_misses(same_block_deferred as u64);
                     }
 
-                    if !neo4j_results.is_empty() || !misses.is_empty() {
+                    if !neo4j_results.is_empty() {
                         tracing::info!(
                             cache_hits = input_keys.len() - misses.len(),
                             neo4j_resolved = neo4j_results.len(),
                             same_block_deferred,
-                            "UTXO cache fallback to Neo4j resolved all misses"
+                            "UTXO cache misses resolved via Neo4j fallback"
+                        );
+                    } else if same_block_deferred > 0 {
+                        tracing::debug!(
+                            cache_hits = input_keys.len() - misses.len(),
+                            same_block_deferred,
+                            "All UTXO cache misses are same-block deferred — no Neo4j fallback needed"
                         );
                     }
                 }
