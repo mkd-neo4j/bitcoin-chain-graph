@@ -1,6 +1,6 @@
 ---
 title: Move UTXO Fallback Lookups Outside Write Transaction
-status: review
+status: completed
 priority: high
 affected-files:
   - src/domain/ingestion.rs
