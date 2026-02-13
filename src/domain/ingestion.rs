@@ -53,6 +53,22 @@ pub const BYTES_PER_OUTPUT: usize = 550;
 /// Estimated bytes per input node in a Neo4j transaction.
 pub const BYTES_PER_INPUT: usize = 550;
 
+/// Collect all UTXO input keys from a batch of blocks.
+///
+/// Iterates non-coinbase inputs to build a `Vec<UtxoKey>` suitable for
+/// pre-fetching via `get_many_with_fallback()` **before** the write transaction.
+///
+/// # Arguments
+///
+/// * `blocks` - Slice of (height, Block, filename) tuples
+///
+/// # Returns
+///
+/// A vector of `UtxoKey` for every non-coinbase input in the batch.
+pub fn collect_input_keys(_blocks: &[&(u32, Block, String)]) -> Vec<UtxoKey> {
+    todo!("collect_input_keys: extract Phase 3a key collection for pre-transaction UTXO lookup")
+}
+
 /// Estimate the Neo4j transaction memory for a single bitcoin block.
 ///
 /// Returns `BYTES_PER_BLOCK + T*BYTES_PER_TX + O*BYTES_PER_OUTPUT + I*BYTES_PER_INPUT`

@@ -2,6 +2,12 @@
 
 Updated by agents after each stage transition.
 
+## utxo-lookup-outside-transaction — testing
+- **Agent**: test-writer
+- **Tests**: 8 tests written, all failing (expected)
+- **Criteria covered**: 6/7 acceptance (AC7 log ordering not testable without log capture), 3/3 edge cases
+- **MockWriter**: Instrumented with call_log for ordering verification
+
 ## utxo-neo4j-fallback — completed
 - **Agent**: code-reviewer (approved)
 - **Tests**: 15/15 passing (84 unit + 134 domain + 20 parser + 21 integration)
