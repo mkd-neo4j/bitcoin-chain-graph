@@ -535,12 +535,7 @@ impl UtxoCache {
 
         // Convert miss keys to output ID strings for Neo4j lookup
         let miss_ids: Vec<String> = misses.iter().map(|k| k.to_output_id_string()).collect();
-
-        tracing::info!(
-            miss_count = misses.len(),
-            total_keys = keys.len(),
-            "UTXO cache fallback to Neo4j"
-        );
+        let cache_hits = found.len();
 
         let neo4j_results = writer.lookup_outputs_batch(&miss_ids).await?;
 
@@ -584,6 +579,13 @@ impl UtxoCache {
                 sample_ids,
             )));
         }
+
+        tracing::info!(
+            cache_hits = cache_hits,
+            neo4j_fallbacks = misses.len(),
+            total_keys = keys.len(),
+            "UTXO cache fallback to Neo4j resolved all misses"
+        );
 
         Ok(found)
     }

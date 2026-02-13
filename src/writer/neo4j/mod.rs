@@ -16,7 +16,7 @@ use crate::domain::{
 use crate::writer::{GraphWriter, Result, WriterError};
 
 mod conversions;
-pub mod queries;
+mod queries;
 mod schema;
 
 use conversions::*;

@@ -952,7 +952,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         }
 
         // Phase 3b: Single batched lookup for ALL input keys from cache
-        let all_outputs = self.utxo_cache.get_many_or_fail(&all_input_keys)?;
+        let all_outputs = self
+            .utxo_cache
+            .get_many_with_fallback(&all_input_keys, self.writer.as_ref())
+            .await?;
 
         tracing::debug!(
             total_keys = all_input_keys.len(),
@@ -1289,7 +1292,10 @@ impl<W: GraphWriter + 'static> IngestionOrchestrator<W> {
         }
 
         // Phase 3b: Single batched lookup for ALL input keys from cache
-        let all_outputs = self.utxo_cache.get_many_or_fail(&all_input_keys)?;
+        let all_outputs = self
+            .utxo_cache
+            .get_many_with_fallback(&all_input_keys, self.writer.as_ref())
+            .await?;
 
         // Phase 3c: Process each transaction using pre-fetched outputs
         let mut transactions: Vec<TransactionData> = Vec::with_capacity(block.txdata.len());
